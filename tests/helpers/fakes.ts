@@ -14,14 +14,20 @@ export function sampleConfig(projectPath: string): BotConfig {
 
 export class FakeCodexRunner implements CodexRunner {
   readonly sentMessages: string[] = [];
-  private sessions = new Set<string>();
+  startError?: Error;
+  private readonly sessions = new Set<string>();
+  private readonly sessionOptions = new Map<string, CodexRunOptions>();
 
   async healthCheck(): Promise<{ ok: true }> {
     return { ok: true };
   }
 
   async start(options: CodexRunOptions): Promise<void> {
+    if (this.startError) {
+      throw this.startError;
+    }
     this.sessions.add(options.sessionId);
+    this.sessionOptions.set(options.sessionId, options);
   }
 
   async send(sessionId: string, text: string): Promise<void> {
@@ -33,5 +39,24 @@ export class FakeCodexRunner implements CodexRunner {
 
   async stop(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
+    this.sessionOptions.delete(sessionId);
+  }
+
+  async emitOutput(sessionId: string, text: string): Promise<void> {
+    const options = this.sessionOptions.get(sessionId);
+    if (!options) {
+      throw new Error(`Unknown fake session: ${sessionId}`);
+    }
+    options.onOutput(text);
+  }
+
+  async exit(sessionId: string, exitCode: number | undefined): Promise<void> {
+    const options = this.sessionOptions.get(sessionId);
+    if (!options) {
+      throw new Error(`Unknown fake session: ${sessionId}`);
+    }
+    this.sessions.delete(sessionId);
+    this.sessionOptions.delete(sessionId);
+    options.onExit(exitCode);
   }
 }

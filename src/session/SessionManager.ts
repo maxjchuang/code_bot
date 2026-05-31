@@ -75,15 +75,40 @@ export class SessionManager {
       currentSessionId: sessionId,
     };
 
-    await this.runner.start({
-      sessionId,
-      cwd: project.path,
-      args: project.codexArgs,
-      onOutput: (text) => void this.store.appendSessionLog(sessionId, text),
-      onExit: (exitCode) => void this.markExited(session, exitCode),
-    });
     await this.store.saveSession(session);
     await this.store.saveChat(chat);
+    try {
+      await this.runner.start({
+        sessionId,
+        cwd: project.path,
+        args: project.codexArgs,
+        onOutput: (text) => {
+          this.appendSessionOutput(sessionId, text).catch((error) =>
+            this.recordBackgroundError('session.output_persist_failed', error, { sessionId }),
+          );
+        },
+        onExit: (exitCode) => {
+          this.markExited(session, exitCode).catch((error) =>
+            this.recordBackgroundError('session.exit_persist_failed', error, { sessionId, exitCode }),
+          );
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAt = new Date().toISOString();
+      await this.store.saveSession({
+        ...session,
+        status: 'exited',
+        lastSummary: `Failed to start Codex: ${message}`,
+        updatedAt: failedAt,
+      });
+      await this.store.appendEvent({
+        type: 'session.start_failed',
+        at: failedAt,
+        data: { sessionId, projectId: project.id, chatId: input.chatId, reason: message },
+      });
+      return { reply: `Failed to start Codex for project ${project.id}: ${message}` };
+    }
     await this.store.appendEvent({
       type: 'session.created',
       at: now,
@@ -97,6 +122,10 @@ export class SessionManager {
     const chat = await this.store.getChat(chatId);
     if (!chat?.currentSessionId) {
       return { reply: 'No active session. Run /projects and /new <project> first.' };
+    }
+    const session = await this.store.getSession(chat.currentSessionId);
+    if (!session || session.status !== 'running') {
+      return { reply: 'No running session. Run /new <project> first.' };
     }
     await this.runner.send(chat.currentSessionId, text);
     await this.store.appendEvent({
@@ -124,6 +153,19 @@ export class SessionManager {
       status: 'exited',
       exitCode,
       updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
+    await this.store.appendSessionLog(sessionId, text);
+  }
+
+  private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.store.appendEvent({
+      type,
+      at: new Date().toISOString(),
+      data: { ...data, reason: message },
     });
   }
 }
