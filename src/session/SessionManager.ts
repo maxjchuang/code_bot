@@ -70,11 +70,18 @@ export class SessionManager {
     if (!projectId || !resolveProject(this.config, projectId)) {
       return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
     }
+    const existingChat = await this.store.getChat(input.chatId);
+    const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
+    if (currentSession?.status === 'running' && currentSession.projectId !== projectId) {
+      return {
+        reply: `Current session ${currentSession.id} is still running. Run /stop and approve it before switching projects.`,
+      };
+    }
     await this.store.saveChat({
       chatId: input.chatId,
       chatType: input.chatType,
       currentProjectId: projectId,
-      currentSessionId: undefined,
+      currentSessionId: currentSession?.status === 'running' ? currentSession.id : undefined,
     });
     return { reply: `Current project set to ${projectId}.` };
   }

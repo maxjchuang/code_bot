@@ -43,8 +43,17 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const app = createAppFn({ projectRoot, config, store, codexRunner });
   const health = await app.healthCheck();
   if (!health.ok) {
-    logger.error(health.reason);
-    throw new Error(`Health check failed: ${health.reason}`);
+    logger.error(`Codex health check failed: ${health.reason}`);
+    try {
+      await store.appendEvent({
+        type: 'codex.health_check_failed',
+        at: new Date().toISOString(),
+        data: { reason: health.reason },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(`Failed to record Codex health check failure: ${message}`);
+    }
   }
   const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret);
   await gateway.start((message) => app.sessionManager.handleText(message).then((result) => result.reply));

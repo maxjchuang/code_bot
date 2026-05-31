@@ -6,7 +6,10 @@ export function sampleConfig(projectPath: string): BotConfig {
     feishu: { appId: 'cli', appSecret: 'secret' },
     allowedUsers: ['ou_1'],
     allowedChatIds: ['oc_1'],
-    projects: [{ id: 'repo', name: 'Repo', path: projectPath, codexArgs: [] }],
+    projects: [
+      { id: 'repo', name: 'Repo', path: projectPath, codexArgs: [] },
+      { id: 'repo2', name: 'Repo 2', path: projectPath, codexArgs: [] },
+    ],
     output: { directMaxChars: 1800, chunkSize: 1500 },
     codex: { command: 'codex', defaultArgs: [] },
   };

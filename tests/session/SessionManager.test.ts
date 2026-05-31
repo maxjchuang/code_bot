@@ -259,7 +259,7 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('Restrictions:');
     expect(help.reply).toContain('Allowed users: 1');
     expect(help.reply).toContain('Allowed chats: 1');
-    expect(help.reply).toContain('Projects: repo');
+    expect(help.reply).toContain('Projects: repo, repo2');
   });
 
   it('includes session summary and pending approvals in /status', async () => {
@@ -303,21 +303,36 @@ describe('SessionManager', () => {
     expect(status.reply).not.toContain('ap_2');
   });
 
-  it('clears active session when switching to another project with /use', async () => {
+  it('keeps running session current and stoppable when /use targets another project', async () => {
     const root = await createTmpDir();
-    const config: BotConfig = {
-      ...sampleConfig(root),
-      projects: [
-        ...sampleConfig(root).projects,
-        { id: 'repo2', name: 'Repo 2', path: root, codexArgs: [] },
-      ],
-    };
     const store = new FileStateStore(root);
-    const manager = new SessionManager(config, store, new FakeCodexRunner());
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
 
     const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     expect(created.reply).toContain('Created session');
-    expect((await store.getChat('oc_1'))?.currentSessionId).toBeTruthy();
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
+    expect(switched.reply).toBe(`Current session ${sessionId} is still running. Run /stop and approve it before switching projects.`);
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBe(sessionId);
+
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    expect(stopRequested.reply).toContain('Approval required: Stop session');
+    expect(stopRequested.reply).toContain(`Session: ${sessionId}`);
+  });
+
+  it('allows /use to switch projects after the current session exits', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.exit(sessionId, 0);
 
     const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
     expect(switched.reply).toBe('Current project set to repo2.');
@@ -325,9 +340,6 @@ describe('SessionManager', () => {
     const chat = await store.getChat('oc_1');
     expect(chat?.currentProjectId).toBe('repo2');
     expect(chat?.currentSessionId).toBeUndefined();
-
-    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello' });
-    expect(sent.reply).toBe('No active session. Run /projects and /new <project> first.');
   });
 
   it('validates /tail count and rejects invalid values', async () => {

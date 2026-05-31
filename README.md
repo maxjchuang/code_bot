@@ -7,7 +7,7 @@ Local Feishu long-connection bot for controlling Codex CLI sessions in allowlist
 Requirements:
 
 - Node.js 20+
-- Codex CLI installed and available on `PATH`
+- Codex CLI installed and available on `PATH` to start sessions
 - A Feishu/Lark app with bot capability enabled and SDK long-connection credentials
 
 Feishu app setup:
@@ -35,6 +35,7 @@ Edit `.code-bot/config.json`:
 - Keep `output.directMaxChars` and `output.chunkSize` as reserved config schema fields; current Feishu replies do not enforce these limits.
 - Keep `codex.command` as `codex` when the CLI is on `PATH`, or set it to an absolute executable path.
 - Use `codex.defaultArgs` for arguments shared by all sessions, and `projects[].codexArgs` for project-specific Codex arguments.
+- If Codex CLI is missing when the bot starts, the Feishu gateway still connects. Starting a session with `/new` will report the Codex start failure in chat.
 
 Start the bot:
 
