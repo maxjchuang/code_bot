@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.49.0",
-    "node-pty": "^1.0.0"
+    "node-pty": "1.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

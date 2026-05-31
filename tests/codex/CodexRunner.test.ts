@@ -41,6 +41,25 @@ describe('PtyCodexRunner', () => {
     await expect(runner.healthCheck()).resolves.toEqual({ ok: false, reason: 'Command not found: definitely-missing-codex-command' });
   });
 
+  it('can spawn a real pty process', async () => {
+    const runner = new PtyCodexRunner({ command: '/bin/echo', defaultArgs: ['hello'] });
+    const output: string[] = [];
+    const exitCode = await new Promise<number | undefined>((resolve, reject) => {
+      runner
+        .start({
+          sessionId: 'sess-real-pty',
+          cwd: process.cwd(),
+          args: [],
+          onOutput: (text) => output.push(text),
+          onExit: resolve,
+        })
+        .catch(reject);
+    });
+
+    expect(exitCode).toBe(0);
+    expect(output.join('')).toContain('hello');
+  });
+
   it('checks executable for relative command containing slash', async () => {
     const originalCwd = process.cwd();
     const dir = await mkdtemp(join(tmpdir(), 'codex-runner-rel-'));
