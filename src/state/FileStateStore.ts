@@ -6,6 +6,7 @@ type Clock = () => Date;
 
 export class FileStateStore {
   private writeChain: Promise<unknown> = Promise.resolve();
+  private activeWriteDepth = 0;
   private readonly baseDir: string;
 
   constructor(projectRoot: string, private readonly clock: Clock = () => new Date()) {
@@ -33,7 +34,7 @@ export class FileStateStore {
   }
 
   async listSessionsByChat(chatId: string, limit = 10): Promise<SessionRecord[]> {
-    await this.writeChain;
+    await this.waitForPendingWrites();
     const sessionsDir = join(this.baseDir, 'state/sessions');
     let files: string[];
     try {
@@ -68,7 +69,7 @@ export class FileStateStore {
   }
 
   async listPendingApprovalsByChat(chatId: string): Promise<ApprovalRecord[]> {
-    await this.writeChain;
+    await this.waitForPendingWrites();
     const approvalsDir = join(this.baseDir, 'state/approvals');
     let files: string[];
     try {
@@ -107,7 +108,7 @@ export class FileStateStore {
   }
 
   async tailSessionLog(sessionId: string, lineCount: number): Promise<string[]> {
-    await this.writeChain;
+    await this.waitForPendingWrites();
     try {
       const content = await readFile(this.sessionLogPath(sessionId), 'utf8');
       const lines = content.split(/\r?\n/);
@@ -136,6 +137,7 @@ export class FileStateStore {
   }
 
   private async readJson<T>(filePath: string): Promise<T | undefined> {
+    await this.waitForPendingWrites();
     try {
       return JSON.parse(await readFile(filePath, 'utf8')) as T;
     } catch (error) {
@@ -156,8 +158,23 @@ export class FileStateStore {
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.writeChain.then(operation, operation);
+    const run = async () => {
+      this.activeWriteDepth += 1;
+      try {
+        return await operation();
+      } finally {
+        this.activeWriteDepth -= 1;
+      }
+    };
+    const next = this.writeChain.then(run, run);
     this.writeChain = next.catch(() => undefined);
     return next;
+  }
+
+  private async waitForPendingWrites(): Promise<void> {
+    if (this.activeWriteDepth > 0) {
+      return;
+    }
+    await this.writeChain;
   }
 }

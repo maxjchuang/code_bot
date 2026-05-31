@@ -482,7 +482,7 @@ describe('SessionManager', () => {
     expect(session?.exitCode).toBe(0);
   });
 
-  it('preserves exitCode when stop emits exit before stop resolves', async () => {
+  it('preserves exitCode when stop emits fire-and-forget exit callback', async () => {
     class StopExitBeforeResolveRunner implements CodexRunner {
       private optionsBySession = new Map<string, CodexRunOptions>();
       async healthCheck(): Promise<{ ok: true }> {
@@ -500,7 +500,7 @@ describe('SessionManager', () => {
           throw new Error(`Unknown fake session: ${sessionId}`);
         }
         this.optionsBySession.delete(sessionId);
-        await Promise.resolve(options.onExit(143));
+        void Promise.resolve(options.onExit(143));
       }
     }
 
@@ -522,6 +522,7 @@ describe('SessionManager', () => {
     });
     expect(approved.reply).toBe(`Stopped session ${sessionId}.`);
 
+    await new Promise((resolve) => setTimeout(resolve, 10));
     const session = await store.getSession(sessionId);
     expect(session?.status).toBe('interrupted');
     expect(session?.exitCode).toBe(143);
