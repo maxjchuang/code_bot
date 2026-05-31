@@ -1,0 +1,185 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { createTmpDir } from '../helpers/tmp.js';
+import { FileStateStore } from '../../src/state/FileStateStore.js';
+
+describe('FileStateStore', () => {
+  it('writes chat snapshots atomically and reads them back', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    await expect(store.getChat('oc_1')).resolves.toEqual({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+    });
+  });
+
+  it('appends audit events as json lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-05-31T10:00:00.000Z'));
+    await store.appendEvent({ type: 'command.received', at: '2026-05-31T10:00:00.000Z', data: { command: '/status' } });
+
+    const events = await readFile(join(root, '.code-bot/events/2026-05-31.jsonl'), 'utf8');
+
+    expect(events.trim()).toBe(JSON.stringify({
+      type: 'command.received',
+      at: '2026-05-31T10:00:00.000Z',
+      data: { command: '/status' },
+    }));
+  });
+
+  it('stores and tails session logs', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_1', 'one\n');
+    await store.appendSessionLog('session_1', 'two\nthree\n');
+
+    await expect(store.tailSessionLog('session_1', 2)).resolves.toEqual(['two', 'three']);
+  });
+
+  it('rejects unsafe state ids and prevents path traversal', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await expect(
+      store.saveChat({ chatId: '../escape', chatType: 'group', currentProjectId: 'repo' }),
+    ).rejects.toThrow('Invalid state id: ../escape');
+
+    await expect(readFile(join(root, '.code-bot/state/escape.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('waits for queued session log writes before tailing', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    store.appendSessionLog('session_queue', 'one\n');
+    store.appendSessionLog('session_queue', 'two\n');
+    store.appendSessionLog('session_queue', 'three\n');
+
+    await expect(store.tailSessionLog('session_queue', 3)).resolves.toEqual(['one', 'two', 'three']);
+  });
+
+  it('preserves blank lines when tailing session logs', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_blank', 'one\n\ntwo\n');
+
+    await expect(store.tailSessionLog('session_blank', 3)).resolves.toEqual(['one', '', 'two']);
+  });
+
+  it('returns empty pending approvals when approvals directory is missing', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await expect(store.listPendingApprovalsByChat('oc_1')).resolves.toEqual([]);
+  });
+
+  it('lists only pending approvals for the requested chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveApproval({
+      id: 'ap_pending',
+      sessionId: 'session_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'pending',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+    await store.saveApproval({
+      id: 'ap_other_chat',
+      sessionId: 'session_1',
+      chatId: 'oc_2',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'pending',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+    await store.saveApproval({
+      id: 'ap_approved',
+      sessionId: 'session_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'approved',
+      riskSummary: 'approved',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+      resolvedBy: 'ou_1',
+      resolvedAt: '2026-05-31T10:01:00.000Z',
+    });
+
+    await expect(store.listPendingApprovalsByChat('oc_1')).resolves.toMatchObject([{ id: 'ap_pending' }]);
+  });
+
+  it('lists recent sessions for a chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveSession({
+      id: 'sess_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      updatedAt: '2026-05-31T10:01:00.000Z',
+      logPath: store.sessionLogPath('sess_old'),
+    });
+    await store.saveSession({
+      id: 'sess_new',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:02:00.000Z',
+      updatedAt: '2026-05-31T10:03:00.000Z',
+      logPath: store.sessionLogPath('sess_new'),
+    });
+    await store.saveSession({
+      id: 'sess_other_chat',
+      chatId: 'oc_2',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:04:00.000Z',
+      updatedAt: '2026-05-31T10:05:00.000Z',
+      logPath: store.sessionLogPath('sess_other_chat'),
+    });
+
+    await expect(store.listSessionsByChat('oc_1')).resolves.toMatchObject([{ id: 'sess_new' }, { id: 'sess_old' }]);
+  });
+
+  it('lists all persisted sessions and chats', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: 'sess_1' });
+    await store.saveChat({ chatId: 'oc_2', chatType: 'group', currentProjectId: 'repo2' });
+    await store.saveSession({
+      id: 'sess_1',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      updatedAt: '2026-05-31T10:01:00.000Z',
+      logPath: store.sessionLogPath('sess_1'),
+    });
+    await store.saveSession({
+      id: 'sess_2',
+      chatId: 'oc_2',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:02:00.000Z',
+      updatedAt: '2026-05-31T10:03:00.000Z',
+      logPath: store.sessionLogPath('sess_2'),
+    });
+
+    await expect(store.listChats()).resolves.toMatchObject([{ chatId: 'oc_1' }, { chatId: 'oc_2' }]);
+    await expect(store.listSessions()).resolves.toMatchObject([{ id: 'sess_2' }, { id: 'sess_1' }]);
+  });
+});

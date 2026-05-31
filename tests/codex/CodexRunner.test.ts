@@ -1,0 +1,140 @@
+import { describe, expect, it, vi } from 'vitest';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createCodexSessionId, PtyCodexRunner } from '../../src/codex/CodexRunner.js';
+
+describe('CodexRunner helpers', () => {
+  it('creates stable prefixed session ids', () => {
+    expect(createCodexSessionId('abc123').startsWith('sess_abc123_')).toBe(true);
+  });
+});
+
+describe('PtyCodexRunner', () => {
+  function createFakeTerm() {
+    const writes: string[] = [];
+    const kill = vi.fn();
+    let onDataHandler: ((text: string) => void) | undefined;
+    let onExitHandler: ((event: { exitCode: number }) => void) | undefined;
+    return {
+      term: {
+        write: (text: string) => {
+          writes.push(text);
+        },
+        kill,
+        onData: (handler: (text: string) => void) => {
+          onDataHandler = handler;
+        },
+        onExit: (handler: (event: { exitCode: number }) => void) => {
+          onExitHandler = handler;
+        },
+      },
+      writes,
+      kill,
+      emitData: (text: string) => onDataHandler?.(text),
+      emitExit: (exitCode: number) => onExitHandler?.({ exitCode }),
+    };
+  }
+
+  it('reports missing codex command through health check', async () => {
+    const runner = new PtyCodexRunner({ command: 'definitely-missing-codex-command', defaultArgs: [] });
+    await expect(runner.healthCheck()).resolves.toEqual({ ok: false, reason: 'Command not found: definitely-missing-codex-command' });
+  });
+
+  it('checks executable for relative command containing slash', async () => {
+    const originalCwd = process.cwd();
+    const dir = await mkdtemp(join(tmpdir(), 'codex-runner-rel-'));
+    const binDir = join(dir, 'bin');
+    const cmdPath = join(binDir, 'codex');
+
+    try {
+      await mkdir(binDir, { recursive: true });
+      await writeFile(cmdPath, '#!/bin/sh\nexit 0\n');
+      await chmod(cmdPath, 0o755);
+      process.chdir(dir);
+
+      const runner = new PtyCodexRunner({ command: './bin/codex', defaultArgs: [] });
+      await expect(runner.healthCheck()).resolves.toEqual({ ok: true });
+    } finally {
+      process.chdir(originalCwd);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('starts session with expected spawn args and wires callbacks', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner(
+      { command: 'codex', defaultArgs: ['run', '--json'] },
+      { spawn } as any,
+    );
+    const onOutput = vi.fn();
+    const onExit = vi.fn();
+
+    await runner.start({
+      sessionId: 'sess-1',
+      cwd: '/tmp/project',
+      args: ['--model', 'gpt-5'],
+      onOutput,
+      onExit,
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      ['run', '--json', '--model', 'gpt-5'],
+      expect.objectContaining({
+        name: 'xterm-256color',
+        cols: 120,
+        rows: 40,
+        cwd: '/tmp/project',
+        env: process.env,
+      }),
+    );
+
+    fake.emitData('hello');
+    expect(onOutput).toHaveBeenCalledWith('hello');
+
+    fake.emitExit(7);
+    expect(onExit).toHaveBeenCalledWith(7);
+    await expect(runner.send('sess-1', 'ignored')).rejects.toThrow('Codex session is not running: sess-1');
+  });
+
+  it('rejects duplicate start for same session and only spawns once', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);
+    const options = {
+      sessionId: 'sess-dup',
+      cwd: process.cwd(),
+      args: [],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    };
+
+    await runner.start(options);
+    await expect(runner.start(options)).rejects.toThrow('Codex session is already running: sess-dup');
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends and stops process lifecycle', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);
+
+    await runner.start({
+      sessionId: 'sess-send-stop',
+      cwd: process.cwd(),
+      args: [],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    await runner.send('sess-send-stop', 'ping');
+    expect(fake.writes).toEqual(['ping\r']);
+
+    await runner.stop('sess-send-stop');
+    expect(fake.kill).toHaveBeenCalledTimes(1);
+    await expect(runner.send('sess-send-stop', 'again')).rejects.toThrow('Codex session is not running: sess-send-stop');
+  });
+});

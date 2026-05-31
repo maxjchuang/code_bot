@@ -1,0 +1,69 @@
+import type { BotConfig } from '../../src/domain/types.js';
+import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
+
+export function sampleConfig(projectPath: string): BotConfig {
+  return {
+    feishu: { appId: 'cli', appSecret: 'secret' },
+    allowedUsers: ['ou_1'],
+    allowedChatIds: ['oc_1'],
+    projects: [
+      { id: 'repo', name: 'Repo', path: projectPath, codexArgs: [] },
+      { id: 'repo2', name: 'Repo 2', path: projectPath, codexArgs: [] },
+    ],
+    output: { directMaxChars: 1800, chunkSize: 1500 },
+    codex: { command: 'codex', defaultArgs: [] },
+  };
+}
+
+export class FakeCodexRunner implements CodexRunner {
+  readonly sentMessages: string[] = [];
+  startError?: Error;
+  private readonly sessions = new Set<string>();
+  private readonly sessionOptions = new Map<string, CodexRunOptions>();
+
+  async healthCheck(): Promise<{ ok: true }> {
+    return { ok: true };
+  }
+
+  async start(options: CodexRunOptions): Promise<void> {
+    if (this.startError) {
+      throw this.startError;
+    }
+    this.sessions.add(options.sessionId);
+    this.sessionOptions.set(options.sessionId, options);
+  }
+
+  async send(sessionId: string, text: string): Promise<void> {
+    if (!this.sessions.has(sessionId)) {
+      throw new Error(`Unknown fake session: ${sessionId}`);
+    }
+    this.sentMessages.push(text);
+  }
+
+  async stop(sessionId: string): Promise<void> {
+    this.sessions.delete(sessionId);
+    this.sessionOptions.delete(sessionId);
+  }
+
+  async emitOutput(sessionId: string, text: string): Promise<void> {
+    const options = this.sessionOptions.get(sessionId);
+    if (!options) {
+      throw new Error(`Unknown fake session: ${sessionId}`);
+    }
+    await Promise.resolve(options.onOutput(text));
+  }
+
+  async exit(sessionId: string, exitCode: number | undefined): Promise<void> {
+    const options = this.sessionOptions.get(sessionId);
+    if (!options) {
+      throw new Error(`Unknown fake session: ${sessionId}`);
+    }
+    this.sessions.delete(sessionId);
+    this.sessionOptions.delete(sessionId);
+    await Promise.resolve(options.onExit(exitCode));
+  }
+
+  dropSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+}

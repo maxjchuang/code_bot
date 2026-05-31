@@ -1,0 +1,431 @@
+import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
+import { ApprovalManager } from '../approvals/ApprovalManager.js';
+import { parseIncomingText } from '../commands/CommandRouter.js';
+import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { formatTail } from '../output/OutputFormatter.js';
+import { FileStateStore } from '../state/FileStateStore.js';
+import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
+
+export interface IncomingBotText {
+  chatId: string;
+  chatType: ChatType;
+  userId: string;
+  text: string;
+}
+
+export interface BotTextResult {
+  reply: string;
+}
+
+export class SessionManager {
+  private readonly approvalManager: ApprovalManager;
+  private readonly chatQueues = new Map<string, Promise<unknown>>();
+
+  constructor(
+    private readonly config: BotConfig,
+    private readonly store: FileStateStore,
+    private readonly runner: CodexRunner,
+  ) {
+    this.approvalManager = new ApprovalManager(store);
+  }
+
+  async handleText(input: IncomingBotText): Promise<BotTextResult> {
+    return this.withChatQueue(input.chatId, () => this.handleTextQueued(input));
+  }
+
+  private async handleTextQueued(input: IncomingBotText): Promise<BotTextResult> {
+    if (!isAuthorizedMessage(this.config, input)) {
+      return { reply: 'You are not allowed to control this bot.' };
+    }
+
+    const parsed = parseIncomingText(input.text);
+    if (parsed.kind === 'message') {
+      return this.sendToCurrentSession(input.chatId, parsed.text);
+    }
+
+    switch (parsed.name) {
+      case 'help':
+        return { reply: this.helpText() };
+      case 'projects':
+        return { reply: this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n') };
+      case 'use':
+        return this.useProject(input, parsed.args[0]);
+      case 'new':
+        return this.createSession(input, parsed.args[0]);
+      case 'send':
+        return this.sendToCurrentSession(input.chatId, parsed.args[0] ?? '');
+      case 'status':
+        return this.status(input.chatId);
+      case 'tail':
+        return this.tail(input.chatId, parsed.args[0]);
+      case 'stop':
+        return this.stopCurrentSession(input);
+      case 'sessions':
+        return this.sessions(input.chatId);
+      case 'approve':
+        return this.resolveApproval(input.chatId, parsed.args[0], 'approved', input.userId);
+      case 'reject':
+        return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
+      default:
+        return { reply: `Unknown command: /${parsed.name}` };
+    }
+  }
+
+  private async withChatQueue<T>(chatId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.chatQueues.get(chatId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(action);
+    const chain = current.catch(() => undefined);
+    this.chatQueues.set(chatId, chain);
+
+    try {
+      return await current;
+    } finally {
+      if (this.chatQueues.get(chatId) === chain) {
+        this.chatQueues.delete(chatId);
+      }
+    }
+  }
+
+  private async useProject(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
+    if (!projectId || !resolveProject(this.config, projectId)) {
+      return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
+    }
+    const existingChat = await this.store.getChat(input.chatId);
+    const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
+    if (currentSession && isActiveSession(currentSession) && currentSession.projectId !== projectId) {
+      return {
+        reply: `Current session ${currentSession.id} is still running. Run /stop and approve it before switching projects.`,
+      };
+    }
+    await this.store.saveChat({
+      chatId: input.chatId,
+      chatType: input.chatType,
+      currentProjectId: projectId,
+      currentSessionId: currentSession && isActiveSession(currentSession) ? currentSession.id : undefined,
+    });
+    return { reply: `Current project set to ${projectId}.` };
+  }
+
+  private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
+    const previousChat = await this.store.getChat(input.chatId);
+    const selectedProjectId = projectId ?? previousChat?.currentProjectId;
+    if (!selectedProjectId) {
+      return { reply: 'Choose a project with /projects and /new <project>.' };
+    }
+    const project = resolveProject(this.config, selectedProjectId);
+    if (!project) {
+      return { reply: `Unknown project: ${selectedProjectId}` };
+    }
+    const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
+    if (previousSession && isActiveSession(previousSession)) {
+      return {
+        reply: `Current session ${previousSession.id} is still running. Run /stop and approve it before starting a new session.`,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const sessionId = createCodexSessionId();
+    const session: SessionRecord = {
+      id: sessionId,
+      chatId: input.chatId,
+      projectId: project.id,
+      status: 'running',
+      createdBy: input.userId,
+      createdAt: now,
+      updatedAt: now,
+      logPath: this.store.sessionLogPath(sessionId),
+    };
+    await this.store.saveSession(session);
+    try {
+      await this.runner.start({
+        sessionId,
+        cwd: project.path,
+        args: project.codexArgs,
+        onOutput: (text) => {
+          return this.appendSessionOutput(sessionId, text).catch((error) =>
+            this.recordBackgroundError('session.output_persist_failed', error, { sessionId }),
+          );
+        },
+        onExit: (exitCode) => {
+          return this.markExited(sessionId, exitCode).catch((error) =>
+            this.recordBackgroundError('session.exit_persist_failed', error, { sessionId, exitCode }),
+          );
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAt = new Date().toISOString();
+      await this.store.saveSession({
+        ...session,
+        status: 'exited',
+        lastSummary: `Failed to start Codex: ${message}`,
+        updatedAt: failedAt,
+      });
+      await this.store.appendEvent({
+        type: 'session.start_failed',
+        at: failedAt,
+        data: { sessionId, projectId: project.id, chatId: input.chatId, reason: message },
+      });
+      return { reply: `Failed to start Codex for project ${project.id}: ${message}` };
+    }
+    await this.store.appendEvent({
+      type: 'session.created',
+      at: now,
+      data: { sessionId, projectId: project.id, chatId: input.chatId },
+    });
+    const chat: ChatContext = {
+      chatId: input.chatId,
+      chatType: input.chatType,
+      currentProjectId: project.id,
+      currentSessionId: sessionId,
+    };
+    await this.store.saveChat(chat);
+
+    return { reply: `Created session ${sessionId} for project ${project.id}.` };
+  }
+
+  private async sendToCurrentSession(chatId: string, text: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session. Run /projects and /new <project> first.' };
+    }
+    const session = await this.store.getSession(chat.currentSessionId);
+    if (!session || session.status !== 'running') {
+      return { reply: 'No running session. Run /new <project> first.' };
+    }
+    try {
+      await this.runner.send(chat.currentSessionId, text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAt = new Date().toISOString();
+      await this.store.updateSession(chat.currentSessionId, (latest) => {
+        if (!isActiveSession(latest)) {
+          return latest;
+        }
+        return {
+          ...latest,
+          status: 'interrupted',
+          lastSummary: `Failed to send to Codex: ${message}`,
+          updatedAt: failedAt,
+        };
+      });
+      await this.store.appendEvent({
+        type: 'session.send_failed',
+        at: failedAt,
+        data: { sessionId: chat.currentSessionId, chatId, reason: message },
+      });
+      return { reply: 'No running session. Run /new <project> first.' };
+    }
+    await this.store.appendEvent({
+      type: 'session.input',
+      at: new Date().toISOString(),
+      data: { sessionId: chat.currentSessionId },
+    });
+    return { reply: `Sent to Codex session ${chat.currentSessionId}.` };
+  }
+
+  private async status(chatId: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(chatId);
+    const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    const pendingApprovals = await this.store.listPendingApprovalsByChat(chatId);
+    return {
+      reply: [
+        `Project: ${chat?.currentProjectId ?? 'none'}`,
+        `Session: ${chat?.currentSessionId ?? 'none'}`,
+        `Status: ${session?.status ?? 'none'}`,
+        `Summary: ${session?.lastSummary ?? 'none'}`,
+        `Pending approvals: ${pendingApprovals.length > 0 ? pendingApprovals.map((approval) => approval.id).join(', ') : 'none'}`,
+      ].join('\n'),
+    };
+  }
+
+  private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session.' };
+    }
+
+    let count = 80;
+    if (requestedCount !== undefined) {
+      if (!/^[1-9]\d*$/.test(requestedCount)) {
+        return { reply: 'Invalid tail count.' };
+      }
+      count = Number.parseInt(requestedCount, 10);
+    }
+    const lines = await this.store.tailSessionLog(chat.currentSessionId, count);
+    return { reply: formatTail(lines) };
+  }
+
+  private async stopCurrentSession(input: IncomingBotText): Promise<BotTextResult> {
+    const chat = await this.store.getChat(input.chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session.' };
+    }
+    const session = await this.store.getSession(chat.currentSessionId);
+    if (!session || session.status !== 'running') {
+      await this.store.saveChat({
+        chatId: input.chatId,
+        chatType: input.chatType,
+        currentProjectId: chat.currentProjectId,
+        currentSessionId: undefined,
+      });
+      return { reply: 'No running session.' };
+    }
+    const approval = await this.approvalManager.requestApproval({
+      sessionId: session.id,
+      chatId: input.chatId,
+      requestedBy: input.userId,
+      action: 'stop_session',
+      riskSummary: `Stop session ${session.id}`,
+      ttlMs: 5 * 60 * 1000,
+    });
+    return { reply: this.approvalManager.buildTextFallback(approval) };
+  }
+
+  private async sessions(chatId: string): Promise<BotTextResult> {
+    const sessions = await this.store.listSessionsByChat(chatId, 10);
+    if (sessions.length === 0) {
+      return { reply: 'No sessions for this chat yet. Run /new <project> to start one.' };
+    }
+    return {
+      reply: sessions.map((session) => `${session.id} | ${session.projectId} | ${session.status} | ${session.updatedAt}`).join('\n'),
+    };
+  }
+
+  private async resolveApproval(chatId: string, approvalId: string | undefined, status: 'approved' | 'rejected', userId: string): Promise<BotTextResult> {
+    if (!approvalId) {
+      const command = status === 'approved' ? '/approve' : '/reject';
+      return { reply: `Usage: ${command} <id>` };
+    }
+    try {
+      const resolved = await this.approvalManager.resolve(approvalId, status, userId, chatId);
+      if (status === 'approved' && (resolved.action === 'stop_session' || resolved.riskSummary === `Stop session ${resolved.sessionId}`)) {
+        return this.executeApprovedStop(resolved.sessionId, userId);
+      }
+      const action = status === 'approved' ? 'Approved' : 'Rejected';
+      return { reply: `${action} approval ${resolved.id}.` };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { reply: message };
+    }
+  }
+
+  private async executeApprovedStop(sessionId: string, userId: string): Promise<BotTextResult> {
+    const initialSession = await this.store.getSession(sessionId);
+    if (!initialSession) {
+      return { reply: `Session not found: ${sessionId}` };
+    }
+    if (!isActiveSession(initialSession)) {
+      return { reply: `Session ${sessionId} is already ${initialSession.status}.` };
+    }
+    const stoppingAt = new Date().toISOString();
+    let shouldStop = false;
+    const preStopSession = await this.store.updateSession(sessionId, (latest) => {
+      if (!isActiveSession(latest)) {
+        return latest;
+      }
+      shouldStop = true;
+      return {
+        ...latest,
+        status: 'interrupted',
+        stopRequested: true,
+        lastSummary: latest.lastSummary ?? `Stopped by ${userId}`,
+        updatedAt: stoppingAt,
+      };
+    });
+    if (!preStopSession) {
+      return { reply: `Session not found: ${sessionId}` };
+    }
+    if (!shouldStop) {
+      return { reply: `Session ${sessionId} is already ${preStopSession.status}.` };
+    }
+
+    try {
+      await this.runner.stop(sessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.store.updateSession(sessionId, (latest) => ({
+        ...latest,
+        stopRequested: undefined,
+        updatedAt: new Date().toISOString(),
+      }));
+      await this.store.appendEvent({
+        type: 'session.stop_failed',
+        at: new Date().toISOString(),
+        data: { sessionId, chatId: initialSession.chatId, reason: message },
+      });
+      return { reply: `Failed to stop session ${sessionId}: ${message}` };
+    }
+    const stoppedAt = new Date().toISOString();
+    await this.store.updateSession(sessionId, (latest) => ({
+      ...latest,
+      status: 'interrupted',
+      stopRequested: true,
+      lastSummary: latest.lastSummary ?? preStopSession.lastSummary,
+      updatedAt: stoppedAt,
+    }));
+    await this.store.appendEvent({
+      type: 'session.stopped',
+      at: stoppedAt,
+      data: { sessionId, chatId: initialSession.chatId, userId },
+    });
+
+    const chat = await this.store.getChat(initialSession.chatId);
+    if (chat?.currentSessionId === sessionId) {
+      await this.store.saveChat({
+        chatId: chat.chatId,
+        chatType: chat.chatType,
+        currentProjectId: chat.currentProjectId,
+        currentSessionId: undefined,
+      });
+    }
+    return { reply: `Stopped session ${sessionId}.` };
+  }
+
+  private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
+    const latest = await this.store.getSession(sessionId);
+    if (!latest) {
+      await this.store.appendEvent({
+        type: 'session.exit_missing_record',
+        at: new Date().toISOString(),
+        data: { sessionId, exitCode },
+      });
+      return;
+    }
+    const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
+    await this.store.saveSession({
+      ...latest,
+      status: nextStatus,
+      exitCode,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
+    await this.store.appendSessionLog(sessionId, text);
+  }
+
+  private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    await this.store.appendEvent({
+      type,
+      at: new Date().toISOString(),
+      data: { ...data, reason: message },
+    });
+  }
+
+  private helpText(): string {
+    const commands = '/help\n/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const restrictions = [
+      'Restrictions:',
+      `- Allowed users: ${this.config.allowedUsers.length}`,
+      `- Allowed chats: ${this.config.allowedChatIds.length}`,
+      `- Projects: ${this.config.projects.map((project) => project.id).join(', ') || 'none'}`,
+    ].join('\n');
+    return `${commands}\n\n${restrictions}`;
+  }
+}
+
+function isActiveSession(session: SessionRecord): boolean {
+  return session.status === 'running' || session.status === 'starting';
+}
