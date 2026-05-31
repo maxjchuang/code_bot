@@ -53,6 +53,36 @@ function createGatewayHarness() {
 }
 
 describe('LarkLongConnectionGateway', () => {
+  it('handles text event and sends onMessage reply to original chat', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => 'bot reply');
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello bot' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'hello bot',
+    });
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        content: JSON.stringify({ text: 'bot reply' }),
+      },
+    ]);
+  });
+
   it('ignores non-text message events', async () => {
     const harness = createGatewayHarness();
     const onMessage = vi.fn(async () => 'reply');
