@@ -6,6 +6,7 @@ export type CommandName =
   | 'send'
   | 'status'
   | 'tail'
+  | 'rawtail'
   | 'stop'
   | 'sessions'
   | 'approve'
