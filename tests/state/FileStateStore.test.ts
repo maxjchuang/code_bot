@@ -152,4 +152,34 @@ describe('FileStateStore', () => {
 
     await expect(store.listSessionsByChat('oc_1')).resolves.toMatchObject([{ id: 'sess_new' }, { id: 'sess_old' }]);
   });
+
+  it('lists all persisted sessions and chats', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: 'sess_1' });
+    await store.saveChat({ chatId: 'oc_2', chatType: 'group', currentProjectId: 'repo2' });
+    await store.saveSession({
+      id: 'sess_1',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      updatedAt: '2026-05-31T10:01:00.000Z',
+      logPath: store.sessionLogPath('sess_1'),
+    });
+    await store.saveSession({
+      id: 'sess_2',
+      chatId: 'oc_2',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:02:00.000Z',
+      updatedAt: '2026-05-31T10:03:00.000Z',
+      logPath: store.sessionLogPath('sess_2'),
+    });
+
+    await expect(store.listChats()).resolves.toMatchObject([{ chatId: 'oc_1' }, { chatId: 'oc_2' }]);
+    await expect(store.listSessions()).resolves.toMatchObject([{ id: 'sess_2' }, { id: 'sess_1' }]);
+  });
 });

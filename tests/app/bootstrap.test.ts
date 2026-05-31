@@ -50,4 +50,53 @@ describe('bootstrap', () => {
     expect(content).toContain('"type":"codex.health_check_failed"');
     expect(content).toContain('"reason":"bad health"');
   });
+
+  it('recovers stale running sessions before starting gateway', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveSession({
+      id: 'sess_running',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      updatedAt: '2026-05-31T10:01:00.000Z',
+      logPath: store.sessionLogPath('sess_running'),
+    });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      currentSessionId: 'sess_running',
+    });
+
+    const gatewayStart = vi.fn(async () => {
+      await expect(store.getSession('sess_running')).resolves.toMatchObject({ status: 'interrupted' });
+      await expect(store.getChat('oc_1')).resolves.toMatchObject({ currentProjectId: 'repo' });
+      expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+    });
+    const createGateway = vi.fn(() => ({ start: gatewayStart, sendText: async () => undefined }));
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => config,
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway,
+    });
+
+    expect(gatewayStart).toHaveBeenCalledOnce();
+    const session = await store.getSession('sess_running');
+    expect(session?.status).toBe('interrupted');
+    expect(session?.lastSummary).toBe('Interrupted during bot restart recovery.');
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentSessionId).toBeUndefined();
+
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+    const content = await readFile(eventPath, 'utf8');
+    expect(content).toContain('"type":"session.recovered_interrupted"');
+    expect(content).toContain('"sessionId":"sess_running"');
+  });
 });

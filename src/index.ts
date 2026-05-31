@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config/loadConfig.js';
 import { FileStateStore } from './state/FileStateStore.js';
 import { PtyCodexRunner } from './codex/CodexRunner.js';
-import { createApp } from './app/createApp.js';
+import { createApp, recoverStartupState } from './app/createApp.js';
 import { LarkLongConnectionGateway, type FeishuGateway } from './feishu/FeishuGateway.js';
 import type { BotConfig } from './domain/types.js';
 import type { FileStateStore as FileStateStoreType } from './state/FileStateStore.js';
@@ -23,6 +23,7 @@ export interface BootstrapDeps {
   }) => {
     sessionManager: SessionManager;
     healthCheck: () => Promise<{ ok: true } | { ok: false; reason: string }>;
+    recoverStartupState?: () => Promise<void>;
   };
   createGateway?: (appId: string, appSecret: string) => FeishuGateway;
   logger?: Pick<typeof console, 'error'>;
@@ -55,6 +56,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
       logger.error(`Failed to record Codex health check failure: ${message}`);
     }
   }
+  await (app.recoverStartupState?.() ?? recoverStartupState(store));
   const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret);
   await gateway.start((message) => app.sessionManager.handleText(message).then((result) => result.reply));
 }

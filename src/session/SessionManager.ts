@@ -72,7 +72,7 @@ export class SessionManager {
     }
     const existingChat = await this.store.getChat(input.chatId);
     const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
-    if (currentSession?.status === 'running' && currentSession.projectId !== projectId) {
+    if (currentSession && isActiveSession(currentSession) && currentSession.projectId !== projectId) {
       return {
         reply: `Current session ${currentSession.id} is still running. Run /stop and approve it before switching projects.`,
       };
@@ -81,7 +81,7 @@ export class SessionManager {
       chatId: input.chatId,
       chatType: input.chatType,
       currentProjectId: projectId,
-      currentSessionId: currentSession?.status === 'running' ? currentSession.id : undefined,
+      currentSessionId: currentSession && isActiveSession(currentSession) ? currentSession.id : undefined,
     });
     return { reply: `Current project set to ${projectId}.` };
   }
@@ -95,6 +95,12 @@ export class SessionManager {
     const project = resolveProject(this.config, selectedProjectId);
     if (!project) {
       return { reply: `Unknown project: ${selectedProjectId}` };
+    }
+    const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
+    if (previousSession && isActiveSession(previousSession)) {
+      return {
+        reply: `Current session ${previousSession.id} is still running. Run /stop and approve it before starting a new session.`,
+      };
     }
 
     const now = new Date().toISOString();
@@ -378,4 +384,8 @@ export class SessionManager {
     ].join('\n');
     return `${commands}\n\n${restrictions}`;
   }
+}
+
+function isActiveSession(session: SessionRecord): boolean {
+  return session.status === 'running' || session.status === 'starting';
 }

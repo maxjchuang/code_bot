@@ -24,6 +24,11 @@ export class FileStateStore {
     return this.readJson<ChatContext>(join(this.baseDir, 'state/chats', `${id}.json`));
   }
 
+  async listChats(): Promise<ChatContext[]> {
+    const chats = await this.readJsonDirectory<ChatContext>(join(this.baseDir, 'state/chats'));
+    return chats.sort((a, b) => a.chatId.localeCompare(b.chatId));
+  }
+
   async saveSession(session: SessionRecord): Promise<void> {
     const id = this.safeFileName(session.id);
     await this.writeJson(join(this.baseDir, 'state/sessions', `${id}.json`), session);
@@ -32,6 +37,11 @@ export class FileStateStore {
   async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     const id = this.safeFileName(sessionId);
     return this.readJson<SessionRecord>(join(this.baseDir, 'state/sessions', `${id}.json`));
+  }
+
+  async listSessions(): Promise<SessionRecord[]> {
+    const sessions = await this.readJsonDirectory<SessionRecord>(join(this.baseDir, 'state/sessions'));
+    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
@@ -49,26 +59,9 @@ export class FileStateStore {
   }
 
   async listSessionsByChat(chatId: string, limit = 10): Promise<SessionRecord[]> {
-    await this.waitForPendingWrites();
-    const sessionsDir = join(this.baseDir, 'state/sessions');
-    let files: string[];
-    try {
-      files = await readdir(sessionsDir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return [];
-      }
-      throw error;
-    }
-
-    const sessions = await Promise.all(
-      files
-        .filter((fileName) => fileName.endsWith('.json'))
-        .map(async (fileName) => this.readJson<SessionRecord>(join(sessionsDir, fileName))),
-    );
-
+    const sessions = await this.listSessions();
     return sessions
-      .filter((session): session is SessionRecord => Boolean(session && session.chatId === chatId))
+      .filter((session) => session.chatId === chatId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, limit);
   }
@@ -161,6 +154,24 @@ export class FileStateStore {
       }
       throw error;
     }
+  }
+
+  private async readJsonDirectory<T>(directoryPath: string): Promise<T[]> {
+    await this.waitForPendingWrites();
+    let files: string[];
+    try {
+      files = await readdir(directoryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+
+    const records: Array<T | undefined> = await Promise.all(
+      files.filter((fileName) => fileName.endsWith('.json')).map(async (fileName) => this.readJson<T>(join(directoryPath, fileName))),
+    );
+    return records.filter((record): record is T => Boolean(record));
   }
 
   private async writeJson(filePath: string, value: unknown): Promise<void> {

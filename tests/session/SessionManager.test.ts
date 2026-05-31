@@ -108,7 +108,7 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
-  it('keeps previous chat currentSessionId when replacement start fails', async () => {
+  it('keeps previous chat currentSessionId when replacement start fails after prior session exits', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -122,6 +122,7 @@ describe('SessionManager', () => {
     });
     expect(first.reply).toContain('Created session');
     const originalSessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.exit(originalSessionId, 0);
 
     runner.startError = new Error('spawn failed');
     const second = await manager.handleText({
@@ -134,15 +135,82 @@ describe('SessionManager', () => {
 
     const chatAfterFailure = await store.getChat('oc_1');
     expect(chatAfterFailure?.currentSessionId).toBe(originalSessionId);
+  });
 
-    const sent = await manager.handleText({
+  it('rejects /new repo2 while the current session is running', async () => {
+    class CountingRunner extends FakeCodexRunner {
+      readonly starts: CodexRunOptions[] = [];
+
+      async start(options: CodexRunOptions): Promise<void> {
+        this.starts.push(options);
+        await super.start(options);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new CountingRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const first = await manager.handleText({
       chatId: 'oc_1',
       chatType: 'group',
       userId: 'ou_1',
-      text: 'still works',
+      text: '/new repo',
     });
-    expect(sent.reply).toContain('Sent to Codex');
-    expect(runner.sentMessages).toEqual(['still works']);
+    expect(first.reply).toContain('Created session');
+    const originalSessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const second = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo2',
+    });
+    expect(second.reply).toBe(`Current session ${originalSessionId} is still running. Run /stop and approve it before starting a new session.`);
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBe(originalSessionId);
+    expect(runner.starts).toHaveLength(1);
+  });
+
+  it('rejects /new repo while the current session is running', async () => {
+    class CountingRunner extends FakeCodexRunner {
+      readonly starts: CodexRunOptions[] = [];
+
+      async start(options: CodexRunOptions): Promise<void> {
+        this.starts.push(options);
+        await super.start(options);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new CountingRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const first = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    expect(first.reply).toContain('Created session');
+    const originalSessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const second = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    expect(second.reply).toBe(`Current session ${originalSessionId} is still running. Run /stop and approve it before starting a new session.`);
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBe(originalSessionId);
+    expect(runner.starts).toHaveLength(1);
   });
 
   it('handles runner send failure by marking interrupted and returning no-running-session', async () => {
