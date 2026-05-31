@@ -13,27 +13,33 @@ export class FileStateStore {
   }
 
   async saveChat(chat: ChatContext): Promise<void> {
-    await this.writeJson(join(this.baseDir, 'state/chats', `${chat.chatId}.json`), chat);
+    const id = this.safeFileName(chat.chatId);
+    await this.writeJson(join(this.baseDir, 'state/chats', `${id}.json`), chat);
   }
 
   async getChat(chatId: string): Promise<ChatContext | undefined> {
-    return this.readJson<ChatContext>(join(this.baseDir, 'state/chats', `${chatId}.json`));
+    const id = this.safeFileName(chatId);
+    return this.readJson<ChatContext>(join(this.baseDir, 'state/chats', `${id}.json`));
   }
 
   async saveSession(session: SessionRecord): Promise<void> {
-    await this.writeJson(join(this.baseDir, 'state/sessions', `${session.id}.json`), session);
+    const id = this.safeFileName(session.id);
+    await this.writeJson(join(this.baseDir, 'state/sessions', `${id}.json`), session);
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | undefined> {
-    return this.readJson<SessionRecord>(join(this.baseDir, 'state/sessions', `${sessionId}.json`));
+    const id = this.safeFileName(sessionId);
+    return this.readJson<SessionRecord>(join(this.baseDir, 'state/sessions', `${id}.json`));
   }
 
   async saveApproval(approval: ApprovalRecord): Promise<void> {
-    await this.writeJson(join(this.baseDir, 'state/approvals', `${approval.id}.json`), approval);
+    const id = this.safeFileName(approval.id);
+    await this.writeJson(join(this.baseDir, 'state/approvals', `${id}.json`), approval);
   }
 
   async getApproval(approvalId: string): Promise<ApprovalRecord | undefined> {
-    return this.readJson<ApprovalRecord>(join(this.baseDir, 'state/approvals', `${approvalId}.json`));
+    const id = this.safeFileName(approvalId);
+    return this.readJson<ApprovalRecord>(join(this.baseDir, 'state/approvals', `${id}.json`));
   }
 
   async appendEvent(event: BotEvent): Promise<void> {
@@ -54,9 +60,14 @@ export class FileStateStore {
   }
 
   async tailSessionLog(sessionId: string, lineCount: number): Promise<string[]> {
+    await this.writeChain;
     try {
       const content = await readFile(this.sessionLogPath(sessionId), 'utf8');
-      return content.split(/\r?\n/).filter((line) => line.length > 0).slice(-lineCount);
+      const lines = content.split(/\r?\n/);
+      if (lines[lines.length - 1] === '') {
+        lines.pop();
+      }
+      return lines.slice(-lineCount);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return [];
@@ -66,7 +77,15 @@ export class FileStateStore {
   }
 
   sessionLogPath(sessionId: string): string {
-    return join(this.baseDir, 'logs/sessions', `${sessionId}.log`);
+    const id = this.safeFileName(sessionId);
+    return join(this.baseDir, 'logs/sessions', `${id}.log`);
+  }
+
+  private safeFileName(id: string): string {
+    if (!/^[A-Za-z0-9_.-]+$/.test(id) || id === '.' || id === '..') {
+      throw new Error(`Invalid state id: ${id}`);
+    }
+    return id;
   }
 
   private async readJson<T>(filePath: string): Promise<T | undefined> {
