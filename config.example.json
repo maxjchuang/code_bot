@@ -1,0 +1,31 @@
+{
+  "feishu": {
+    "appId": "cli_your_feishu_app_id",
+    "appSecret": "your_feishu_app_secret"
+  },
+  "allowedUsers": [
+    "ou_allowed_user_open_id"
+  ],
+  "allowedChatIds": [
+    "oc_allowed_chat_id"
+  ],
+  "projects": [
+    {
+      "id": "code-bot",
+      "name": "Code Bot",
+      "path": "/absolute/path/to/your/project",
+      "codexArgs": [
+        "--ask-for-approval",
+        "on-request"
+      ]
+    }
+  ],
+  "output": {
+    "directMaxChars": 1800,
+    "chunkSize": 1500
+  },
+  "codex": {
+    "command": "codex",
+    "defaultArgs": []
+  }
+}
