@@ -25,7 +25,10 @@ export function createCodexSessionId(seed: string = Math.random().toString(36).s
 export class PtyCodexRunner implements CodexRunner {
   private readonly processes = new Map<string, pty.IPty>();
 
-  constructor(private readonly config: { command: string; defaultArgs: string[] }) {}
+  constructor(
+    private readonly config: { command: string; defaultArgs: string[] },
+    private readonly ptyModule: Pick<typeof pty, 'spawn'> = pty,
+  ) {}
 
   async healthCheck(): Promise<{ ok: true } | { ok: false; reason: string }> {
     const found = await findExecutable(this.config.command);
@@ -33,7 +36,10 @@ export class PtyCodexRunner implements CodexRunner {
   }
 
   async start(options: CodexRunOptions): Promise<void> {
-    const term = pty.spawn(this.config.command, [...this.config.defaultArgs, ...options.args], {
+    if (this.processes.has(options.sessionId)) {
+      throw new Error(`Codex session is already running: ${options.sessionId}`);
+    }
+    const term = this.ptyModule.spawn(this.config.command, [...this.config.defaultArgs, ...options.args], {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
@@ -70,6 +76,9 @@ export class PtyCodexRunner implements CodexRunner {
 
 async function findExecutable(command: string): Promise<boolean> {
   if (isAbsolute(command)) {
+    return canExecute(command);
+  }
+  if (command.includes('/') || command.includes('\\')) {
     return canExecute(command);
   }
   const paths = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
