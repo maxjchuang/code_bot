@@ -53,7 +53,9 @@ describe('SessionManager', () => {
       userId: 'ou_1',
       text: '/status',
     });
-    expect(sessionsReply.reply).toBe('No active session.');
+    expect(sessionsReply.reply).toContain('Project: none');
+    expect(sessionsReply.reply).toContain('Session: none');
+    expect(sessionsReply.reply).toContain('Status: none');
 
     const day = new Date().toISOString().slice(0, 10);
     const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
@@ -252,6 +254,51 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
     expect(help.reply).toContain('/tail [n]');
+    expect(help.reply).toContain('Restrictions:');
+    expect(help.reply).toContain('Allowed users: 1');
+    expect(help.reply).toContain('Allowed chats: 1');
+    expect(help.reply).toContain('Projects: repo');
+  });
+
+  it('includes session summary and pending approvals in /status', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const session = (await store.getSession(sessionId))!;
+    await store.saveSession({ ...session, lastSummary: 'recent work summary' });
+    await store.saveApproval({
+      id: 'ap_1',
+      sessionId,
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'needs approval',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await store.saveApproval({
+      id: 'ap_2',
+      sessionId,
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'approved',
+      riskSummary: 'approved',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      resolvedBy: 'ou_1',
+      resolvedAt: new Date().toISOString(),
+    });
+
+    const status = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
+    expect(status.reply).toContain('Project: repo');
+    expect(status.reply).toContain(`Session: ${sessionId}`);
+    expect(status.reply).toContain('Status: running');
+    expect(status.reply).toContain('Summary: recent work summary');
+    expect(status.reply).toContain('Pending approvals: ap_1');
+    expect(status.reply).not.toContain('ap_2');
   });
 
   it('clears active session when switching to another project with /use', async () => {

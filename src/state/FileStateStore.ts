@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ApprovalRecord, BotEvent, ChatContext, SessionRecord } from '../domain/types.js';
 
@@ -40,6 +40,28 @@ export class FileStateStore {
   async getApproval(approvalId: string): Promise<ApprovalRecord | undefined> {
     const id = this.safeFileName(approvalId);
     return this.readJson<ApprovalRecord>(join(this.baseDir, 'state/approvals', `${id}.json`));
+  }
+
+  async listPendingApprovalsByChat(chatId: string): Promise<ApprovalRecord[]> {
+    await this.writeChain;
+    const approvalsDir = join(this.baseDir, 'state/approvals');
+    let files: string[];
+    try {
+      files = await readdir(approvalsDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+
+    const approvals = await Promise.all(
+      files
+        .filter((fileName) => fileName.endsWith('.json'))
+        .map(async (fileName) => this.readJson<ApprovalRecord>(join(approvalsDir, fileName))),
+    );
+
+    return approvals.filter((approval): approval is ApprovalRecord => Boolean(approval && approval.chatId === chatId && approval.status === 'pending'));
   }
 
   async appendEvent(event: BotEvent): Promise<void> {

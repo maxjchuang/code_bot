@@ -69,4 +69,50 @@ describe('FileStateStore', () => {
 
     await expect(store.tailSessionLog('session_blank', 3)).resolves.toEqual(['one', '', 'two']);
   });
+
+  it('returns empty pending approvals when approvals directory is missing', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await expect(store.listPendingApprovalsByChat('oc_1')).resolves.toEqual([]);
+  });
+
+  it('lists only pending approvals for the requested chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveApproval({
+      id: 'ap_pending',
+      sessionId: 'session_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'pending',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+    await store.saveApproval({
+      id: 'ap_other_chat',
+      sessionId: 'session_1',
+      chatId: 'oc_2',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'pending',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+    await store.saveApproval({
+      id: 'ap_approved',
+      sessionId: 'session_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'approved',
+      riskSummary: 'approved',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+      resolvedBy: 'ou_1',
+      resolvedAt: '2026-05-31T10:01:00.000Z',
+    });
+
+    await expect(store.listPendingApprovalsByChat('oc_1')).resolves.toMatchObject([{ id: 'ap_pending' }]);
+  });
 });

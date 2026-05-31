@@ -35,10 +35,7 @@ export class SessionManager {
 
     switch (parsed.name) {
       case 'help':
-        return {
-          reply:
-            '/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>',
-        };
+        return { reply: this.helpText() };
       case 'projects':
         return { reply: this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n') };
       case 'use':
@@ -178,12 +175,16 @@ export class SessionManager {
 
   private async status(chatId: string): Promise<BotTextResult> {
     const chat = await this.store.getChat(chatId);
-    if (!chat?.currentSessionId) {
-      return { reply: 'No active session.' };
-    }
-    const session = await this.store.getSession(chat.currentSessionId);
+    const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    const pendingApprovals = await this.store.listPendingApprovalsByChat(chatId);
     return {
-      reply: `Project: ${chat.currentProjectId}\nSession: ${chat.currentSessionId}\nStatus: ${session?.status ?? 'unknown'}`,
+      reply: [
+        `Project: ${chat?.currentProjectId ?? 'none'}`,
+        `Session: ${chat?.currentSessionId ?? 'none'}`,
+        `Status: ${session?.status ?? 'none'}`,
+        `Summary: ${session?.lastSummary ?? 'none'}`,
+        `Pending approvals: ${pendingApprovals.length > 0 ? pendingApprovals.map((approval) => approval.id).join(', ') : 'none'}`,
+      ].join('\n'),
     };
   }
 
@@ -233,5 +234,16 @@ export class SessionManager {
       at: new Date().toISOString(),
       data: { ...data, reason: message },
     });
+  }
+
+  private helpText(): string {
+    const commands = '/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const restrictions = [
+      'Restrictions:',
+      `- Allowed users: ${this.config.allowedUsers.length}`,
+      `- Allowed chats: ${this.config.allowedChatIds.length}`,
+      `- Projects: ${this.config.projects.map((project) => project.id).join(', ') || 'none'}`,
+    ].join('\n');
+    return `${commands}\n\n${restrictions}`;
   }
 }
