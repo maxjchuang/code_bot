@@ -6,6 +6,7 @@ import { SessionManager } from '../../src/session/SessionManager.js';
 import { createTmpDir } from '../helpers/tmp.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
 import type { BotConfig } from '../../src/domain/types.js';
+import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 
 describe('SessionManager', () => {
   it('creates a session and sends normal messages to Codex', async () => {
@@ -416,6 +417,69 @@ describe('SessionManager', () => {
     expect(chat?.currentSessionId).toBe(sessionId);
     const session = await store.getSession(sessionId);
     expect(session?.status).toBe('running');
+  });
+
+  it('rejects cross-chat approval resolution attempts', async () => {
+    const root = await createTmpDir();
+    const config: BotConfig = { ...sampleConfig(root), allowedChatIds: ['oc_1', 'oc_2'] };
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(config, store, new FakeCodexRunner());
+
+    await store.saveApproval({
+      id: 'ap_cross_chat',
+      sessionId: 'sess_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      action: 'stop_session',
+      status: 'pending',
+      riskSummary: 'Stop session sess_1',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    });
+    const attempted = await manager.handleText({ chatId: 'oc_2', chatType: 'group', userId: 'ou_1', text: '/approve ap_cross_chat' });
+    expect(attempted.reply).toBe('Approval does not belong to this chat: ap_cross_chat');
+    expect((await store.getApproval('ap_cross_chat'))?.status).toBe('pending');
+  });
+
+  it('keeps interrupted status when exit callback arrives after approved stop', async () => {
+    class StopExitRaceRunner implements CodexRunner {
+      private optionsBySession = new Map<string, CodexRunOptions>();
+      async healthCheck(): Promise<{ ok: true }> {
+        return { ok: true };
+      }
+      async start(options: CodexRunOptions): Promise<void> {
+        this.optionsBySession.set(options.sessionId, options);
+      }
+      async send(): Promise<void> {
+        return;
+      }
+      async stop(sessionId: string): Promise<void> {
+        const options = this.optionsBySession.get(sessionId);
+        if (!options) {
+          throw new Error(`Unknown fake session: ${sessionId}`);
+        }
+        this.optionsBySession.delete(sessionId);
+        setTimeout(() => {
+          void Promise.resolve(options.onExit(0));
+        }, 0);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new StopExitRaceRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    const approveMatch = stopRequested.reply.match(/Approve: \/approve (\S+)/);
+    expect(approveMatch).toBeTruthy();
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/approve ${approveMatch![1]}` });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('interrupted');
+    expect(session?.exitCode).toBe(0);
   });
 
   it('lists sessions with /sessions and has empty-state fallback', async () => {

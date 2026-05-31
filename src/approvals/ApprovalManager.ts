@@ -7,6 +7,7 @@ export interface ApprovalRequest {
   sessionId: string;
   chatId: string;
   requestedBy: string;
+  action?: 'stop_session';
   riskSummary: string;
   ttlMs: number;
 }
@@ -16,11 +17,14 @@ export class ApprovalManager {
 
   constructor(private readonly store: FileStateStore, private readonly clock: Clock = () => new Date()) {}
 
-  async resolve(approvalId: string, status: 'approved' | 'rejected', userId: string): Promise<ApprovalRecord> {
+  async resolve(approvalId: string, status: 'approved' | 'rejected', userId: string, expectedChatId?: string): Promise<ApprovalRecord> {
     const run = async () => {
       const approval = await this.store.getApproval(approvalId);
       if (!approval) {
         throw new Error(`Approval not found: ${approvalId}`);
+      }
+      if (expectedChatId && approval.chatId !== expectedChatId) {
+        throw new Error(`Approval does not belong to this chat: ${approvalId}`);
       }
 
       if (approval.status !== 'pending') {
@@ -75,6 +79,7 @@ export class ApprovalManager {
       sessionId: request.sessionId,
       chatId: request.chatId,
       requestedBy: request.requestedBy,
+      action: request.action,
       status: 'pending',
       riskSummary: request.riskSummary,
       createdAt: now.toISOString(),

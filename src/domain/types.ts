@@ -46,6 +46,7 @@ export interface SessionRecord {
   logPath: string;
   exitCode?: number;
   lastSummary?: string;
+  stopRequested?: boolean;
 }
 
 export interface ApprovalRecord {
@@ -53,6 +54,7 @@ export interface ApprovalRecord {
   sessionId: string;
   chatId: string;
   requestedBy: string;
+  action?: 'stop_session';
   status: ApprovalStatus;
   riskSummary: string;
   createdAt: string;

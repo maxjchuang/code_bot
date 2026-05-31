@@ -58,9 +58,9 @@ export class SessionManager {
       case 'sessions':
         return this.sessions(input.chatId);
       case 'approve':
-        return this.resolveApproval(parsed.args[0], 'approved', input.userId);
+        return this.resolveApproval(input.chatId, parsed.args[0], 'approved', input.userId);
       case 'reject':
-        return this.resolveApproval(parsed.args[0], 'rejected', input.userId);
+        return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -237,6 +237,7 @@ export class SessionManager {
       sessionId: session.id,
       chatId: input.chatId,
       requestedBy: input.userId,
+      action: 'stop_session',
       riskSummary: `Stop session ${session.id}`,
       ttlMs: 5 * 60 * 1000,
     });
@@ -253,14 +254,14 @@ export class SessionManager {
     };
   }
 
-  private async resolveApproval(approvalId: string | undefined, status: 'approved' | 'rejected', userId: string): Promise<BotTextResult> {
+  private async resolveApproval(chatId: string, approvalId: string | undefined, status: 'approved' | 'rejected', userId: string): Promise<BotTextResult> {
     if (!approvalId) {
       const command = status === 'approved' ? '/approve' : '/reject';
       return { reply: `Usage: ${command} <id>` };
     }
     try {
-      const resolved = await this.approvalManager.resolve(approvalId, status, userId);
-      if (status === 'approved' && resolved.riskSummary === `Stop session ${resolved.sessionId}`) {
+      const resolved = await this.approvalManager.resolve(approvalId, status, userId, chatId);
+      if (status === 'approved' && (resolved.action === 'stop_session' || resolved.riskSummary === `Stop session ${resolved.sessionId}`)) {
         return this.executeApprovedStop(resolved.sessionId, userId);
       }
       const action = status === 'approved' ? 'Approved' : 'Rejected';
@@ -276,10 +277,21 @@ export class SessionManager {
     if (!session) {
       return { reply: `Session not found: ${sessionId}` };
     }
+    const stoppingAt = new Date().toISOString();
+    const preStopSession: SessionRecord = {
+      ...session,
+      status: 'interrupted',
+      stopRequested: true,
+      lastSummary: session.lastSummary ?? `Stopped by ${userId}`,
+      updatedAt: stoppingAt,
+    };
+    await this.store.saveSession(preStopSession);
+
     try {
       await this.runner.stop(sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      await this.store.saveSession({ ...session, stopRequested: undefined, updatedAt: new Date().toISOString() });
       await this.store.appendEvent({
         type: 'session.stop_failed',
         at: new Date().toISOString(),
@@ -287,12 +299,9 @@ export class SessionManager {
       });
       return { reply: `Failed to stop session ${sessionId}: ${message}` };
     }
-
     const stoppedAt = new Date().toISOString();
     await this.store.saveSession({
-      ...session,
-      status: 'interrupted',
-      lastSummary: session.lastSummary ?? `Stopped by ${userId}`,
+      ...preStopSession,
       updatedAt: stoppedAt,
     });
     await this.store.appendEvent({
@@ -323,9 +332,10 @@ export class SessionManager {
       });
       return;
     }
+    const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
     await this.store.saveSession({
       ...latest,
-      status: 'exited',
+      status: nextStatus,
       exitCode,
       updatedAt: new Date().toISOString(),
     });
