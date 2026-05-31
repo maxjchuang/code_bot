@@ -482,6 +482,51 @@ describe('SessionManager', () => {
     expect(session?.exitCode).toBe(0);
   });
 
+  it('preserves exitCode when stop emits exit before stop resolves', async () => {
+    class StopExitBeforeResolveRunner implements CodexRunner {
+      private optionsBySession = new Map<string, CodexRunOptions>();
+      async healthCheck(): Promise<{ ok: true }> {
+        return { ok: true };
+      }
+      async start(options: CodexRunOptions): Promise<void> {
+        this.optionsBySession.set(options.sessionId, options);
+      }
+      async send(): Promise<void> {
+        return;
+      }
+      async stop(sessionId: string): Promise<void> {
+        const options = this.optionsBySession.get(sessionId);
+        if (!options) {
+          throw new Error(`Unknown fake session: ${sessionId}`);
+        }
+        this.optionsBySession.delete(sessionId);
+        await Promise.resolve(options.onExit(143));
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new StopExitBeforeResolveRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    const approveMatch = stopRequested.reply.match(/Approve: \/approve (\S+)/);
+    expect(approveMatch).toBeTruthy();
+
+    const approved = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: `/approve ${approveMatch![1]}`,
+    });
+    expect(approved.reply).toBe(`Stopped session ${sessionId}.`);
+
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('interrupted');
+    expect(session?.exitCode).toBe(143);
+  });
+
   it('lists sessions with /sessions and has empty-state fallback', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

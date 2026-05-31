@@ -273,16 +273,16 @@ export class SessionManager {
   }
 
   private async executeApprovedStop(sessionId: string, userId: string): Promise<BotTextResult> {
-    const session = await this.store.getSession(sessionId);
-    if (!session) {
+    const initialSession = await this.store.getSession(sessionId);
+    if (!initialSession) {
       return { reply: `Session not found: ${sessionId}` };
     }
     const stoppingAt = new Date().toISOString();
     const preStopSession: SessionRecord = {
-      ...session,
+      ...initialSession,
       status: 'interrupted',
       stopRequested: true,
-      lastSummary: session.lastSummary ?? `Stopped by ${userId}`,
+      lastSummary: initialSession.lastSummary ?? `Stopped by ${userId}`,
       updatedAt: stoppingAt,
     };
     await this.store.saveSession(preStopSession);
@@ -291,26 +291,38 @@ export class SessionManager {
       await this.runner.stop(sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.store.saveSession({ ...session, stopRequested: undefined, updatedAt: new Date().toISOString() });
+      const latest = await this.store.getSession(sessionId);
+      if (latest) {
+        await this.store.saveSession({
+          ...latest,
+          stopRequested: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+      }
       await this.store.appendEvent({
         type: 'session.stop_failed',
         at: new Date().toISOString(),
-        data: { sessionId, chatId: session.chatId, reason: message },
+        data: { sessionId, chatId: initialSession.chatId, reason: message },
       });
       return { reply: `Failed to stop session ${sessionId}: ${message}` };
     }
     const stoppedAt = new Date().toISOString();
+    const latest = await this.store.getSession(sessionId);
+    const merged = latest ?? preStopSession;
     await this.store.saveSession({
-      ...preStopSession,
+      ...merged,
+      status: 'interrupted',
+      stopRequested: true,
+      lastSummary: merged.lastSummary ?? preStopSession.lastSummary,
       updatedAt: stoppedAt,
     });
     await this.store.appendEvent({
       type: 'session.stopped',
       at: stoppedAt,
-      data: { sessionId, chatId: session.chatId, userId },
+      data: { sessionId, chatId: initialSession.chatId, userId },
     });
 
-    const chat = await this.store.getChat(session.chatId);
+    const chat = await this.store.getChat(initialSession.chatId);
     if (chat?.currentSessionId === sessionId) {
       await this.store.saveChat({
         chatId: chat.chatId,
