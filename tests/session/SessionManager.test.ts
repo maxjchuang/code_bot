@@ -224,4 +224,22 @@ describe('SessionManager', () => {
 
     expect(result.reply).toBe('You are not allowed to control this bot.');
   });
+
+  it('supports /use, /status, and /tail', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo' })).resolves.toEqual({
+      reply: 'Current project set to repo.',
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new' });
+
+    const status = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
+    expect(status.reply).toContain('Project: repo');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
+    expect(tail.reply).toContain('```text');
+  });
 });

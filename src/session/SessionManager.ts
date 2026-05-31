@@ -1,6 +1,7 @@
 import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { formatTail } from '../output/OutputFormatter.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
 
@@ -33,17 +34,40 @@ export class SessionManager {
     }
 
     switch (parsed.name) {
+      case 'help':
+        return {
+          reply:
+            '/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>',
+        };
       case 'projects':
         return { reply: this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n') };
+      case 'use':
+        return this.useProject(input, parsed.args[0]);
       case 'new':
         return this.createSession(input, parsed.args[0]);
       case 'send':
         return this.sendToCurrentSession(input.chatId, parsed.args[0] ?? '');
       case 'status':
         return this.status(input.chatId);
+      case 'tail':
+        return this.tail(input.chatId, parsed.args[0]);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
+  }
+
+  private async useProject(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
+    if (!projectId || !resolveProject(this.config, projectId)) {
+      return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
+    }
+    const existing = await this.store.getChat(input.chatId);
+    await this.store.saveChat({
+      chatId: input.chatId,
+      chatType: input.chatType,
+      currentProjectId: projectId,
+      currentSessionId: existing?.currentSessionId,
+    });
+    return { reply: `Current project set to ${projectId}.` };
   }
 
   private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
@@ -162,6 +186,16 @@ export class SessionManager {
     return {
       reply: `Project: ${chat.currentProjectId}\nSession: ${chat.currentSessionId}\nStatus: ${session?.status ?? 'unknown'}`,
     };
+  }
+
+  private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session.' };
+    }
+    const count = requestedCount ? Number.parseInt(requestedCount, 10) : 80;
+    const lines = await this.store.tailSessionLog(chat.currentSessionId, Number.isFinite(count) && count > 0 ? count : 80);
+    return { reply: formatTail(lines) };
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
