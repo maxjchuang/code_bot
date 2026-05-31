@@ -213,6 +213,36 @@ describe('SessionManager', () => {
     expect(runner.starts).toHaveLength(1);
   });
 
+  it('serializes concurrent /new commands for the same chat', async () => {
+    class CountingRunner extends FakeCodexRunner {
+      readonly starts: CodexRunOptions[] = [];
+
+      async start(options: CodexRunOptions): Promise<void> {
+        this.starts.push(options);
+        await super.start(options);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new CountingRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const [first, second] = await Promise.all([
+      manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' }),
+      manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' }),
+    ]);
+
+    const created = [first, second].filter((result) => result.reply.includes('Created session'));
+    const rejected = [first, second].filter((result) => result.reply.includes('is still running'));
+    expect(created).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(runner.starts).toHaveLength(1);
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
+  });
+
   it('handles runner send failure by marking interrupted and returning no-running-session', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -281,6 +311,49 @@ describe('SessionManager', () => {
     expect(exited?.status).toBe('exited');
     expect(exited?.exitCode).toBe(137);
     expect(exited?.lastSummary).toBe(summaryBeforeExit);
+  });
+
+  it('preserves terminal exitCode when send fails after an exit callback', async () => {
+    class SendExitBeforeThrowRunner implements CodexRunner {
+      private optionsBySession = new Map<string, CodexRunOptions>();
+
+      async healthCheck(): Promise<{ ok: true }> {
+        return { ok: true };
+      }
+
+      async start(options: CodexRunOptions): Promise<void> {
+        this.optionsBySession.set(options.sessionId, options);
+      }
+
+      async send(sessionId: string): Promise<void> {
+        const options = this.optionsBySession.get(sessionId);
+        if (!options) {
+          throw new Error(`Unknown fake session: ${sessionId}`);
+        }
+        this.optionsBySession.delete(sessionId);
+        await Promise.resolve(options.onExit(42));
+        throw new Error('send pipe closed');
+      }
+
+      async stop(): Promise<void> {
+        return;
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new SendExitBeforeThrowRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+    expect(sent.reply).toBe('No running session. Run /new <project> first.');
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('exited');
+    expect(session?.exitCode).toBe(42);
   });
 
   it('blocks unauthorized users', async () => {
@@ -497,6 +570,37 @@ describe('SessionManager', () => {
     expect(chat?.currentSessionId).toBe(sessionId);
     const session = await store.getSession(sessionId);
     expect(session?.status).toBe('running');
+  });
+
+  it('does not stop or relabel a session that exited before stop approval', async () => {
+    class CountingRunner extends FakeCodexRunner {
+      stopCount = 0;
+
+      async stop(sessionId: string): Promise<void> {
+        this.stopCount += 1;
+        await super.stop(sessionId);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new CountingRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    const approveMatch = stopRequested.reply.match(/Approve: \/approve (\S+)/);
+    expect(approveMatch).toBeTruthy();
+
+    await runner.exit(sessionId, 42);
+    const approved = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/approve ${approveMatch![1]}` });
+    expect(approved.reply).toBe(`Session ${sessionId} is already exited.`);
+
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('exited');
+    expect(session?.exitCode).toBe(42);
+    expect(runner.stopCount).toBe(0);
   });
 
   it('rejects cross-chat approval resolution attempts', async () => {

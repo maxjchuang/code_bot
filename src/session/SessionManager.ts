@@ -19,6 +19,7 @@ export interface BotTextResult {
 
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
+  private readonly chatQueues = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly config: BotConfig,
@@ -29,6 +30,10 @@ export class SessionManager {
   }
 
   async handleText(input: IncomingBotText): Promise<BotTextResult> {
+    return this.withChatQueue(input.chatId, () => this.handleTextQueued(input));
+  }
+
+  private async handleTextQueued(input: IncomingBotText): Promise<BotTextResult> {
     if (!isAuthorizedMessage(this.config, input)) {
       return { reply: 'You are not allowed to control this bot.' };
     }
@@ -63,6 +68,21 @@ export class SessionManager {
         return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
+    }
+  }
+
+  private async withChatQueue<T>(chatId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.chatQueues.get(chatId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(action);
+    const chain = current.catch(() => undefined);
+    this.chatQueues.set(chatId, chain);
+
+    try {
+      return await current;
+    } finally {
+      if (this.chatQueues.get(chatId) === chain) {
+        this.chatQueues.delete(chatId);
+      }
     }
   }
 
@@ -178,11 +198,16 @@ export class SessionManager {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
-      await this.store.saveSession({
-        ...session,
-        status: 'interrupted',
-        lastSummary: `Failed to send to Codex: ${message}`,
-        updatedAt: failedAt,
+      await this.store.updateSession(chat.currentSessionId, (latest) => {
+        if (!isActiveSession(latest)) {
+          return latest;
+        }
+        return {
+          ...latest,
+          status: 'interrupted',
+          lastSummary: `Failed to send to Codex: ${message}`,
+          updatedAt: failedAt,
+        };
       });
       await this.store.appendEvent({
         type: 'session.send_failed',
@@ -290,15 +315,30 @@ export class SessionManager {
     if (!initialSession) {
       return { reply: `Session not found: ${sessionId}` };
     }
+    if (!isActiveSession(initialSession)) {
+      return { reply: `Session ${sessionId} is already ${initialSession.status}.` };
+    }
     const stoppingAt = new Date().toISOString();
-    const preStopSession: SessionRecord = {
-      ...initialSession,
-      status: 'interrupted',
-      stopRequested: true,
-      lastSummary: initialSession.lastSummary ?? `Stopped by ${userId}`,
-      updatedAt: stoppingAt,
-    };
-    await this.store.saveSession(preStopSession);
+    let shouldStop = false;
+    const preStopSession = await this.store.updateSession(sessionId, (latest) => {
+      if (!isActiveSession(latest)) {
+        return latest;
+      }
+      shouldStop = true;
+      return {
+        ...latest,
+        status: 'interrupted',
+        stopRequested: true,
+        lastSummary: latest.lastSummary ?? `Stopped by ${userId}`,
+        updatedAt: stoppingAt,
+      };
+    });
+    if (!preStopSession) {
+      return { reply: `Session not found: ${sessionId}` };
+    }
+    if (!shouldStop) {
+      return { reply: `Session ${sessionId} is already ${preStopSession.status}.` };
+    }
 
     try {
       await this.runner.stop(sessionId);
