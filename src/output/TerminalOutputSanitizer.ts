@@ -4,8 +4,6 @@ export interface SanitizedTerminalOutput {
   hadControlSequences: boolean;
 }
 
-const ANSI_PATTERN = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\)|[PX^_].*?(?:\u001b\\)|[ -/]*[0-~])/g;
-const C0_CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 const BOXDRAWING_PATTERN = /^[\s╭╮╰╯│─┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬]+$/u;
 const WARNING_PATTERN = /(⚠|warning|error|failed|failure|not logged in|denied|invalid|missing|cannot|can't)/i;
 
@@ -60,12 +58,110 @@ export function sanitizeTerminalOutput(lines: string[]): SanitizedTerminalOutput
 }
 
 function stripTerminalControl(text: string): { text: string; hadControlSequences: boolean } {
-  const withoutAnsi = text.replace(ANSI_PATTERN, '');
-  const withoutControls = withoutAnsi.replace(C0_CONTROL_PATTERN, '');
-  return {
-    text: withoutControls,
-    hadControlSequences: withoutControls !== text,
-  };
+  const chunks: string[] = [];
+  let hadControlSequences = false;
+  let plainStart = 0;
+  let index = 0;
+
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+
+    if (code === 0x1b) {
+      hadControlSequences = true;
+      if (plainStart < index) {
+        chunks.push(text.slice(plainStart, index));
+      }
+      index = consumeEscapeSequence(text, index + 1);
+      plainStart = index;
+      continue;
+    }
+
+    if (isStrippedC0Control(code)) {
+      hadControlSequences = true;
+      if (plainStart < index) {
+        chunks.push(text.slice(plainStart, index));
+      }
+      index += 1;
+      plainStart = index;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  if (!hadControlSequences) {
+    return { text, hadControlSequences: false };
+  }
+
+  if (plainStart < text.length) {
+    chunks.push(text.slice(plainStart));
+  }
+
+  return { text: chunks.join(''), hadControlSequences };
+}
+
+function consumeEscapeSequence(text: string, index: number): number {
+  if (index >= text.length) {
+    return text.length;
+  }
+
+  const code = text.charCodeAt(index);
+  if (code === 0x1b) {
+    return index;
+  }
+
+  if (code === 0x5b) {
+    return consumeUntilFinalByte(text, index + 1);
+  }
+
+  if (code === 0x5d || code === 0x50 || code === 0x58 || code === 0x5e || code === 0x5f) {
+    return consumeStringControl(text, index + 1);
+  }
+
+  if (code >= 0x20 && code <= 0x2f) {
+    let cursor = index + 1;
+    while (cursor < text.length) {
+      const intermediate = text.charCodeAt(cursor);
+      if (intermediate < 0x20 || intermediate > 0x2f) {
+        break;
+      }
+      cursor += 1;
+    }
+    return cursor < text.length ? cursor + 1 : cursor;
+  }
+
+  return index + 1;
+}
+
+function consumeUntilFinalByte(text: string, index: number): number {
+  let cursor = index;
+  while (cursor < text.length) {
+    const code = text.charCodeAt(cursor);
+    cursor += 1;
+    if (code >= 0x40 && code <= 0x7e) {
+      return cursor;
+    }
+  }
+  return text.length;
+}
+
+function consumeStringControl(text: string, index: number): number {
+  let cursor = index;
+  while (cursor < text.length) {
+    const code = text.charCodeAt(cursor);
+    if (code === 0x07) {
+      return cursor + 1;
+    }
+    if (code === 0x1b && cursor + 1 < text.length && text.charCodeAt(cursor + 1) === 0x5c) {
+      return cursor + 2;
+    }
+    cursor += 1;
+  }
+  return text.length;
+}
+
+function isStrippedC0Control(code: number): boolean {
+  return (code >= 0x00 && code <= 0x1f && code !== 0x09 && code !== 0x0a) || code === 0x7f;
 }
 
 function normalizeReadableLine(text: string): string {

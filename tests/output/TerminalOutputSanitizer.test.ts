@@ -31,6 +31,19 @@ describe('sanitizeTerminalOutput', () => {
     expect(result.removedLineCount).toBe(0);
   });
 
+  it('strips malformed unterminated OSC and DCS sequences without leaking payloads', () => {
+    const malformedLines = [
+      ...Array.from({ length: 1000 }, (_, index) => `\u001b]unterminated title ${index}`),
+      ...Array.from({ length: 1000 }, (_, index) => `\u001bPunterminated data ${index}`),
+    ];
+
+    const result = sanitizeTerminalOutput(malformedLines);
+
+    expect(result.hadControlSequences).toBe(true);
+    expect(result.readableLines).toEqual([]);
+    expect(result.removedLineCount).toBe(malformedLines.length);
+  });
+
   it('filters Codex TUI banner and redraw noise while preserving useful lines', () => {
     const result = sanitizeTerminalOutput([
       '\u001b[2m╭───────────────────────────────────────╮',
