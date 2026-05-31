@@ -76,12 +76,12 @@ export class SessionManager {
         cwd: project.path,
         args: project.codexArgs,
         onOutput: (text) => {
-          this.appendSessionOutput(sessionId, text).catch((error) =>
+          return this.appendSessionOutput(sessionId, text).catch((error) =>
             this.recordBackgroundError('session.output_persist_failed', error, { sessionId }),
           );
         },
         onExit: (exitCode) => {
-          this.markExited(session, exitCode).catch((error) =>
+          return this.markExited(sessionId, exitCode).catch((error) =>
             this.recordBackgroundError('session.exit_persist_failed', error, { sessionId, exitCode }),
           );
         },
@@ -164,9 +164,18 @@ export class SessionManager {
     };
   }
 
-  private async markExited(session: SessionRecord, exitCode: number | undefined): Promise<void> {
+  private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
+    const latest = await this.store.getSession(sessionId);
+    if (!latest) {
+      await this.store.appendEvent({
+        type: 'session.exit_missing_record',
+        at: new Date().toISOString(),
+        data: { sessionId, exitCode },
+      });
+      return;
+    }
     await this.store.saveSession({
-      ...session,
+      ...latest,
       status: 'exited',
       exitCode,
       updatedAt: new Date().toISOString(),

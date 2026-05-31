@@ -175,6 +175,42 @@ describe('SessionManager', () => {
     expect(content).toContain('"type":"session.send_failed"');
   });
 
+  it('preserves send-failure summary when exit arrives later', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    expect(created.reply).toContain('Created session');
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    runner.dropSession(sessionId);
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+    expect(sent.reply).toBe('No running session. Run /new <project> first.');
+
+    const interrupted = await store.getSession(sessionId);
+    expect(interrupted?.status).toBe('interrupted');
+    const summaryBeforeExit = interrupted?.lastSummary;
+    expect(summaryBeforeExit).toContain('Failed to send to Codex: Unknown fake session');
+
+    await runner.exit(sessionId, 137);
+    const exited = await store.getSession(sessionId);
+    expect(exited?.status).toBe('exited');
+    expect(exited?.exitCode).toBe(137);
+    expect(exited?.lastSummary).toBe(summaryBeforeExit);
+  });
+
   it('blocks unauthorized users', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
