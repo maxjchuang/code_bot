@@ -8,7 +8,15 @@ Requirements:
 
 - Node.js 20+
 - Codex CLI installed and available on `PATH`
-- A Feishu/Lark app with long-connection bot credentials
+- A Feishu/Lark app with bot capability enabled and SDK long-connection credentials
+
+Feishu app setup:
+
+- Enable bot capability for the app.
+- Use SDK long-connection/WebSocket event handling; no public callback URL is needed for this mode.
+- Subscribe to the `im.message.receive_v1` event.
+- Grant the bot message receive/send permissions required by Feishu for this event and replies.
+- Add the bot to group chats before using group commands.
 
 Run:
 
@@ -24,7 +32,7 @@ Edit `.code-bot/config.json`:
 - Add allowed Feishu user open IDs to `allowedUsers`.
 - Add allowed chat IDs to `allowedChatIds`; leave it empty only if private-chat/user allowlisting is enough for your use case.
 - Replace project entries with your local repositories. Use absolute paths for clarity.
-- Adjust `output.directMaxChars` and `output.chunkSize` if Feishu message size limits require smaller chunks.
+- Keep `output.directMaxChars` and `output.chunkSize` as reserved config schema fields; current Feishu replies do not enforce these limits.
 - Keep `codex.command` as `codex` when the CLI is on `PATH`, or set it to an absolute executable path.
 - Use `codex.defaultArgs` for arguments shared by all sessions, and `projects[].codexArgs` for project-specific Codex arguments.
 
