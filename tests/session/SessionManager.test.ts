@@ -251,6 +251,7 @@ describe('SessionManager', () => {
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
 
     const help = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/help' });
+    expect(help.reply).toContain('/help');
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
     expect(help.reply).toContain('/tail [n]');
@@ -361,7 +362,7 @@ describe('SessionManager', () => {
     expect(tail.reply).not.toContain('line-1');
   });
 
-  it('stops current running session and clears chat current session', async () => {
+  it('requests approval for /stop and stops only after /approve', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -370,8 +371,19 @@ describe('SessionManager', () => {
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
 
-    const stopped = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
-    expect(stopped.reply).toBe(`Stopped session ${sessionId}.`);
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    expect(stopRequested.reply).toContain('Approval required: Stop session');
+    expect(stopRequested.reply).toContain(`Session: ${sessionId}`);
+    expect(stopRequested.reply).toContain('Approve: /approve ');
+
+    const chatBeforeApprove = await store.getChat('oc_1');
+    expect(chatBeforeApprove?.currentSessionId).toBe(sessionId);
+
+    const approveMatch = stopRequested.reply.match(/Approve: \/approve (\S+)/);
+    expect(approveMatch).toBeTruthy();
+    const approvalId = approveMatch![1];
+    const approved = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/approve ${approvalId}` });
+    expect(approved.reply).toBe(`Stopped session ${sessionId}.`);
 
     const chat = await store.getChat('oc_1');
     expect(chat?.currentSessionId).toBeUndefined();
@@ -382,6 +394,28 @@ describe('SessionManager', () => {
     const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
     const content = await readFile(eventPath, 'utf8');
     expect(content).toContain('"type":"session.stopped"');
+  });
+
+  it('rejecting stop approval does not stop the session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    const rejectMatch = stopRequested.reply.match(/Reject: \/reject (\S+)/);
+    expect(rejectMatch).toBeTruthy();
+    const approvalId = rejectMatch![1];
+
+    const rejected = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/reject ${approvalId}` });
+    expect(rejected.reply).toContain(`Rejected approval ${approvalId}.`);
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentSessionId).toBe(sessionId);
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('running');
   });
 
   it('lists sessions with /sessions and has empty-state fallback', async () => {

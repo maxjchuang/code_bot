@@ -233,38 +233,14 @@ export class SessionManager {
       });
       return { reply: 'No running session.' };
     }
-
-    try {
-      await this.runner.stop(chat.currentSessionId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.store.appendEvent({
-        type: 'session.stop_failed',
-        at: new Date().toISOString(),
-        data: { sessionId: chat.currentSessionId, chatId: input.chatId, reason: message },
-      });
-      return { reply: `Failed to stop session ${chat.currentSessionId}: ${message}` };
-    }
-
-    const stoppedAt = new Date().toISOString();
-    await this.store.saveSession({
-      ...session,
-      status: 'interrupted',
-      lastSummary: session.lastSummary ?? `Stopped by ${input.userId}`,
-      updatedAt: stoppedAt,
-    });
-    await this.store.appendEvent({
-      type: 'session.stopped',
-      at: stoppedAt,
-      data: { sessionId: chat.currentSessionId, chatId: input.chatId, userId: input.userId },
-    });
-    await this.store.saveChat({
+    const approval = await this.approvalManager.requestApproval({
+      sessionId: session.id,
       chatId: input.chatId,
-      chatType: input.chatType,
-      currentProjectId: chat.currentProjectId,
-      currentSessionId: undefined,
+      requestedBy: input.userId,
+      riskSummary: `Stop session ${session.id}`,
+      ttlMs: 5 * 60 * 1000,
     });
-    return { reply: `Stopped session ${session.id}.` };
+    return { reply: this.approvalManager.buildTextFallback(approval) };
   }
 
   private async sessions(chatId: string): Promise<BotTextResult> {
@@ -284,12 +260,57 @@ export class SessionManager {
     }
     try {
       const resolved = await this.approvalManager.resolve(approvalId, status, userId);
+      if (status === 'approved' && resolved.riskSummary === `Stop session ${resolved.sessionId}`) {
+        return this.executeApprovedStop(resolved.sessionId, userId);
+      }
       const action = status === 'approved' ? 'Approved' : 'Rejected';
       return { reply: `${action} approval ${resolved.id}.` };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { reply: message };
     }
+  }
+
+  private async executeApprovedStop(sessionId: string, userId: string): Promise<BotTextResult> {
+    const session = await this.store.getSession(sessionId);
+    if (!session) {
+      return { reply: `Session not found: ${sessionId}` };
+    }
+    try {
+      await this.runner.stop(sessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.store.appendEvent({
+        type: 'session.stop_failed',
+        at: new Date().toISOString(),
+        data: { sessionId, chatId: session.chatId, reason: message },
+      });
+      return { reply: `Failed to stop session ${sessionId}: ${message}` };
+    }
+
+    const stoppedAt = new Date().toISOString();
+    await this.store.saveSession({
+      ...session,
+      status: 'interrupted',
+      lastSummary: session.lastSummary ?? `Stopped by ${userId}`,
+      updatedAt: stoppedAt,
+    });
+    await this.store.appendEvent({
+      type: 'session.stopped',
+      at: stoppedAt,
+      data: { sessionId, chatId: session.chatId, userId },
+    });
+
+    const chat = await this.store.getChat(session.chatId);
+    if (chat?.currentSessionId === sessionId) {
+      await this.store.saveChat({
+        chatId: chat.chatId,
+        chatType: chat.chatType,
+        currentProjectId: chat.currentProjectId,
+        currentSessionId: undefined,
+      });
+    }
+    return { reply: `Stopped session ${sessionId}.` };
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
@@ -324,7 +345,7 @@ export class SessionManager {
   }
 
   private helpText(): string {
-    const commands = '/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const commands = '/help\n/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
     const restrictions = [
       'Restrictions:',
       `- Allowed users: ${this.config.allowedUsers.length}`,
