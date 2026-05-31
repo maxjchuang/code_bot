@@ -30,6 +30,8 @@ describe('OutputFormatter', () => {
 
   it('throws on invalid output limits', () => {
     expect(() => formatOutput('abc', { directMaxChars: 2, chunkSize: 0 })).toThrow('Invalid output limits');
+    expect(() => formatOutput('abc', { directMaxChars: -1, chunkSize: 2 })).toThrow('Invalid output limits');
+    expect(() => formatOutput('abc', { directMaxChars: Number.POSITIVE_INFINITY, chunkSize: 2 })).toThrow('Invalid output limits');
     expect(() => formatOutput('abc', { directMaxChars: 2, chunkSize: 1.5 })).toThrow('Invalid output limits');
   });
 });
