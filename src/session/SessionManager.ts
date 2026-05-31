@@ -3,6 +3,7 @@ import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { formatTail } from '../output/OutputFormatter.js';
+import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
 
@@ -58,6 +59,8 @@ export class SessionManager {
         return this.status(input.chatId);
       case 'tail':
         return this.tail(input.chatId, parsed.args[0]);
+      case 'rawtail':
+        return this.rawTail(input.chatId, parsed.args[0]);
       case 'stop':
         return this.stopCurrentSession(input);
       case 'sessions':
@@ -240,6 +243,29 @@ export class SessionManager {
   }
 
   private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
+    const rawLines = await this.tailRawLines(chatId, requestedCount);
+    if ('reply' in rawLines) {
+      return rawLines;
+    }
+
+    const sanitized = sanitizeTerminalOutput(rawLines.lines);
+    if (sanitized.readableLines.length === 0) {
+      return { reply: 'No readable output yet. Use /rawtail 80 for raw terminal logs.' };
+    }
+
+    return { reply: formatTail(sanitized.readableLines) };
+  }
+
+  private async rawTail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
+    const rawLines = await this.tailRawLines(chatId, requestedCount);
+    if ('reply' in rawLines) {
+      return rawLines;
+    }
+
+    return { reply: formatTail(rawLines.lines) };
+  }
+
+  private async tailRawLines(chatId: string, requestedCount?: string): Promise<BotTextResult | { lines: string[] }> {
     const chat = await this.store.getChat(chatId);
     if (!chat?.currentSessionId) {
       return { reply: 'No active session.' };
@@ -252,8 +278,8 @@ export class SessionManager {
       }
       count = Number.parseInt(requestedCount, 10);
     }
-    const lines = await this.store.tailSessionLog(chat.currentSessionId, count);
-    return { reply: formatTail(lines) };
+
+    return { lines: await this.store.tailSessionLog(chat.currentSessionId, count) };
   }
 
   private async stopCurrentSession(input: IncomingBotText): Promise<BotTextResult> {
@@ -415,7 +441,7 @@ export class SessionManager {
   }
 
   private helpText(): string {
-    const commands = '/help\n/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const commands = '/help\n/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
     const restrictions = [
       'Restrictions:',
       `- Allowed users: ${this.config.allowedUsers.length}`,
