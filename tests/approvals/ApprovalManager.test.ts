@@ -62,6 +62,15 @@ describe('ApprovalManager', () => {
 
     const stored = await store.getApproval(approval.id);
     expect(stored?.status).toBe((fulfilled as PromiseFulfilledResult<{ status: 'approved' | 'rejected' }>).value.status);
+
+    const events = await readFile(join(root, '.code-bot/events/2026-05-31.jsonl'), 'utf8');
+    const terminalEvents = events
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((entry: { type: string }) => entry.type === 'approval.approved' || entry.type === 'approval.rejected');
+    expect(terminalEvents).toHaveLength(1);
   });
 
   it('expires approvals and blocks late resolution with event recording', async () => {
@@ -112,5 +121,24 @@ describe('ApprovalManager', () => {
 
     const stored = await store.getApproval(approval.id);
     expect(stored?.status).toBe('approved');
+  });
+
+  it('treats exact expiration boundary as expired', async () => {
+    const root = await createTmpDir();
+    const clockDate = new Date('2026-05-31T10:00:00.000Z');
+    const store = new FileStateStore(root, () => clockDate);
+    const manager = new ApprovalManager(store, () => clockDate);
+
+    const approval = await manager.requestApproval({
+      sessionId: 'sess_boundary_expiry',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      riskSummary: 'Boundary expiry should fail',
+      ttlMs: 0,
+    });
+
+    await expect(manager.resolve(approval.id, 'approved', 'ou_1')).rejects.toThrow(`Approval expired: ${approval.id}`);
+    const stored = await store.getApproval(approval.id);
+    expect(stored?.status).toBe('expired');
   });
 });

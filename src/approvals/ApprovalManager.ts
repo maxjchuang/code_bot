@@ -28,7 +28,7 @@ export class ApprovalManager {
       }
 
       const now = this.clock();
-      if (now.getTime() > new Date(approval.expiresAt).getTime()) {
+      if (now.getTime() >= new Date(approval.expiresAt).getTime()) {
         const expired: ApprovalRecord = {
           ...approval,
           status: 'expired',
