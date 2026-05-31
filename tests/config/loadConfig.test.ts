@@ -29,6 +29,29 @@ describe('loadConfig', () => {
     expect(config.output.directMaxChars).toBe(1800);
   });
 
+  it('resolves relative project paths from projectRoot', async () => {
+    const root = await createTmpDir();
+    await mkdir(join(root, '.code-bot'), { recursive: true });
+    await writeFile(
+      join(root, '.code-bot/config.json'),
+      JSON.stringify({
+        feishu: { appId: 'cli_xxx', appSecret: 'secret' },
+        allowedUsers: ['ou_user_1'],
+        allowedChatIds: ['oc_group_1'],
+        projects: [
+          { id: 'repo', name: 'Repo', path: 'repo', codexArgs: [] }
+        ],
+        output: { directMaxChars: 1800, chunkSize: 1500 },
+        codex: { command: 'codex', defaultArgs: [] }
+      }),
+      'utf8',
+    );
+
+    const config = await loadConfig(root);
+
+    expect(config.projects[0].path).toBe(join(root, 'repo'));
+  });
+
   it('rejects duplicate project ids', async () => {
     const root = await createTmpDir();
     await mkdir(join(root, '.code-bot'), { recursive: true });
@@ -49,5 +72,13 @@ describe('loadConfig', () => {
     );
 
     await expect(loadConfig(root)).rejects.toThrow('Duplicate project id: repo');
+  });
+
+  it('rejects malformed top-level null config', async () => {
+    const root = await createTmpDir();
+    await mkdir(join(root, '.code-bot'), { recursive: true });
+    await writeFile(join(root, '.code-bot/config.json'), 'null', 'utf8');
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config structure');
   });
 });
