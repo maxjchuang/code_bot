@@ -13,7 +13,7 @@ export type CommandName =
 
 export type IncomingText =
   | { kind: 'message'; text: string }
-  | { kind: 'command'; name: CommandName | string; args: string[]; raw: string };
+  | { kind: 'command'; name: string; args: string[]; raw: string };
 
 const payloadCommands = new Set(['send']);
 
@@ -23,9 +23,10 @@ export function parseIncomingText(text: string): IncomingText {
     return { kind: 'message', text };
   }
 
-  const firstSpace = trimmed.indexOf(' ');
-  const name = (firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace)).toLowerCase();
-  const rest = firstSpace === -1 ? '' : trimmed.slice(firstSpace + 1).trim();
+  const firstWhitespace = trimmed.search(/\s/);
+  const hasWhitespace = firstWhitespace !== -1;
+  const name = (hasWhitespace ? trimmed.slice(1, firstWhitespace) : trimmed.slice(1)).toLowerCase();
+  const rest = hasWhitespace ? trimmed.slice(firstWhitespace + 1).trim() : '';
   const args = payloadCommands.has(name) ? (rest ? [rest] : []) : rest.split(/\s+/).filter(Boolean);
 
   return { kind: 'command', name, args, raw: trimmed };
