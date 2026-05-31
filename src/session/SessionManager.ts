@@ -60,12 +60,11 @@ export class SessionManager {
     if (!projectId || !resolveProject(this.config, projectId)) {
       return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
     }
-    const existing = await this.store.getChat(input.chatId);
     await this.store.saveChat({
       chatId: input.chatId,
       chatType: input.chatType,
       currentProjectId: projectId,
-      currentSessionId: existing?.currentSessionId,
+      currentSessionId: undefined,
     });
     return { reply: `Current project set to ${projectId}.` };
   }
@@ -193,8 +192,15 @@ export class SessionManager {
     if (!chat?.currentSessionId) {
       return { reply: 'No active session.' };
     }
-    const count = requestedCount ? Number.parseInt(requestedCount, 10) : 80;
-    const lines = await this.store.tailSessionLog(chat.currentSessionId, Number.isFinite(count) && count > 0 ? count : 80);
+
+    let count = 80;
+    if (requestedCount !== undefined) {
+      if (!/^[1-9]\d*$/.test(requestedCount)) {
+        return { reply: 'Invalid tail count.' };
+      }
+      count = Number.parseInt(requestedCount, 10);
+    }
+    const lines = await this.store.tailSessionLog(chat.currentSessionId, count);
     return { reply: formatTail(lines) };
   }
 

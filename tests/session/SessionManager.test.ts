@@ -5,6 +5,7 @@ import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { createTmpDir } from '../helpers/tmp.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
+import type { BotConfig } from '../../src/domain/types.js';
 
 describe('SessionManager', () => {
   it('creates a session and sends normal messages to Codex', async () => {
@@ -241,5 +242,75 @@ describe('SessionManager', () => {
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
     expect(tail.reply).toContain('```text');
+  });
+
+  it('returns help command listing', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    const help = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/help' });
+    expect(help.reply).toContain('/projects');
+    expect(help.reply).toContain('/use <project>');
+    expect(help.reply).toContain('/tail [n]');
+  });
+
+  it('clears active session when switching to another project with /use', async () => {
+    const root = await createTmpDir();
+    const config: BotConfig = {
+      ...sampleConfig(root),
+      projects: [
+        ...sampleConfig(root).projects,
+        { id: 'repo2', name: 'Repo 2', path: root, codexArgs: [] },
+      ],
+    };
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(config, store, new FakeCodexRunner());
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    expect(created.reply).toContain('Created session');
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBeTruthy();
+
+    const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
+    expect(switched.reply).toBe('Current project set to repo2.');
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBeUndefined();
+
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello' });
+    expect(sent.reply).toBe('No active session. Run /projects and /new <project> first.');
+  });
+
+  it('validates /tail count and rejects invalid values', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    const invalids = ['10abc', '1e3', '0', '-1'];
+    for (const value of invalids) {
+      const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/tail ${value}` });
+      expect(result.reply).toBe('Invalid tail count.');
+    }
+  });
+
+  it('tails only the requested number of latest lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await runner.emitOutput(sessionId, 'line-1\n');
+    await runner.emitOutput(sessionId, 'line-2\n');
+    await runner.emitOutput(sessionId, 'line-3\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 2' });
+    expect(tail.reply).toContain('line-2');
+    expect(tail.reply).toContain('line-3');
+    expect(tail.reply).not.toContain('line-1');
   });
 });
