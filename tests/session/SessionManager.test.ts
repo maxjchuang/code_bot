@@ -392,6 +392,16 @@ describe('SessionManager', () => {
     expect(tail.reply).toContain('ready');
   });
 
+  it('returns no active session for /tail and /rawtail before a session exists', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    for (const command of ['/tail', '/rawtail']) {
+      const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: command });
+      expect(result.reply).toBe('No active session.');
+    }
+  });
+
   it('returns help command listing', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
@@ -559,6 +569,42 @@ describe('SessionManager', () => {
 
     expect(rawtail.reply).toContain('```text');
     expect(rawtail.reply).toContain('\u001b[?2004hraw terminal line');
+  });
+
+  it('defaults /tail to the latest 80 readable lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const lines = Array.from({ length: 85 }, (_, index) => `plain-line-${index + 1}`);
+    await runner.emitOutput(sessionId, `${lines.join('\n')}\n`);
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail' });
+
+    expect(tail.reply).toContain('plain-line-6');
+    expect(tail.reply).toContain('plain-line-85');
+    expect(tail.reply).not.toContain('\nplain-line-5\n');
+  });
+
+  it('defaults /rawtail to the latest 80 raw lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const lines = Array.from({ length: 85 }, (_, index) => `\u001b[${index + 1}mraw-line-${index + 1}`);
+    await runner.emitOutput(sessionId, `${lines.join('\n')}\n`);
+
+    const rawtail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/rawtail' });
+
+    expect(rawtail.reply).toContain('\u001b[6mraw-line-6');
+    expect(rawtail.reply).toContain('\u001b[85mraw-line-85');
+    expect(rawtail.reply).not.toContain('\u001b[5mraw-line-5');
   });
 
   it('validates /rawtail count like /tail', async () => {
