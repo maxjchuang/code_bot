@@ -13,6 +13,24 @@ describe('sanitizeTerminalOutput', () => {
     expect(result.removedLineCount).toBe(0);
   });
 
+  it('strips single-character ESC terminal mode controls', () => {
+    const result = sanitizeTerminalOutput([
+      '\u001b=plain keypad application',
+      '\u001b>plain keypad numeric',
+      '\u001b7plain saved cursor',
+      '\u001b8plain restored cursor',
+    ]);
+
+    expect(result.hadControlSequences).toBe(true);
+    expect(result.readableLines).toEqual([
+      'plain keypad application',
+      'plain keypad numeric',
+      'plain saved cursor',
+      'plain restored cursor',
+    ]);
+    expect(result.removedLineCount).toBe(0);
+  });
+
   it('filters Codex TUI banner and redraw noise while preserving useful lines', () => {
     const result = sanitizeTerminalOutput([
       '\u001b[2m╭───────────────────────────────────────╮',
