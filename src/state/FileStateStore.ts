@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ApprovalRecord, BotEvent, ChatContext, SessionRecord } from '../domain/types.js';
@@ -6,7 +7,7 @@ type Clock = () => Date;
 
 export class FileStateStore {
   private writeChain: Promise<unknown> = Promise.resolve();
-  private activeWriteDepth = 0;
+  private readonly writeContext = new AsyncLocalStorage<boolean>();
   private readonly baseDir: string;
 
   constructor(projectRoot: string, private readonly clock: Clock = () => new Date()) {
@@ -31,6 +32,20 @@ export class FileStateStore {
   async getSession(sessionId: string): Promise<SessionRecord | undefined> {
     const id = this.safeFileName(sessionId);
     return this.readJson<SessionRecord>(join(this.baseDir, 'state/sessions', `${id}.json`));
+  }
+
+  async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+    const id = this.safeFileName(sessionId);
+    const filePath = join(this.baseDir, 'state/sessions', `${id}.json`);
+    return this.enqueue(async () => {
+      const current = await this.readJson<SessionRecord>(filePath);
+      if (!current) {
+        return undefined;
+      }
+      const next = updater(current);
+      await this.writeJsonFile(filePath, next);
+      return next;
+    });
   }
 
   async listSessionsByChat(chatId: string, limit = 10): Promise<SessionRecord[]> {
@@ -149,32 +164,27 @@ export class FileStateStore {
   }
 
   private async writeJson(filePath: string, value: unknown): Promise<void> {
-    await this.enqueue(async () => {
-      await mkdir(dirname(filePath), { recursive: true });
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-      await rename(tmpPath, filePath);
-    });
+    await this.enqueue(async () => this.writeJsonFile(filePath, value));
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const run = async () => {
-      this.activeWriteDepth += 1;
-      try {
-        return await operation();
-      } finally {
-        this.activeWriteDepth -= 1;
-      }
-    };
+    const run = () => this.writeContext.run(true, operation);
     const next = this.writeChain.then(run, run);
     this.writeChain = next.catch(() => undefined);
     return next;
   }
 
   private async waitForPendingWrites(): Promise<void> {
-    if (this.activeWriteDepth > 0) {
+    if (this.writeContext.getStore() === true) {
       return;
     }
     await this.writeChain;
+  }
+
+  private async writeJsonFile(filePath: string, value: unknown): Promise<void> {
+    await mkdir(dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await rename(tmpPath, filePath);
   }
 }

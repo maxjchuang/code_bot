@@ -291,14 +291,11 @@ export class SessionManager {
       await this.runner.stop(sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const latest = await this.store.getSession(sessionId);
-      if (latest) {
-        await this.store.saveSession({
-          ...latest,
-          stopRequested: undefined,
-          updatedAt: new Date().toISOString(),
-        });
-      }
+      await this.store.updateSession(sessionId, (latest) => ({
+        ...latest,
+        stopRequested: undefined,
+        updatedAt: new Date().toISOString(),
+      }));
       await this.store.appendEvent({
         type: 'session.stop_failed',
         at: new Date().toISOString(),
@@ -307,15 +304,13 @@ export class SessionManager {
       return { reply: `Failed to stop session ${sessionId}: ${message}` };
     }
     const stoppedAt = new Date().toISOString();
-    const latest = await this.store.getSession(sessionId);
-    const merged = latest ?? preStopSession;
-    await this.store.saveSession({
-      ...merged,
+    await this.store.updateSession(sessionId, (latest) => ({
+      ...latest,
       status: 'interrupted',
       stopRequested: true,
-      lastSummary: merged.lastSummary ?? preStopSession.lastSummary,
+      lastSummary: latest.lastSummary ?? preStopSession.lastSummary,
       updatedAt: stoppedAt,
-    });
+    }));
     await this.store.appendEvent({
       type: 'session.stopped',
       at: stoppedAt,
