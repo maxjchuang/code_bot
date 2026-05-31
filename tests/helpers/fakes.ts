@@ -47,7 +47,7 @@ export class FakeCodexRunner implements CodexRunner {
     if (!options) {
       throw new Error(`Unknown fake session: ${sessionId}`);
     }
-    options.onOutput(text);
+    await Promise.resolve(options.onOutput(text));
   }
 
   async exit(sessionId: string, exitCode: number | undefined): Promise<void> {
@@ -57,6 +57,10 @@ export class FakeCodexRunner implements CodexRunner {
     }
     this.sessions.delete(sessionId);
     this.sessionOptions.delete(sessionId);
-    options.onExit(exitCode);
+    await Promise.resolve(options.onExit(exitCode));
+  }
+
+  dropSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
   }
 }

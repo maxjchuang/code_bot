@@ -47,7 +47,8 @@ export class SessionManager {
   }
 
   private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
-    const selectedProjectId = projectId ?? (await this.store.getChat(input.chatId))?.currentProjectId;
+    const previousChat = await this.store.getChat(input.chatId);
+    const selectedProjectId = projectId ?? previousChat?.currentProjectId;
     if (!selectedProjectId) {
       return { reply: 'Choose a project with /projects and /new <project>.' };
     }
@@ -68,15 +69,7 @@ export class SessionManager {
       updatedAt: now,
       logPath: this.store.sessionLogPath(sessionId),
     };
-    const chat: ChatContext = {
-      chatId: input.chatId,
-      chatType: input.chatType,
-      currentProjectId: project.id,
-      currentSessionId: sessionId,
-    };
-
     await this.store.saveSession(session);
-    await this.store.saveChat(chat);
     try {
       await this.runner.start({
         sessionId,
@@ -114,6 +107,13 @@ export class SessionManager {
       at: now,
       data: { sessionId, projectId: project.id, chatId: input.chatId },
     });
+    const chat: ChatContext = {
+      chatId: input.chatId,
+      chatType: input.chatType,
+      currentProjectId: project.id,
+      currentSessionId: sessionId,
+    };
+    await this.store.saveChat(chat);
 
     return { reply: `Created session ${sessionId} for project ${project.id}.` };
   }
@@ -127,7 +127,24 @@ export class SessionManager {
     if (!session || session.status !== 'running') {
       return { reply: 'No running session. Run /new <project> first.' };
     }
-    await this.runner.send(chat.currentSessionId, text);
+    try {
+      await this.runner.send(chat.currentSessionId, text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAt = new Date().toISOString();
+      await this.store.saveSession({
+        ...session,
+        status: 'interrupted',
+        lastSummary: `Failed to send to Codex: ${message}`,
+        updatedAt: failedAt,
+      });
+      await this.store.appendEvent({
+        type: 'session.send_failed',
+        at: failedAt,
+        data: { sessionId: chat.currentSessionId, chatId, reason: message },
+      });
+      return { reply: 'No running session. Run /new <project> first.' };
+    }
     await this.store.appendEvent({
       type: 'session.input',
       at: new Date().toISOString(),

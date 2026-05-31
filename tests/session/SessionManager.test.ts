@@ -46,16 +46,19 @@ describe('SessionManager', () => {
     });
     expect(created.reply).toContain('Failed to start Codex');
 
-    const chat = await store.getChat('oc_1');
-    expect(chat?.currentSessionId).toBeTruthy();
-    const session = await store.getSession(chat!.currentSessionId!);
-    expect(session?.status).toBe('exited');
-    expect(session?.lastSummary).toContain('Failed to start Codex: spawn failed');
+    const sessionsReply = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/status',
+    });
+    expect(sessionsReply.reply).toBe('No active session.');
 
     const day = new Date().toISOString().slice(0, 10);
     const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
     const content = await readFile(eventPath, 'utf8');
     expect(content).toContain('"type":"session.start_failed"');
+    expect(content).toContain('"reason":"spawn failed"');
   });
 
   it('blocks sends when current session has exited', async () => {
@@ -84,7 +87,6 @@ describe('SessionManager', () => {
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
     await runner.emitOutput(sessionId, 'hello from codex\n');
     await runner.exit(sessionId, 0);
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const logLines = await store.tailSessionLog(sessionId, 10);
     expect(logLines).toContain('hello from codex');
@@ -100,6 +102,77 @@ describe('SessionManager', () => {
     });
     expect(secondSend.reply).toBe('No running session. Run /new <project> first.');
     expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
+  it('keeps previous chat currentSessionId when replacement start fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const first = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    expect(first.reply).toContain('Created session');
+    const originalSessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    runner.startError = new Error('spawn failed');
+    const second = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    expect(second.reply).toContain('Failed to start Codex');
+
+    const chatAfterFailure = await store.getChat('oc_1');
+    expect(chatAfterFailure?.currentSessionId).toBe(originalSessionId);
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'still works',
+    });
+    expect(sent.reply).toContain('Sent to Codex');
+    expect(runner.sentMessages).toEqual(['still works']);
+  });
+
+  it('handles runner send failure by marking interrupted and returning no-running-session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    expect(created.reply).toContain('Created session');
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    runner.dropSession(sessionId);
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+    expect(sent.reply).toBe('No running session. Run /new <project> first.');
+
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('interrupted');
+    expect(session?.lastSummary).toContain('Failed to send to Codex: Unknown fake session');
+
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+    const content = await readFile(eventPath, 'utf8');
+    expect(content).toContain('"type":"session.send_failed"');
   });
 
   it('blocks unauthorized users', async () => {
