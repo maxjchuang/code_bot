@@ -103,6 +103,7 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     clearMocks: true,
+    passWithNoTests: true,
   },
 });
 ```
