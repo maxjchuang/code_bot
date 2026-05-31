@@ -115,4 +115,41 @@ describe('FileStateStore', () => {
 
     await expect(store.listPendingApprovalsByChat('oc_1')).resolves.toMatchObject([{ id: 'ap_pending' }]);
   });
+
+  it('lists recent sessions for a chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveSession({
+      id: 'sess_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      updatedAt: '2026-05-31T10:01:00.000Z',
+      logPath: store.sessionLogPath('sess_old'),
+    });
+    await store.saveSession({
+      id: 'sess_new',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:02:00.000Z',
+      updatedAt: '2026-05-31T10:03:00.000Z',
+      logPath: store.sessionLogPath('sess_new'),
+    });
+    await store.saveSession({
+      id: 'sess_other_chat',
+      chatId: 'oc_2',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-05-31T10:04:00.000Z',
+      updatedAt: '2026-05-31T10:05:00.000Z',
+      logPath: store.sessionLogPath('sess_other_chat'),
+    });
+
+    await expect(store.listSessionsByChat('oc_1')).resolves.toMatchObject([{ id: 'sess_new' }, { id: 'sess_old' }]);
+  });
 });

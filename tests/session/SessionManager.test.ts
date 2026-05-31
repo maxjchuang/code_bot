@@ -360,4 +360,102 @@ describe('SessionManager', () => {
     expect(tail.reply).toContain('line-3');
     expect(tail.reply).not.toContain('line-1');
   });
+
+  it('stops current running session and clears chat current session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const stopped = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    expect(stopped.reply).toBe(`Stopped session ${sessionId}.`);
+
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentSessionId).toBeUndefined();
+    const session = await store.getSession(sessionId);
+    expect(session?.status).toBe('interrupted');
+
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+    const content = await readFile(eventPath, 'utf8');
+    expect(content).toContain('"type":"session.stopped"');
+  });
+
+  it('lists sessions with /sessions and has empty-state fallback', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    const empty = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+    expect(empty.reply).toContain('No sessions for this chat yet');
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+    expect(listed.reply).toContain('repo');
+    expect(listed.reply).toContain('running');
+  });
+
+  it('supports /approve and /reject approval commands', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await store.saveApproval({
+      id: 'ap_pending_approve',
+      sessionId: 'sess_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'approve me',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    });
+    const approved = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/approve ap_pending_approve' });
+    expect(approved.reply).toContain('Approved approval ap_pending_approve.');
+    expect((await store.getApproval('ap_pending_approve'))?.status).toBe('approved');
+
+    await store.saveApproval({
+      id: 'ap_pending_reject',
+      sessionId: 'sess_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'reject me',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    });
+    const rejected = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/reject ap_pending_reject' });
+    expect(rejected.reply).toContain('Rejected approval ap_pending_reject.');
+    expect((await store.getApproval('ap_pending_reject'))?.status).toBe('rejected');
+  });
+
+  it('returns useful fallback errors for /approve and /reject', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    const usageApprove = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/approve' });
+    expect(usageApprove.reply).toBe('Usage: /approve <id>');
+    const usageReject = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/reject' });
+    expect(usageReject.reply).toBe('Usage: /reject <id>');
+
+    const notFound = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/approve missing_id' });
+    expect(notFound.reply).toBe('Approval not found: missing_id');
+
+    await store.saveApproval({
+      id: 'ap_expired',
+      sessionId: 'sess_1',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      status: 'pending',
+      riskSummary: 'expired',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T10:00:00.000Z',
+    });
+    const expired = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/reject ap_expired' });
+    expect(expired.reply).toBe('Approval expired: ap_expired');
+  });
 });

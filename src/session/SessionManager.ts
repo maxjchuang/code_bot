@@ -1,4 +1,5 @@
 import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
+import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { formatTail } from '../output/OutputFormatter.js';
@@ -17,11 +18,15 @@ export interface BotTextResult {
 }
 
 export class SessionManager {
+  private readonly approvalManager: ApprovalManager;
+
   constructor(
     private readonly config: BotConfig,
     private readonly store: FileStateStore,
     private readonly runner: CodexRunner,
-  ) {}
+  ) {
+    this.approvalManager = new ApprovalManager(store);
+  }
 
   async handleText(input: IncomingBotText): Promise<BotTextResult> {
     if (!isAuthorizedMessage(this.config, input)) {
@@ -48,6 +53,14 @@ export class SessionManager {
         return this.status(input.chatId);
       case 'tail':
         return this.tail(input.chatId, parsed.args[0]);
+      case 'stop':
+        return this.stopCurrentSession(input);
+      case 'sessions':
+        return this.sessions(input.chatId);
+      case 'approve':
+        return this.resolveApproval(parsed.args[0], 'approved', input.userId);
+      case 'reject':
+        return this.resolveApproval(parsed.args[0], 'rejected', input.userId);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -203,6 +216,80 @@ export class SessionManager {
     }
     const lines = await this.store.tailSessionLog(chat.currentSessionId, count);
     return { reply: formatTail(lines) };
+  }
+
+  private async stopCurrentSession(input: IncomingBotText): Promise<BotTextResult> {
+    const chat = await this.store.getChat(input.chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session.' };
+    }
+    const session = await this.store.getSession(chat.currentSessionId);
+    if (!session || session.status !== 'running') {
+      await this.store.saveChat({
+        chatId: input.chatId,
+        chatType: input.chatType,
+        currentProjectId: chat.currentProjectId,
+        currentSessionId: undefined,
+      });
+      return { reply: 'No running session.' };
+    }
+
+    try {
+      await this.runner.stop(chat.currentSessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.store.appendEvent({
+        type: 'session.stop_failed',
+        at: new Date().toISOString(),
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId, reason: message },
+      });
+      return { reply: `Failed to stop session ${chat.currentSessionId}: ${message}` };
+    }
+
+    const stoppedAt = new Date().toISOString();
+    await this.store.saveSession({
+      ...session,
+      status: 'interrupted',
+      lastSummary: session.lastSummary ?? `Stopped by ${input.userId}`,
+      updatedAt: stoppedAt,
+    });
+    await this.store.appendEvent({
+      type: 'session.stopped',
+      at: stoppedAt,
+      data: { sessionId: chat.currentSessionId, chatId: input.chatId, userId: input.userId },
+    });
+    await this.store.saveChat({
+      chatId: input.chatId,
+      chatType: input.chatType,
+      currentProjectId: chat.currentProjectId,
+      currentSessionId: undefined,
+    });
+    return { reply: `Stopped session ${session.id}.` };
+  }
+
+  private async sessions(chatId: string): Promise<BotTextResult> {
+    const sessions = await this.store.listSessionsByChat(chatId, 10);
+    if (sessions.length === 0) {
+      return { reply: 'No sessions for this chat yet. Run /new <project> to start one.' };
+    }
+    return {
+      reply: sessions.map((session) => `${session.id} | ${session.projectId} | ${session.status} | ${session.updatedAt}`).join('\n'),
+    };
+  }
+
+  private async resolveApproval(approvalId: string | undefined, status: 'approved' | 'rejected', userId: string): Promise<BotTextResult> {
+    if (!approvalId) {
+      const command = status === 'approved' ? '/approve' : '/reject';
+      return { reply: `Usage: ${command} <id>` };
+    }
+    try {
+      const resolved = await this.approvalManager.resolve(approvalId, status, userId);
+      const action = status === 'approved' ? 'Approved' : 'Rejected';
+      return { reply: `${action} approval ${resolved.id}.` };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { reply: message };
+    }
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {

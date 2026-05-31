@@ -32,6 +32,31 @@ export class FileStateStore {
     return this.readJson<SessionRecord>(join(this.baseDir, 'state/sessions', `${id}.json`));
   }
 
+  async listSessionsByChat(chatId: string, limit = 10): Promise<SessionRecord[]> {
+    await this.writeChain;
+    const sessionsDir = join(this.baseDir, 'state/sessions');
+    let files: string[];
+    try {
+      files = await readdir(sessionsDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+
+    const sessions = await Promise.all(
+      files
+        .filter((fileName) => fileName.endsWith('.json'))
+        .map(async (fileName) => this.readJson<SessionRecord>(join(sessionsDir, fileName))),
+    );
+
+    return sessions
+      .filter((session): session is SessionRecord => Boolean(session && session.chatId === chatId))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit);
+  }
+
   async saveApproval(approval: ApprovalRecord): Promise<void> {
     const id = this.safeFileName(approval.id);
     await this.writeJson(join(this.baseDir, 'state/approvals', `${id}.json`), approval);
