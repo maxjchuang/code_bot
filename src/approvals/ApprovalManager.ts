@@ -23,6 +23,10 @@ export class ApprovalManager {
         throw new Error(`Approval not found: ${approvalId}`);
       }
 
+      if (approval.status !== 'pending') {
+        throw new Error(`Approval is not pending: ${approvalId}`);
+      }
+
       const now = this.clock();
       if (now.getTime() > new Date(approval.expiresAt).getTime()) {
         const expired: ApprovalRecord = {
@@ -34,9 +38,6 @@ export class ApprovalManager {
         throw new Error(`Approval expired: ${approvalId}`);
       }
 
-      if (approval.status !== 'pending') {
-        throw new Error(`Approval is not pending: ${approvalId}`);
-      }
       const resolvedAt = this.clock().toISOString();
       const resolved: ApprovalRecord = {
         ...approval,

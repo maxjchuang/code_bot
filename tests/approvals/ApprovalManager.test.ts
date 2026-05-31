@@ -88,4 +88,29 @@ describe('ApprovalManager', () => {
     const events = await readFile(join(root, '.code-bot/events/2026-05-31.jsonl'), 'utf8');
     expect(events).toContain('"type":"approval.expired"');
   });
+
+  it('does not overwrite resolved approvals with expired after their original resolution', async () => {
+    let now = +new Date('2026-05-31T10:00:00.000Z');
+    const clock = () => new Date(now);
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, clock);
+    const manager = new ApprovalManager(store, clock);
+
+    const approval = await manager.requestApproval({
+      sessionId: 'sess_resolved_nonexpirable',
+      chatId: 'oc_1',
+      requestedBy: 'ou_1',
+      riskSummary: 'Resolved should stay resolved test',
+      ttlMs: 1000,
+    });
+
+    const approved = await manager.resolve(approval.id, 'approved', 'ou_1');
+    expect(approved.status).toBe('approved');
+
+    now += 2_000;
+    await expect(manager.resolve(approval.id, 'rejected', 'ou_2')).rejects.toThrow(`Approval is not pending: ${approval.id}`);
+
+    const stored = await store.getApproval(approval.id);
+    expect(stored?.status).toBe('approved');
+  });
 });
