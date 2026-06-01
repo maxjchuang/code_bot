@@ -26,7 +26,12 @@ export interface CodexSessionDiscovery {
   >;
 }
 
+export interface Notifier {
+  sendText(chatId: string, text: string): Promise<void>;
+}
+
 export interface SessionManagerDeps {
+  notifier?: Notifier;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: {
     maxAttempts?: number;

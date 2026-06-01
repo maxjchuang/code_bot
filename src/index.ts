@@ -20,6 +20,7 @@ export interface BootstrapDeps {
     config: BotConfig;
     store: FileStateStoreType;
     codexRunner: CodexRunner;
+    notifier?: FeishuGateway;
   }) => {
     sessionManager: SessionManager;
     healthCheck: () => Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -41,7 +42,8 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const config = await loadConfigFn(projectRoot);
   const store = createStoreFn(projectRoot);
   const codexRunner = createCodexRunnerFn(config.codex);
-  const app = createAppFn({ projectRoot, config, store, codexRunner });
+  const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret);
+  const app = createAppFn({ projectRoot, config, store, codexRunner, notifier: gateway });
   const health = await app.healthCheck();
   if (!health.ok) {
     logger.error(`Codex health check failed: ${health.reason}`);
@@ -57,7 +59,6 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     }
   }
   await (app.recoverStartupState?.() ?? recoverStartupState(store));
-  const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret);
   await gateway.start((message) => app.sessionManager.handleText(message).then((result) => result.reply));
 }
 

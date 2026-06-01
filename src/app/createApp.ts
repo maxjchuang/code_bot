@@ -1,7 +1,7 @@
 import type { BotConfig, SessionRecord } from '../domain/types.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
-import { SessionManager } from '../session/SessionManager.js';
+import { SessionManager, type Notifier } from '../session/SessionManager.js';
 import { resolveProject } from '../security/guards.js';
 
 export interface AppDependencies {
@@ -9,6 +9,7 @@ export interface AppDependencies {
   config: BotConfig;
   store: FileStateStore;
   codexRunner: CodexRunner;
+  notifier?: Notifier;
 }
 
 export function createApp(deps: AppDependencies): {
@@ -17,7 +18,7 @@ export function createApp(deps: AppDependencies): {
   recoverStartupState: () => Promise<void>;
 } {
   return {
-    sessionManager: new SessionManager(deps.config, deps.store, deps.codexRunner),
+    sessionManager: new SessionManager(deps.config, deps.store, deps.codexRunner, { notifier: deps.notifier }),
     healthCheck: () => deps.codexRunner.healthCheck(),
     recoverStartupState: () => recoverStartupState(deps.store, deps.config, deps.codexRunner),
   };

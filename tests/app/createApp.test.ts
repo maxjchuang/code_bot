@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app/createApp.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
@@ -15,6 +15,19 @@ describe('createApp', () => {
     });
 
     await expect(app.healthCheck()).resolves.toEqual({ ok: true });
+  });
+
+  it('passes notifier dependency to SessionManager', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn() };
+
+    const app = createApp({ projectRoot: root, config: sampleConfig(root), store, codexRunner: runner, notifier });
+
+    await app.sessionManager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sent = await app.sessionManager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello' });
+    expect(sent.reply).toContain('Sent to Codex');
   });
 
   it('auto-resumes the current Codex session on startup recovery', async () => {
