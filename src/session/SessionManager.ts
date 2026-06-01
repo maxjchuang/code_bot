@@ -52,6 +52,7 @@ interface PendingTurn {
   prompt: string;
   startedAt: string;
   outputStartIndex: number;
+  outputStartOffset: number;
   notified: boolean;
   lastCandidate?: string;
   timer?: ReturnType<typeof setTimeout>;
@@ -421,6 +422,7 @@ export class SessionManager {
     const notificationStartedAt = new Date().toISOString();
     if (notificationEnabled) {
       const outputStartIndex = (await this.store.tailSessionLog(chat.currentSessionId, 100000)).length;
+      const outputStartOffset = await this.store.sessionLogSize(chat.currentSessionId);
       this.pendingTurns.set(chat.currentSessionId, {
         id: `${chat.currentSessionId}:${Date.now()}`,
         sessionId: chat.currentSessionId,
@@ -429,6 +431,7 @@ export class SessionManager {
         prompt: text,
         startedAt: notificationStartedAt,
         outputStartIndex,
+        outputStartOffset,
         notified: false,
       });
     }
@@ -698,8 +701,7 @@ export class SessionManager {
     if (!turn || turn.notified) {
       return;
     }
-    const lines = await this.store.tailSessionLog(sessionId, 100000);
-    const pendingLines = lines.slice(turn.outputStartIndex);
+    const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
     const extraction = extractFinalAnswer({
       rawLines: pendingLines,
       prompt: turn.prompt,
@@ -739,9 +741,9 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const lines = await this.store.tailSessionLog(sessionId, 100000);
+      const lines = await this.pendingTurnLogLines(sessionId, turn);
       const extraction = extractFinalAnswer({
-        rawLines: lines.slice(turn.outputStartIndex),
+        rawLines: lines,
         prompt: turn.prompt,
         maxChars: this.config.notifications.maxFinalChars,
       });
@@ -764,6 +766,14 @@ export class SessionManager {
       }
       this.pendingTurns.delete(sessionId);
     }
+  }
+
+  private async pendingTurnLogLines(sessionId: string, turn: PendingTurn): Promise<string[]> {
+    if (turn.outputStartOffset !== undefined) {
+      return this.store.sessionLogLinesFrom(sessionId, turn.outputStartOffset);
+    }
+    const lines = await this.store.tailSessionLog(sessionId, 100000);
+    return lines.slice(turn.outputStartIndex);
   }
 
   private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {

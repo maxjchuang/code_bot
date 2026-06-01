@@ -14,7 +14,11 @@ export interface ExtractFinalAnswerInput {
 }
 
 export function extractFinalAnswer(input: ExtractFinalAnswerInput): FinalAnswerExtraction {
-  const sanitized = sanitizeTerminalOutput(scopeRawLinesAfterLastDivider(input.rawLines).map(protectMarkdownHorizontalRule));
+  const scopedRawLines = scopeRawLinesForFinalAnswer(input.rawLines);
+  if (scopedRawLines.length === 0) {
+    return { kind: 'empty', reason: 'No final answer detected.' };
+  }
+  const sanitized = sanitizeTerminalOutput(scopedRawLines.map(protectMarkdownHorizontalRule));
   const prompt = normalizeComparable(input.prompt ?? '');
   const lines = sanitized.readableLines
     .flatMap((line) => line.split('\n'))
@@ -61,19 +65,33 @@ function isProcessLine(line: string): boolean {
   );
 }
 
-function scopeRawLinesAfterLastDivider(rawLines: string[]): string[] {
+function scopeRawLinesForFinalAnswer(rawLines: string[]): string[] {
   let lastDividerIndex = -1;
+  let lastCommandIndex = -1;
   for (let index = rawLines.length - 1; index >= 0; index -= 1) {
-    if (isDividerLine(rawLines[index] ?? '')) {
+    const line = rawLines[index] ?? '';
+    if (lastDividerIndex < 0 && isDividerLine(line)) {
       lastDividerIndex = index;
+    }
+    if (lastCommandIndex < 0 && isCommandTranscriptLine(line)) {
+      lastCommandIndex = index;
+    }
+    if (lastDividerIndex >= 0 && lastCommandIndex >= 0) {
       break;
     }
+  }
+  if (lastCommandIndex >= 0 && lastDividerIndex < lastCommandIndex) {
+    return [];
   }
   return lastDividerIndex >= 0 ? rawLines.slice(lastDividerIndex + 1) : rawLines;
 }
 
 function isDividerLine(line: string): boolean {
   return /^─{16,}$/.test(stripTerminalControlSequences(line).trim());
+}
+
+function isCommandTranscriptLine(line: string): boolean {
+  return stripTerminalControlSequences(line).trim().startsWith('• Ran ');
 }
 
 function isCodexStatusOrQuotaLine(line: string): boolean {

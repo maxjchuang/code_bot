@@ -72,6 +72,7 @@ describe('FinalAnswerExtractor', () => {
         '────────────────────────────────────────────────────────────────',
         '• Ran git status --short',
         '└ clean',
+        '────────────────────────────────────────────────────────────────',
         '最终回答：当前工作区干净。',
       ],
       prompt: '检查状态',
@@ -152,7 +153,7 @@ describe('FinalAnswerExtractor', () => {
 
   it('removes only direct command transcript child output after a ran line', () => {
     const result = extractFinalAnswer({
-      rawLines: ['• Ran tree src', '└ src', '输出结构：', '└ notifications'],
+      rawLines: ['• Ran tree src', '└ src', '────────────────────────────────', '输出结构：', '└ notifications'],
       prompt: '列目录',
       maxChars: 8000,
     });
@@ -161,6 +162,16 @@ describe('FinalAnswerExtractor', () => {
       kind: 'answer',
       text: ['输出结构：', '└ notifications'].join('\n'),
     });
+  });
+
+  it('does not treat command transcript output as final answer before a divider', () => {
+    const result = extractFinalAnswer({
+      rawLines: ['• Ran npm test', '└ running test suite', 'PASS tests/session/SessionManager.test.ts', '164 tests passed'],
+      prompt: '运行测试',
+      maxChars: 8000,
+    });
+
+    expect(result.kind).toBe('empty');
   });
 
   it('formats success and failure notifications', () => {
