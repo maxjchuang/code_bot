@@ -119,6 +119,30 @@ describe('PtyCodexRunner', () => {
     await expect(runner.send('sess-1', 'ignored')).rejects.toThrow('Codex session is not running: sess-1');
   });
 
+  it('starts resumed session with codex resume and target after options', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner(
+      { command: 'codex', defaultArgs: ['--ask-for-approval', 'on-request'] },
+      { spawn } as any,
+    );
+
+    await runner.start({
+      sessionId: 'sess-resume',
+      cwd: '/tmp/project',
+      args: ['--model', 'gpt-5'],
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      ['resume', '--ask-for-approval', 'on-request', '--model', 'gpt-5', '019e7f20-a667-7632-a808-c9595d77116e'],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
   it('rejects duplicate start for same session and only spawns once', async () => {
     const fake = createFakeTerm();
     const spawn = vi.fn(() => fake.term as any);

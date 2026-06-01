@@ -1,14 +1,282 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { createTmpDir } from '../helpers/tmp.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
-import type { BotConfig } from '../../src/domain/types.js';
+import type { BotConfig, SessionRecord } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForAssertion(assertion: () => Promise<void> | void, timeoutMs = 500): Promise<void> {
+  const startedAt = Date.now();
+  let lastError: unknown;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await delay(10);
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms`);
+}
+
 describe('SessionManager', () => {
+  it('records discovered Codex session id after /new', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await waitForAssertion(async () => {
+      await expect(store.getSession(sessionId)).resolves.toMatchObject({
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      });
+    });
+    expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
+  });
+
+  it('replies and saves chat before slow Codex session discovery finishes', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const discovery = deferred<{ ok: true; codexSessionId: string }>();
+    const registry = {
+      discoverForProject: vi.fn().mockReturnValue(discovery.promise),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    expect(result.reply).toContain('Created session');
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    const sessionId = chat?.currentSessionId;
+    expect(sessionId).toBeDefined();
+    await expect(store.getSession(sessionId!)).resolves.not.toHaveProperty('codexSessionId');
+    expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
+
+    discovery.resolve({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
+    await waitForAssertion(async () => {
+      await expect(store.getSession(sessionId!)).resolves.toMatchObject({
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      });
+    });
+  });
+
+  it('polls Codex session discovery until a delayed session file is found', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const sleeps: number[] = [];
+    const registry = {
+      discoverForProject: vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, reason: 'not-found' })
+        .mockResolvedValueOnce({ ok: false, reason: 'not-found' })
+        .mockResolvedValueOnce({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: {
+        maxAttempts: 3,
+        retryDelayMs: 25,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await waitForAssertion(async () => {
+      await expect(store.getSession(sessionId)).resolves.toMatchObject({
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      });
+    });
+    expect(registry.discoverForProject).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([25, 25]);
+  });
+
+  it('timestamps Codex session discovery when the id is stored after a slow scan', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const storedCodexId = deferred<void>();
+      class ObservingStore extends FileStateStore {
+        async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+          const next = await super.updateSession(sessionId, updater);
+          if (next?.codexSessionId) {
+            storedCodexId.resolve();
+          }
+          return next;
+        }
+      }
+
+      const store = new ObservingStore(root);
+      const runner = new FakeCodexRunner();
+      const discovery = deferred<{ ok: true; codexSessionId: string }>();
+      const registry = {
+        discoverForProject: vi.fn().mockReturnValue(discovery.promise),
+      };
+      const manager = new SessionManager(sampleConfig(root), store, runner, { codexSessionRegistry: registry as any });
+
+      vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+      vi.setSystemTime(new Date('2026-06-01T00:00:05.000Z'));
+      await runner.exit(sessionId, 0);
+
+      vi.setSystemTime(new Date('2026-06-01T00:00:10.000Z'));
+      discovery.resolve({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
+      await storedCodexId.promise;
+
+      await expect(store.getSession(sessionId)).resolves.toMatchObject({
+        status: 'exited',
+        exitCode: 0,
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+        updatedAt: '2026-06-01T00:00:10.000Z',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves Codex session id when discovery interleaves with exit persistence', async () => {
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    class InterleavingStore extends FileStateStore {
+      private injectedBeforeStaleExitSave = false;
+      private injectedBeforeExitUpdate = false;
+
+      async saveSession(session: SessionRecord): Promise<void> {
+        if (session.status === 'exited' && !session.codexSessionId && !this.injectedBeforeStaleExitSave) {
+          this.injectedBeforeStaleExitSave = true;
+          await super.updateSession(session.id, (latest) => ({
+            ...latest,
+            codexSessionId,
+            updatedAt: new Date().toISOString(),
+          }));
+        }
+        await super.saveSession(session);
+      }
+
+      async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+        return super.updateSession(sessionId, (current) => {
+          const next = updater(current);
+          if (next.status === 'exited' && !current.codexSessionId && !this.injectedBeforeExitUpdate) {
+            this.injectedBeforeExitUpdate = true;
+            return updater({
+              ...current,
+              codexSessionId,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          return next;
+        });
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new InterleavingStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockReturnValue(new Promise(() => undefined)),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.exit(sessionId, 0);
+
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      status: 'exited',
+      exitCode: 0,
+      codexSessionId,
+    });
+  });
+
+  it('replies and saves chat when Codex session discovery throws', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockRejectedValue(new Error('registry unavailable')),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexSessionRegistry: registry as any });
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    expect(created.reply).toContain('Created session');
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+    await waitForAssertion(async () => {
+      const content = await readFile(eventPath, 'utf8');
+      expect(content).toContain('"type":"session.codex_id_discovery_failed"');
+      expect(content).toContain('"reason":"registry unavailable"');
+      expect(content).toContain(`"sessionId":"${sessionId}"`);
+    });
+  });
+
+  it.each(['not-found', 'ambiguous'] as const)('records Codex session discovery failure for %s', async (reason) => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: false, reason }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+
+    await waitForAssertion(async () => {
+      const content = await readFile(eventPath, 'utf8');
+      expect(content).toContain('"type":"session.codex_id_discovery_failed"');
+      expect(content).toContain(`"reason":"${reason}"`);
+      expect(content).toContain(`"sessionId":"${sessionId}"`);
+    });
+  });
+
   it('creates a session and sends normal messages to Codex', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -31,6 +299,470 @@ describe('SessionManager', () => {
     });
     expect(sent.reply).toContain('Sent to Codex');
     expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
+  it('resumes from a code_bot session id with a known Codex id', async () => {
+    const root = await createTmpDir();
+    const repoPath = join(root, 'repo');
+    const repo2Path = join(root, 'repo2');
+    const config: BotConfig = {
+      ...sampleConfig(root),
+      projects: [
+        { id: 'repo', name: 'Repo', path: repoPath, codexArgs: [] },
+        { id: 'repo2', name: 'Repo 2', path: repo2Path, codexArgs: [] },
+      ],
+    };
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(config, store, runner);
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    const oldSessionId = 'sess_old';
+    const oldSession: SessionRecord = {
+      id: oldSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(oldSessionId),
+      codexSessionId,
+    };
+    await store.saveSession(oldSession);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: oldSessionId });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${oldSessionId}` });
+
+    expect(resumed.reply).toContain('Resumed session');
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0].mode).toEqual({ kind: 'resume', target: codexSessionId });
+    expect(runner.starts[0].cwd).toBe(repo2Path);
+    expect(runner.sentMessages).toEqual([]);
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'running',
+      resumedFromSessionId: oldSessionId,
+      resumeSource: 'code_bot',
+    });
+  });
+
+  it('discovers a missing Codex session id before resuming a code_bot session id', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: true, codexSessionId }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+    });
+    const oldSessionId = 'sess_old';
+    await store.saveSession({
+      id: oldSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'interrupted',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T09:09:20.569Z',
+      updatedAt: '2026-06-01T09:19:01.493Z',
+      logPath: store.sessionLogPath(oldSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${oldSessionId}` });
+
+    expect(resumed.reply).toContain('Resumed session');
+    expect(registry.discoverForProject).toHaveBeenCalledWith({ projectPath: root, startedAt: '2026-06-01T09:09:20.569Z' });
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0].mode).toEqual({ kind: 'resume', target: codexSessionId });
+    await expect(store.getSession(oldSessionId)).resolves.toMatchObject({ codexSessionId });
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      codexSessionId,
+      resumedFromSessionId: oldSessionId,
+      resumeSource: 'code_bot',
+    });
+  });
+
+  it('resumes from a Codex native id and explicit project', async () => {
+    const root = await createTmpDir();
+    const repoPath = join(root, 'repo');
+    const repo2Path = join(root, 'repo2');
+    const config: BotConfig = {
+      ...sampleConfig(root),
+      projects: [
+        { id: 'repo', name: 'Repo', path: repoPath, codexArgs: ['--model', 'gpt-5'] },
+        { id: 'repo2', name: 'Repo 2', path: repo2Path, codexArgs: ['--model', 'gpt-5-mini'] },
+      ],
+    };
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(config, store, runner);
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${codexSessionId} repo2` });
+
+    expect(resumed.reply).toContain('Resumed session');
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0]).toMatchObject({
+      cwd: repo2Path,
+      args: ['--model', 'gpt-5-mini'],
+      mode: { kind: 'resume', target: codexSessionId },
+    });
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'running',
+      codexSessionId,
+      resumeSource: 'codex',
+    });
+  });
+
+  it('does not treat an unknown code_bot session id as a native Codex id', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume sess_missing' });
+
+    expect(resumed.reply).toBe('Session not found: sess_missing');
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+  });
+
+  it('returns usage and keeps current session when /resume has no target', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const priorSessionId = 'sess_prior';
+    await store.saveSession({
+      id: priorSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(priorSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(resumed.reply).toBe('Usage: /resume <session> [project]');
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+  });
+
+  it('rejects /resume while the current session is running', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const first = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    expect(first.reply).toContain('Created session');
+    const originalSessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const resumed = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/resume 019e7f20-a667-7632-a808-c9595d77116e repo',
+    });
+
+    expect(resumed.reply).toBe(`Current session ${originalSessionId} is still running. Run /stop before resuming another session.`);
+    expect(runner.starts).toHaveLength(1);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(originalSessionId);
+  });
+
+  it('rejects /resume while the current session is starting', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const startingSessionId = 'sess_starting';
+    await store.saveSession({
+      id: startingSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'starting',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(startingSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: startingSessionId });
+
+    const resumed = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/resume 019e7f20-a667-7632-a808-c9595d77116e repo',
+    });
+
+    expect(resumed.reply).toBe(`Current session ${startingSessionId} is still running. Run /stop before resuming another session.`);
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(startingSessionId);
+  });
+
+  it('rejects native Codex id resume without an explicit or current project', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const resumed = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/resume 019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    expect(resumed.reply).toBe('Choose a project with /projects and /resume <codex-session-id> <project>.');
+    expect(runner.starts).toHaveLength(0);
+    expect(await store.getChat('oc_1')).toBeUndefined();
+  });
+
+  it('rejects malformed native Codex id resume without starting a runner', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const priorSessionId = 'sess_prior';
+    await store.saveSession({
+      id: priorSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(priorSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume ../x repo' });
+
+    expect(resumed.reply).toBe('Invalid session target: ../x');
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+  });
+
+  it.each(['--last', '-x'])('rejects option-looking native Codex id resume target %s', async (target) => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const priorSessionId = 'sess_prior';
+    await store.saveSession({
+      id: priorSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(priorSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${target} repo` });
+
+    expect(resumed.reply).toBe(`Invalid session target: ${target}`);
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+  });
+
+  it('rejects code_bot session resume when the source session belongs to another chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveSession({
+      id: 'sess_other',
+      chatId: 'oc_other',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_other',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath('sess_other'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume sess_other' });
+
+    expect(resumed.reply).toBe('Session not found: sess_other');
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+  });
+
+  it('rejects code_bot session resume when no Codex session id was captured', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: false, reason: 'not-found' }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+    });
+    await store.saveSession({
+      id: 'sess_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath('sess_old'),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume sess_old' });
+
+    expect(resumed.reply).toBe('Session sess_old cannot be resumed because no Codex session id was captured.');
+    expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+  });
+
+  it('rejects native Codex id resume when the stored session belongs to another chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    const priorSessionId = 'sess_prior';
+    await store.saveSession({
+      id: priorSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(priorSessionId),
+    });
+    await store.saveSession({
+      id: 'sess_other',
+      chatId: 'oc_other',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_other',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath('sess_other'),
+      codexSessionId,
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${codexSessionId}` });
+
+    expect(resumed.reply).toBe(`Session not found: ${codexSessionId}`);
+    expect(runner.starts).toHaveLength(0);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+  });
+
+  it('rejects native Codex id resume when the current project differs from the stored session project', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    await store.saveSession({
+      id: 'sess_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath('sess_old'),
+      codexSessionId,
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo2' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${codexSessionId}` });
+
+    expect(resumed.reply).toBe('Project repo2 does not match session sess_old project repo.');
+    expect(runner.starts).toHaveLength(0);
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBeUndefined();
+  });
+
+  it('does not switch current session when resume runner start fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const priorSessionId = 'sess_prior';
+    await store.saveSession({
+      id: priorSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(priorSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+    runner.startError = new Error('spawn failed');
+
+    const resumed = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/resume 019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    expect(resumed.reply).toBe('Failed to resume Codex session 019e7f20-a667-7632-a808-c9595d77116e for project repo: spawn failed');
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+  });
+
+  it('rejects code_bot session resume when an explicit project differs from the source session project', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const oldSessionId = 'sess_old';
+    await store.saveSession({
+      id: oldSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(oldSessionId),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo2' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${oldSessionId} repo2` });
+
+    expect(resumed.reply).toBe(`Project repo2 does not match session ${oldSessionId} project repo.`);
+    expect(runner.starts).toHaveLength(0);
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBeUndefined();
   });
 
   it('returns a start failure reply and records start_failed event', async () => {
@@ -409,8 +1141,11 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/help');
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
+    expect(help.reply).toContain('/resume <session> [project]');
     expect(help.reply).toContain('/tail [n]');
     expect(help.reply).toContain('/rawtail [n]');
+    expect(help.reply).toContain('Resume: /resume <session> [project]');
+    expect(help.reply).toContain('session can be a code_bot session id from /sessions or a Codex native id');
     expect(help.reply).toContain('Restrictions:');
     expect(help.reply).toContain('Allowed users: 1');
     expect(help.reply).toContain('Allowed chats: 1');
@@ -672,6 +1407,59 @@ describe('SessionManager', () => {
     expect(content).toContain('"type":"session.stopped"');
   });
 
+  it('stops a starting current session after resume tells the user to stop it', async () => {
+    class CountingRunner extends FakeCodexRunner {
+      stoppedSessions: string[] = [];
+
+      async stop(sessionId: string): Promise<void> {
+        this.stoppedSessions.push(sessionId);
+        await super.stop(sessionId);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new CountingRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const startingSessionId = 'sess_starting';
+    await store.saveSession({
+      id: startingSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'starting',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath(startingSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: startingSessionId });
+
+    const resumed = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/resume 019e7f20-a667-7632-a808-c9595d77116e repo',
+    });
+    expect(resumed.reply).toBe(`Current session ${startingSessionId} is still running. Run /stop before resuming another session.`);
+
+    const stopRequested = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+    expect(stopRequested.reply).toContain('Approval required: Stop session');
+    expect(stopRequested.reply).toContain(`Session: ${startingSessionId}`);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(startingSessionId);
+
+    const approveMatch = stopRequested.reply.match(/Approve: \/approve (\S+)/);
+    expect(approveMatch).toBeTruthy();
+    const approved = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/approve ${approveMatch![1]}` });
+    expect(approved.reply).toBe(`Stopped session ${startingSessionId}.`);
+
+    expect(runner.stoppedSessions).toEqual([startingSessionId]);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+    await expect(store.getSession(startingSessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
+  });
+
   it('rejecting stop approval does not stop the session', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -846,6 +1634,65 @@ describe('SessionManager', () => {
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
     expect(listed.reply).toContain('repo');
     expect(listed.reply).toContain('running');
+  });
+
+  it('marks current and resumable sessions without exposing native ids in /sessions', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+
+    await store.saveSession({
+      id: 'sess_current',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:02:00.000Z',
+      logPath: join(root, 'current.log'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116f',
+    });
+    await store.saveSession({
+      id: 'sess_resumable',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:01:00.000Z',
+      logPath: join(root, 'resumable.log'),
+      codexSessionId,
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: 'sess_current' });
+
+    const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+
+    expect(listed.reply).toContain('sess_current | current | repo | running');
+    expect(listed.reply).toContain('sess_resumable | resumable | repo | exited');
+    expect(listed.reply).not.toContain(codexSessionId);
+    expect(listed.reply).not.toContain('019e7f20-a667-7632-a808-c9595d77116f');
+  });
+
+  it('marks sessions without Codex session ids as not-resumable in /sessions', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await store.saveSession({
+      id: 'sess_missing_native_id',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:01:00.000Z',
+      logPath: join(root, 'missing-native-id.log'),
+    });
+
+    const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+
+    expect(listed.reply).toContain('sess_missing_native_id | not-resumable | repo | exited');
   });
 
   it('supports /approve and /reject approval commands', async () => {

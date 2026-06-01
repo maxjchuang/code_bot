@@ -3,6 +3,7 @@ export type CommandName =
   | 'projects'
   | 'use'
   | 'new'
+  | 'resume'
   | 'send'
   | 'status'
   | 'tail'

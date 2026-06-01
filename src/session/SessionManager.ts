@@ -2,6 +2,7 @@ import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -18,6 +19,25 @@ export interface BotTextResult {
   reply: string;
 }
 
+export interface CodexSessionDiscovery {
+  discoverForProject(request: { projectPath: string; startedAt: string }): Promise<
+    | { ok: true; codexSessionId: string }
+    | { ok: false; reason: 'not-found' | 'ambiguous' }
+  >;
+}
+
+export interface SessionManagerDeps {
+  codexSessionRegistry?: CodexSessionDiscovery;
+  codexSessionDiscovery?: {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  };
+}
+
+const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
+const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
@@ -26,6 +46,7 @@ export class SessionManager {
     private readonly config: BotConfig,
     private readonly store: FileStateStore,
     private readonly runner: CodexRunner,
+    private readonly deps: SessionManagerDeps = {},
   ) {
     this.approvalManager = new ApprovalManager(store);
   }
@@ -53,6 +74,8 @@ export class SessionManager {
         return this.useProject(input, parsed.args[0]);
       case 'new':
         return this.createSession(input, parsed.args[0]);
+      case 'resume':
+        return this.resumeSession(input, parsed.args[0], parsed.args[1]);
       case 'send':
         return this.sendToCurrentSession(input.chatId, parsed.args[0] ?? '');
       case 'status':
@@ -126,7 +149,104 @@ export class SessionManager {
       };
     }
 
+    return this.startCodexSession(input, project, {
+      mode: { kind: 'new' },
+      replyVerb: 'Created',
+      eventType: 'session.created',
+      discoverCodexSessionId: true,
+    });
+  }
+
+  private async resumeSession(input: IncomingBotText, target?: string, projectId?: string): Promise<BotTextResult> {
+    if (!target) {
+      return { reply: 'Usage: /resume <session> [project]' };
+    }
+
+    const previousChat = await this.store.getChat(input.chatId);
+    const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
+    if (previousSession && isActiveSession(previousSession)) {
+      return {
+        reply: `Current session ${previousSession.id} is still running. Run /stop before resuming another session.`,
+      };
+    }
+
+    const isCodeBotSessionId = target.startsWith('sess_');
+    if (!isValidSessionTarget(target)) {
+      return { reply: `Invalid session target: ${target}` };
+    }
+    let selectedProjectId: string | undefined;
+    let sourceSession: SessionRecord | undefined;
+    let nativeStoredSession: SessionRecord | undefined;
+    if (isCodeBotSessionId) {
+      sourceSession = await this.store.getSession(target);
+      if (!sourceSession) {
+        return { reply: `Session not found: ${target}` };
+      }
+      if (sourceSession.chatId !== input.chatId) {
+        return { reply: `Session not found: ${target}` };
+      }
+      if (!sourceSession.codexSessionId) {
+        const sourceProject = resolveProject(this.config, sourceSession.projectId);
+        if (!sourceProject) {
+          return { reply: `Unknown project: ${sourceSession.projectId}` };
+        }
+        const discoveredCodexSessionId = await this.discoverAndStoreCodexSessionId(sourceSession.id, sourceProject.path, sourceSession.createdAt);
+        if (!discoveredCodexSessionId) {
+          return { reply: `Session ${target} cannot be resumed because no Codex session id was captured.` };
+        }
+        sourceSession = { ...sourceSession, codexSessionId: discoveredCodexSessionId };
+      }
+      if (projectId && projectId !== sourceSession.projectId) {
+        return { reply: `Project ${projectId} does not match session ${target} project ${sourceSession.projectId}.` };
+      }
+      selectedProjectId = sourceSession.projectId;
+    } else {
+      selectedProjectId = projectId ?? previousChat?.currentProjectId;
+      const storedSessions = await this.store.listSessions();
+      const matchingNativeSessions = storedSessions.filter((session) => session.codexSessionId === target);
+      if (matchingNativeSessions.length > 0) {
+        nativeStoredSession = matchingNativeSessions.find((session) => session.chatId === input.chatId);
+        if (!nativeStoredSession) {
+          return { reply: `Session not found: ${target}` };
+        }
+      }
+    }
+
+    if (!selectedProjectId) {
+      return { reply: 'Choose a project with /projects and /resume <codex-session-id> <project>.' };
+    }
+    if (nativeStoredSession && nativeStoredSession.projectId !== selectedProjectId) {
+      return { reply: `Project ${selectedProjectId} does not match session ${nativeStoredSession.id} project ${nativeStoredSession.projectId}.` };
+    }
+    const project = resolveProject(this.config, selectedProjectId);
+    if (!project) {
+      return { reply: `Unknown project: ${selectedProjectId}` };
+    }
+
+    const resumeTarget = isCodeBotSessionId ? sourceSession!.codexSessionId! : target;
+    return this.startCodexSession(input, project, {
+      mode: { kind: 'resume', target: resumeTarget },
+      replyVerb: 'Resumed',
+      eventType: 'session.resumed',
+      sessionFields: isCodeBotSessionId
+        ? { codexSessionId: resumeTarget, resumedFromSessionId: target, resumeSource: 'code_bot' }
+        : { codexSessionId: target, resumeSource: 'codex' },
+    });
+  }
+
+  private async startCodexSession(
+    input: IncomingBotText,
+    project: NonNullable<ReturnType<typeof resolveProject>>,
+    options: {
+      mode: { kind: 'new' } | { kind: 'resume'; target: string };
+      replyVerb: 'Created' | 'Resumed';
+      eventType: 'session.created' | 'session.resumed';
+      sessionFields?: Partial<SessionRecord>;
+      discoverCodexSessionId?: boolean;
+    },
+  ): Promise<BotTextResult> {
     const now = new Date().toISOString();
+    const startedAt = now;
     const sessionId = createCodexSessionId();
     const session: SessionRecord = {
       id: sessionId,
@@ -137,6 +257,7 @@ export class SessionManager {
       createdAt: now,
       updatedAt: now,
       logPath: this.store.sessionLogPath(sessionId),
+      ...options.sessionFields,
     };
     await this.store.saveSession(session);
     try {
@@ -144,6 +265,7 @@ export class SessionManager {
         sessionId,
         cwd: project.path,
         args: project.codexArgs,
+        mode: options.mode,
         onOutput: (text) => {
           return this.appendSessionOutput(sessionId, text).catch((error) =>
             this.recordBackgroundError('session.output_persist_failed', error, { sessionId }),
@@ -161,7 +283,8 @@ export class SessionManager {
       await this.store.saveSession({
         ...session,
         status: 'exited',
-        lastSummary: `Failed to start Codex: ${message}`,
+        lastSummary:
+          options.mode.kind === 'resume' ? `Failed to resume Codex session ${options.mode.target}: ${message}` : `Failed to start Codex: ${message}`,
         updatedAt: failedAt,
       });
       await this.store.appendEvent({
@@ -169,10 +292,13 @@ export class SessionManager {
         at: failedAt,
         data: { sessionId, projectId: project.id, chatId: input.chatId, reason: message },
       });
+      if (options.mode.kind === 'resume') {
+        return { reply: `Failed to resume Codex session ${options.mode.target} for project ${project.id}: ${message}` };
+      }
       return { reply: `Failed to start Codex for project ${project.id}: ${message}` };
     }
     await this.store.appendEvent({
-      type: 'session.created',
+      type: options.eventType,
       at: now,
       data: { sessionId, projectId: project.id, chatId: input.chatId },
     });
@@ -183,8 +309,65 @@ export class SessionManager {
       currentSessionId: sessionId,
     };
     await this.store.saveChat(chat);
+    if (options.discoverCodexSessionId) {
+      void this.discoverAndStoreCodexSessionId(sessionId, project.path, startedAt).catch((error) =>
+        this.recordBackgroundError('session.codex_id_discovery_failed', error, { sessionId, projectPath: project.path }).catch(() => undefined),
+      );
+    }
 
-    return { reply: `Created session ${sessionId} for project ${project.id}.` };
+    return { reply: `${options.replyVerb} session ${sessionId} for project ${project.id}.` };
+  }
+
+  private codexSessionRegistry(): CodexSessionDiscovery {
+    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+  }
+
+  private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<string | undefined> {
+    let lastFailureReason: 'not-found' | 'ambiguous' = 'not-found';
+    const maxAttempts = Math.max(1, this.deps.codexSessionDiscovery?.maxAttempts ?? DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let result: Awaited<ReturnType<CodexSessionDiscovery['discoverForProject']>>;
+      try {
+        result = await this.codexSessionRegistry().discoverForProject({ projectPath, startedAt });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.store.appendEvent({
+          type: 'session.codex_id_discovery_failed',
+          at: new Date().toISOString(),
+          data: { sessionId, projectPath, reason: message },
+        });
+        return undefined;
+      }
+      if (result.ok) {
+        const discoveredAt = new Date().toISOString();
+        await this.store.updateSession(sessionId, (latest) => ({
+          ...latest,
+          codexSessionId: result.codexSessionId,
+          updatedAt: discoveredAt,
+        }));
+        await this.store.appendEvent({
+          type: 'session.codex_id_discovered',
+          at: discoveredAt,
+          data: { sessionId, projectPath, codexSessionId: result.codexSessionId },
+        });
+        return result.codexSessionId;
+      }
+      lastFailureReason = result.reason;
+      if (attempt < maxAttempts) {
+        await this.codexSessionDiscoverySleep(this.deps.codexSessionDiscovery?.retryDelayMs ?? DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS);
+      }
+    }
+    await this.store.appendEvent({
+      type: 'session.codex_id_discovery_failed',
+      at: new Date().toISOString(),
+      data: { sessionId, projectPath, reason: lastFailureReason },
+    });
+    return undefined;
+  }
+
+  private async codexSessionDiscoverySleep(ms: number): Promise<void> {
+    const sleep = this.deps.codexSessionDiscovery?.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    await sleep(ms);
   }
 
   private async sendToCurrentSession(chatId: string, text: string): Promise<BotTextResult> {
@@ -288,7 +471,7 @@ export class SessionManager {
       return { reply: 'No active session.' };
     }
     const session = await this.store.getSession(chat.currentSessionId);
-    if (!session || session.status !== 'running') {
+    if (!session || !isActiveSession(session)) {
       await this.store.saveChat({
         chatId: input.chatId,
         chatType: input.chatType,
@@ -313,8 +496,11 @@ export class SessionManager {
     if (sessions.length === 0) {
       return { reply: 'No sessions for this chat yet. Run /new <project> to start one.' };
     }
+    const chat = await this.store.getChat(chatId);
     return {
-      reply: sessions.map((session) => `${session.id} | ${session.projectId} | ${session.status} | ${session.updatedAt}`).join('\n'),
+      reply: sessions
+        .map((session) => `${session.id} | ${sessionResumeState(session, chat?.currentSessionId)} | ${session.projectId} | ${session.status} | ${session.updatedAt}`)
+        .join('\n'),
     };
   }
 
@@ -409,22 +595,23 @@ export class SessionManager {
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
-    const latest = await this.store.getSession(sessionId);
-    if (!latest) {
+    const exitedAt = new Date().toISOString();
+    const updated = await this.store.updateSession(sessionId, (latest) => {
+      const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
+      return {
+        ...latest,
+        status: nextStatus,
+        exitCode,
+        updatedAt: exitedAt,
+      };
+    });
+    if (!updated) {
       await this.store.appendEvent({
         type: 'session.exit_missing_record',
         at: new Date().toISOString(),
         data: { sessionId, exitCode },
       });
-      return;
     }
-    const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
-    await this.store.saveSession({
-      ...latest,
-      status: nextStatus,
-      exitCode,
-      updatedAt: new Date().toISOString(),
-    });
   }
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
@@ -441,17 +628,33 @@ export class SessionManager {
   }
 
   private helpText(): string {
-    const commands = '/help\n/projects\n/use <project>\n/new [project]\n/send <text>\n/status\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const commands =
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const resumeHelp = [
+      'Resume: /resume <session> [project]',
+      '- session can be a code_bot session id from /sessions or a Codex native id',
+    ].join('\n');
     const restrictions = [
       'Restrictions:',
       `- Allowed users: ${this.config.allowedUsers.length}`,
       `- Allowed chats: ${this.config.allowedChatIds.length}`,
       `- Projects: ${this.config.projects.map((project) => project.id).join(', ') || 'none'}`,
     ].join('\n');
-    return `${commands}\n\n${restrictions}`;
+    return `${commands}\n\n${resumeHelp}\n\n${restrictions}`;
   }
 }
 
 function isActiveSession(session: SessionRecord): boolean {
   return session.status === 'running' || session.status === 'starting';
+}
+
+function isValidSessionTarget(target: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(target) && target !== '.' && target !== '..' && !target.startsWith('-');
+}
+
+function sessionResumeState(session: SessionRecord, currentSessionId: string | undefined): 'current' | 'resumable' | 'not-resumable' {
+  if (session.id === currentSessionId) {
+    return 'current';
+  }
+  return session.codexSessionId ? 'resumable' : 'not-resumable';
 }
