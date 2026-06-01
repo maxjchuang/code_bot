@@ -93,7 +93,8 @@ Notes:
 - `/resume <session> [project]` resumes a Codex session. Prefer the code_bot session ID shown by `/sessions`. Codex native session IDs are also supported, but you must specify `project` or already have a current project selected in the chat.
 - `/tail [n]` returns readable output from the last `n` raw session log lines after removing terminal control sequences and TUI redraw noise; default is 80.
 - `/rawtail [n]` returns the last `n` raw PTY log lines for debugging; default is 80.
-- `/stop` creates a stop approval. Finish it with `/approve <id>` or `/reject <id>`.
+- `/stop` stops the current session immediately.
+- `/approve <id>` and `/reject <id>` are reserved for future approval-gated actions.
 - Resume limits: old sessions without a captured Codex native ID cannot be resumed by code_bot session ID; stop the active session before resuming another one; when you pass an explicit `project`, it must match the session history.
 
 ## Build And Test

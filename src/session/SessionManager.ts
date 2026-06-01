@@ -147,7 +147,7 @@ export class SessionManager {
     const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
     if (currentSession && isActiveSession(currentSession) && currentSession.projectId !== projectId) {
       return {
-        reply: `Current session ${currentSession.id} is still running. Run /stop and approve it before switching projects.`,
+        reply: `Current session ${currentSession.id} is still running. Run /stop before switching projects.`,
       };
     }
     await this.store.saveChat({
@@ -172,7 +172,7 @@ export class SessionManager {
     const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
     if (previousSession && isActiveSession(previousSession)) {
       return {
-        reply: `Current session ${previousSession.id} is still running. Run /stop and approve it before starting a new session.`,
+        reply: `Current session ${previousSession.id} is still running. Run /stop before starting a new session.`,
       };
     }
 
@@ -592,15 +592,7 @@ export class SessionManager {
       });
       return { reply: 'No running session.' };
     }
-    const approval = await this.approvalManager.requestApproval({
-      sessionId: session.id,
-      chatId: input.chatId,
-      requestedBy: input.userId,
-      action: 'stop_session',
-      riskSummary: `Stop session ${session.id}`,
-      ttlMs: 5 * 60 * 1000,
-    });
-    return { reply: this.approvalManager.buildTextFallback(approval) };
+    return this.executeApprovedStop(session.id, input.userId);
   }
 
   private async sessions(chatId: string): Promise<BotTextResult> {
