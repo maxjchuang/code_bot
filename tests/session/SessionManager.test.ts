@@ -1,14 +1,282 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { createTmpDir } from '../helpers/tmp.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
-import type { BotConfig } from '../../src/domain/types.js';
+import type { BotConfig, SessionRecord } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForAssertion(assertion: () => Promise<void> | void, timeoutMs = 500): Promise<void> {
+  const startedAt = Date.now();
+  let lastError: unknown;
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await delay(10);
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms`);
+}
+
 describe('SessionManager', () => {
+  it('records discovered Codex session id after /new', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await waitForAssertion(async () => {
+      await expect(store.getSession(sessionId)).resolves.toMatchObject({
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      });
+    });
+    expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
+  });
+
+  it('replies and saves chat before slow Codex session discovery finishes', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const discovery = deferred<{ ok: true; codexSessionId: string }>();
+    const registry = {
+      discoverForProject: vi.fn().mockReturnValue(discovery.promise),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    expect(result.reply).toContain('Created session');
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    const sessionId = chat?.currentSessionId;
+    expect(sessionId).toBeDefined();
+    await expect(store.getSession(sessionId!)).resolves.not.toHaveProperty('codexSessionId');
+    expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
+
+    discovery.resolve({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
+    await waitForAssertion(async () => {
+      await expect(store.getSession(sessionId!)).resolves.toMatchObject({
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      });
+    });
+  });
+
+  it('polls Codex session discovery until a delayed session file is found', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const sleeps: number[] = [];
+    const registry = {
+      discoverForProject: vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, reason: 'not-found' })
+        .mockResolvedValueOnce({ ok: false, reason: 'not-found' })
+        .mockResolvedValueOnce({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: {
+        maxAttempts: 3,
+        retryDelayMs: 25,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await waitForAssertion(async () => {
+      await expect(store.getSession(sessionId)).resolves.toMatchObject({
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      });
+    });
+    expect(registry.discoverForProject).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([25, 25]);
+  });
+
+  it('timestamps Codex session discovery when the id is stored after a slow scan', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const storedCodexId = deferred<void>();
+      class ObservingStore extends FileStateStore {
+        async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+          const next = await super.updateSession(sessionId, updater);
+          if (next?.codexSessionId) {
+            storedCodexId.resolve();
+          }
+          return next;
+        }
+      }
+
+      const store = new ObservingStore(root);
+      const runner = new FakeCodexRunner();
+      const discovery = deferred<{ ok: true; codexSessionId: string }>();
+      const registry = {
+        discoverForProject: vi.fn().mockReturnValue(discovery.promise),
+      };
+      const manager = new SessionManager(sampleConfig(root), store, runner, { codexSessionRegistry: registry as any });
+
+      vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+      vi.setSystemTime(new Date('2026-06-01T00:00:05.000Z'));
+      await runner.exit(sessionId, 0);
+
+      vi.setSystemTime(new Date('2026-06-01T00:00:10.000Z'));
+      discovery.resolve({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
+      await storedCodexId.promise;
+
+      await expect(store.getSession(sessionId)).resolves.toMatchObject({
+        status: 'exited',
+        exitCode: 0,
+        codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+        updatedAt: '2026-06-01T00:00:10.000Z',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves Codex session id when discovery interleaves with exit persistence', async () => {
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    class InterleavingStore extends FileStateStore {
+      private injectedBeforeStaleExitSave = false;
+      private injectedBeforeExitUpdate = false;
+
+      async saveSession(session: SessionRecord): Promise<void> {
+        if (session.status === 'exited' && !session.codexSessionId && !this.injectedBeforeStaleExitSave) {
+          this.injectedBeforeStaleExitSave = true;
+          await super.updateSession(session.id, (latest) => ({
+            ...latest,
+            codexSessionId,
+            updatedAt: new Date().toISOString(),
+          }));
+        }
+        await super.saveSession(session);
+      }
+
+      async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+        return super.updateSession(sessionId, (current) => {
+          const next = updater(current);
+          if (next.status === 'exited' && !current.codexSessionId && !this.injectedBeforeExitUpdate) {
+            this.injectedBeforeExitUpdate = true;
+            return updater({
+              ...current,
+              codexSessionId,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          return next;
+        });
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new InterleavingStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockReturnValue(new Promise(() => undefined)),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.exit(sessionId, 0);
+
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      status: 'exited',
+      exitCode: 0,
+      codexSessionId,
+    });
+  });
+
+  it('replies and saves chat when Codex session discovery throws', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockRejectedValue(new Error('registry unavailable')),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexSessionRegistry: registry as any });
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    expect(created.reply).toContain('Created session');
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+    await waitForAssertion(async () => {
+      const content = await readFile(eventPath, 'utf8');
+      expect(content).toContain('"type":"session.codex_id_discovery_failed"');
+      expect(content).toContain('"reason":"registry unavailable"');
+      expect(content).toContain(`"sessionId":"${sessionId}"`);
+    });
+  });
+
+  it.each(['not-found', 'ambiguous'] as const)('records Codex session discovery failure for %s', async (reason) => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: false, reason }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 2, retryDelayMs: 0, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const day = new Date().toISOString().slice(0, 10);
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+
+    await waitForAssertion(async () => {
+      const content = await readFile(eventPath, 'utf8');
+      expect(content).toContain('"type":"session.codex_id_discovery_failed"');
+      expect(content).toContain(`"reason":"${reason}"`);
+      expect(content).toContain(`"sessionId":"${sessionId}"`);
+    });
+  });
+
   it('creates a session and sends normal messages to Codex', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

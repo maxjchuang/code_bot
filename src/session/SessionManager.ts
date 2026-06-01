@@ -2,6 +2,7 @@ import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -18,6 +19,25 @@ export interface BotTextResult {
   reply: string;
 }
 
+export interface CodexSessionDiscovery {
+  discoverForProject(request: { projectPath: string; startedAt: string }): Promise<
+    | { ok: true; codexSessionId: string }
+    | { ok: false; reason: 'not-found' | 'ambiguous' }
+  >;
+}
+
+export interface SessionManagerDeps {
+  codexSessionRegistry?: CodexSessionDiscovery;
+  codexSessionDiscovery?: {
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  };
+}
+
+const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
+const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
@@ -26,6 +46,7 @@ export class SessionManager {
     private readonly config: BotConfig,
     private readonly store: FileStateStore,
     private readonly runner: CodexRunner,
+    private readonly deps: SessionManagerDeps = {},
   ) {
     this.approvalManager = new ApprovalManager(store);
   }
@@ -127,6 +148,7 @@ export class SessionManager {
     }
 
     const now = new Date().toISOString();
+    const startedAt = now;
     const sessionId = createCodexSessionId();
     const session: SessionRecord = {
       id: sessionId,
@@ -183,8 +205,62 @@ export class SessionManager {
       currentSessionId: sessionId,
     };
     await this.store.saveChat(chat);
+    void this.discoverAndStoreCodexSessionId(sessionId, project.path, startedAt).catch((error) =>
+      this.recordBackgroundError('session.codex_id_discovery_failed', error, { sessionId, projectPath: project.path }).catch(() => undefined),
+    );
 
     return { reply: `Created session ${sessionId} for project ${project.id}.` };
+  }
+
+  private codexSessionRegistry(): CodexSessionDiscovery {
+    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+  }
+
+  private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<void> {
+    let lastFailureReason: 'not-found' | 'ambiguous' = 'not-found';
+    const maxAttempts = Math.max(1, this.deps.codexSessionDiscovery?.maxAttempts ?? DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      let result: Awaited<ReturnType<CodexSessionDiscovery['discoverForProject']>>;
+      try {
+        result = await this.codexSessionRegistry().discoverForProject({ projectPath, startedAt });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.store.appendEvent({
+          type: 'session.codex_id_discovery_failed',
+          at: new Date().toISOString(),
+          data: { sessionId, projectPath, reason: message },
+        });
+        return;
+      }
+      if (result.ok) {
+        const discoveredAt = new Date().toISOString();
+        await this.store.updateSession(sessionId, (latest) => ({
+          ...latest,
+          codexSessionId: result.codexSessionId,
+          updatedAt: discoveredAt,
+        }));
+        await this.store.appendEvent({
+          type: 'session.codex_id_discovered',
+          at: discoveredAt,
+          data: { sessionId, projectPath, codexSessionId: result.codexSessionId },
+        });
+        return;
+      }
+      lastFailureReason = result.reason;
+      if (attempt < maxAttempts) {
+        await this.codexSessionDiscoverySleep(this.deps.codexSessionDiscovery?.retryDelayMs ?? DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS);
+      }
+    }
+    await this.store.appendEvent({
+      type: 'session.codex_id_discovery_failed',
+      at: new Date().toISOString(),
+      data: { sessionId, projectPath, reason: lastFailureReason },
+    });
+  }
+
+  private async codexSessionDiscoverySleep(ms: number): Promise<void> {
+    const sleep = this.deps.codexSessionDiscovery?.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    await sleep(ms);
   }
 
   private async sendToCurrentSession(chatId: string, text: string): Promise<BotTextResult> {
@@ -409,22 +485,23 @@ export class SessionManager {
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
-    const latest = await this.store.getSession(sessionId);
-    if (!latest) {
+    const exitedAt = new Date().toISOString();
+    const updated = await this.store.updateSession(sessionId, (latest) => {
+      const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
+      return {
+        ...latest,
+        status: nextStatus,
+        exitCode,
+        updatedAt: exitedAt,
+      };
+    });
+    if (!updated) {
       await this.store.appendEvent({
         type: 'session.exit_missing_record',
         at: new Date().toISOString(),
         data: { sessionId, exitCode },
       });
-      return;
     }
-    const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
-    await this.store.saveSession({
-      ...latest,
-      status: nextStatus,
-      exitCode,
-      updatedAt: new Date().toISOString(),
-    });
   }
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
