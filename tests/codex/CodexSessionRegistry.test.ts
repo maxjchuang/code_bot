@@ -172,4 +172,33 @@ describe('CodexSessionRegistry', () => {
       }),
     ).resolves.toEqual({ ok: false, reason: 'ambiguous' });
   });
+
+  it('ignores older sessions even when their files were updated after start time', async () => {
+    const root = await createTmpDir();
+    const sessionDir = join(root, 'sessions/2026/06/01');
+    await mkdir(sessionDir, { recursive: true });
+    const oldFile = join(sessionDir, 'rollout-2026-06-01T09-00-00-019e7f19-a667-7632-a808-c9595d77116e.jsonl');
+    await writeFile(
+      oldFile,
+      '{"timestamp":"2026-06-01T09:00:00.000Z","type":"session_meta","payload":{"timestamp":"2026-06-01T09:00:00.000Z","cwd":"/tmp/project"}}\n',
+      'utf8',
+    );
+    await utimes(oldFile, new Date('2026-06-01T10:05:00.000Z'), new Date('2026-06-01T10:05:00.000Z'));
+    const newFile = join(sessionDir, 'rollout-2026-06-01T10-00-12-019e7f20-a667-7632-a808-c9595d77116e.jsonl');
+    await writeFile(
+      newFile,
+      '{"timestamp":"2026-06-01T10:00:12.000Z","type":"session_meta","payload":{"timestamp":"2026-06-01T10:00:01.000Z","cwd":"/tmp/project"}}\n',
+      'utf8',
+    );
+    await utimes(newFile, new Date('2026-06-01T10:00:12.000Z'), new Date('2026-06-01T10:00:12.000Z'));
+
+    const registry = new CodexSessionRegistry(root);
+
+    await expect(
+      registry.discoverForProject({
+        projectPath: '/tmp/project',
+        startedAt: '2026-06-01T10:00:00.000Z',
+      }),
+    ).resolves.toEqual({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
+  });
 });

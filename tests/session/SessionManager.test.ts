@@ -350,6 +350,45 @@ describe('SessionManager', () => {
     });
   });
 
+  it('discovers a missing Codex session id before resuming a code_bot session id', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: true, codexSessionId }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+    });
+    const oldSessionId = 'sess_old';
+    await store.saveSession({
+      id: oldSessionId,
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'interrupted',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T09:09:20.569Z',
+      updatedAt: '2026-06-01T09:19:01.493Z',
+      logPath: store.sessionLogPath(oldSessionId),
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/resume ${oldSessionId}` });
+
+    expect(resumed.reply).toContain('Resumed session');
+    expect(registry.discoverForProject).toHaveBeenCalledWith({ projectPath: root, startedAt: '2026-06-01T09:09:20.569Z' });
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0].mode).toEqual({ kind: 'resume', target: codexSessionId });
+    await expect(store.getSession(oldSessionId)).resolves.toMatchObject({ codexSessionId });
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      codexSessionId,
+      resumedFromSessionId: oldSessionId,
+      resumeSource: 'code_bot',
+    });
+  });
+
   it('resumes from a Codex native id and explicit project', async () => {
     const root = await createTmpDir();
     const repoPath = join(root, 'repo');
@@ -576,7 +615,13 @@ describe('SessionManager', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: false, reason: 'not-found' }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexSessionRegistry: registry as any,
+      codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+    });
     await store.saveSession({
       id: 'sess_old',
       chatId: 'oc_1',
@@ -592,6 +637,7 @@ describe('SessionManager', () => {
     const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume sess_old' });
 
     expect(resumed.reply).toBe('Session sess_old cannot be resumed because no Codex session id was captured.');
+    expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
     expect(runner.starts).toHaveLength(0);
     expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
   });

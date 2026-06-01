@@ -186,7 +186,15 @@ export class SessionManager {
         return { reply: `Session not found: ${target}` };
       }
       if (!sourceSession.codexSessionId) {
-        return { reply: `Session ${target} cannot be resumed because no Codex session id was captured.` };
+        const sourceProject = resolveProject(this.config, sourceSession.projectId);
+        if (!sourceProject) {
+          return { reply: `Unknown project: ${sourceSession.projectId}` };
+        }
+        const discoveredCodexSessionId = await this.discoverAndStoreCodexSessionId(sourceSession.id, sourceProject.path, sourceSession.createdAt);
+        if (!discoveredCodexSessionId) {
+          return { reply: `Session ${target} cannot be resumed because no Codex session id was captured.` };
+        }
+        sourceSession = { ...sourceSession, codexSessionId: discoveredCodexSessionId };
       }
       if (projectId && projectId !== sourceSession.projectId) {
         return { reply: `Project ${projectId} does not match session ${target} project ${sourceSession.projectId}.` };
@@ -314,7 +322,7 @@ export class SessionManager {
     return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
   }
 
-  private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<void> {
+  private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<string | undefined> {
     let lastFailureReason: 'not-found' | 'ambiguous' = 'not-found';
     const maxAttempts = Math.max(1, this.deps.codexSessionDiscovery?.maxAttempts ?? DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS);
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -328,7 +336,7 @@ export class SessionManager {
           at: new Date().toISOString(),
           data: { sessionId, projectPath, reason: message },
         });
-        return;
+        return undefined;
       }
       if (result.ok) {
         const discoveredAt = new Date().toISOString();
@@ -342,7 +350,7 @@ export class SessionManager {
           at: discoveredAt,
           data: { sessionId, projectPath, codexSessionId: result.codexSessionId },
         });
-        return;
+        return result.codexSessionId;
       }
       lastFailureReason = result.reason;
       if (attempt < maxAttempts) {
@@ -354,6 +362,7 @@ export class SessionManager {
       at: new Date().toISOString(),
       data: { sessionId, projectPath, reason: lastFailureReason },
     });
+    return undefined;
   }
 
   private async codexSessionDiscoverySleep(ms: number): Promise<void> {

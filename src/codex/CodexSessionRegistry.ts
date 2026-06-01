@@ -60,8 +60,13 @@ export class CodexSessionRegistry {
         continue;
       }
 
-      const cwd = await this.readSessionCwd(filePath);
-      if (cwd && normalizePath(cwd) === projectPath) {
+      const meta = await this.readSessionMeta(filePath);
+      const metaTimestampMs = meta?.timestamp ? Date.parse(meta.timestamp) : Number.NaN;
+      if (!Number.isNaN(metaTimestampMs) && metaTimestampMs < startedAtMs) {
+        continue;
+      }
+
+      if (meta?.cwd && normalizePath(meta.cwd) === projectPath) {
         candidates.push(id);
       }
     }
@@ -78,12 +83,13 @@ export class CodexSessionRegistry {
     return filePath.match(CODEX_UUID_PATTERN)?.[0];
   }
 
-  private async readSessionCwd(filePath: string): Promise<string | undefined> {
+  private async readSessionMeta(filePath: string): Promise<{ cwd: string; timestamp?: string } | undefined> {
     const content = await readFile(filePath, 'utf8');
     for (const line of content.split('\n').filter(Boolean)) {
-      const event = parseJsonLine<{ type?: string; payload?: { cwd?: unknown } }>(line);
+      const event = parseJsonLine<{ timestamp?: unknown; type?: string; payload?: { cwd?: unknown; timestamp?: unknown } }>(line);
       if (event?.type === 'session_meta' && typeof event.payload?.cwd === 'string') {
-        return event.payload.cwd;
+        const timestamp = typeof event.payload.timestamp === 'string' ? event.payload.timestamp : typeof event.timestamp === 'string' ? event.timestamp : undefined;
+        return { cwd: event.payload.cwd, timestamp };
       }
     }
     return undefined;
