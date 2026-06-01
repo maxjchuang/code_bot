@@ -708,6 +708,11 @@ export class SessionManager {
       maxChars: this.config.notifications.maxFinalChars,
     });
     if (extraction.kind !== 'answer') {
+      if (turn.timer) {
+        clearTimeout(turn.timer);
+        turn.timer = undefined;
+      }
+      turn.lastCandidate = undefined;
       return;
     }
     if (turn.lastCandidate === extraction.text) {

@@ -492,6 +492,41 @@ describe('SessionManager', () => {
     }
   });
 
+  it('cancels a pending completion timer when later command output invalidates the answer candidate', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'run tests' });
+
+      await runner.emitOutput(sessionId, 'draft answer\n');
+      await vi.advanceTimersByTimeAsync(20);
+      await runner.emitOutput(sessionId, '• Ran npm test\n└ running test suite\nPASS tests/session/SessionManager.test.ts\n');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(notifier.sendText).not.toHaveBeenCalled();
+
+      const busy = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
+      expect(busy.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
+
+      await runner.emitOutput(sessionId, '────────────────────────────────\n测试已通过，可以继续。\n');
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n测试已通过，可以继续。');
+      expect(runner.sentMessages).toEqual(['run tests']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('captures first turn output even when previous log has no trailing newline', async () => {
     vi.useFakeTimers();
     try {
