@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { createTmpDir } from '../helpers/tmp.js';
 import { loadConfig } from '../../src/config/loadConfig.js';
 
+async function writeConfig(root: string, config: unknown): Promise<void> {
+  await mkdir(join(root, '.code-bot'), { recursive: true });
+  await writeFile(join(root, '.code-bot/config.json'), JSON.stringify(config), 'utf8');
+}
+
 describe('loadConfig', () => {
   it('loads a valid bot config', async () => {
     const root = await createTmpDir();
@@ -80,5 +85,43 @@ describe('loadConfig', () => {
     await writeFile(join(root, '.code-bot/config.json'), 'null', 'utf8');
 
     await expect(loadConfig(root)).rejects.toThrow('Invalid config structure');
+  });
+
+  it('defaults notification config when omitted', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, {
+      feishu: { appId: 'cli', appSecret: 'secret' },
+      allowedUsers: ['ou_1'],
+      allowedChatIds: ['oc_1'],
+      projects: [{ id: 'repo', name: 'Repo', path: '.', codexArgs: [] }],
+      output: { directMaxChars: 1800, chunkSize: 1500 },
+      codex: { command: 'codex', defaultArgs: [] },
+    });
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      notifications: {
+        enabled: true,
+        idleMs: 3000,
+        maxFinalChars: 8000,
+        failureTailChars: 2000,
+      },
+    });
+  });
+
+  it('loads custom notification config', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, {
+      feishu: { appId: 'cli', appSecret: 'secret' },
+      allowedUsers: ['ou_1'],
+      allowedChatIds: ['oc_1'],
+      projects: [{ id: 'repo', name: 'Repo', path: '.', codexArgs: [] }],
+      output: { directMaxChars: 1800, chunkSize: 1500 },
+      codex: { command: 'codex', defaultArgs: [] },
+      notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
+    });
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
+    });
   });
 });

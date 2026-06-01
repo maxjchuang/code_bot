@@ -9,6 +9,13 @@ export interface ProjectConfig {
   codexArgs: string[];
 }
 
+export interface NotificationConfig {
+  enabled: boolean;
+  idleMs: number;
+  maxFinalChars: number;
+  failureTailChars: number;
+}
+
 export interface BotConfig {
   feishu: {
     appId: string;
@@ -25,6 +32,7 @@ export interface BotConfig {
     command: string;
     defaultArgs: string[];
   };
+  notifications: NotificationConfig;
 }
 
 export interface ChatContext {
