@@ -14,6 +14,8 @@ function validConfig(overrides: Record<string, unknown> = {}): Record<string, un
     feishu: { appId: 'cli', appSecret: 'secret' },
     allowedUsers: ['ou_1'],
     allowedChatIds: ['oc_1'],
+    restrictUsers: true,
+    restrictChatIds: true,
     projects: [{ id: 'repo', name: 'Repo', path: '.', codexArgs: [] }],
     output: { directMaxChars: 1800, chunkSize: 1500 },
     codex: { command: 'codex', defaultArgs: [] },
@@ -120,6 +122,35 @@ describe('loadConfig', () => {
     });
   });
 
+  it('defaults user and chat restrictions to disabled when omitted', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, {
+      feishu: { appId: 'cli', appSecret: 'secret' },
+      projects: [{ id: 'repo', name: 'Repo', path: '.', codexArgs: [] }],
+      output: { directMaxChars: 1800, chunkSize: 1500 },
+      codex: { command: 'codex', defaultArgs: [] },
+    });
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      restrictUsers: false,
+      restrictChatIds: false,
+      allowedUsers: [],
+      allowedChatIds: [],
+    });
+  });
+
+  it('loads explicit user and chat restriction switches', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ restrictUsers: true, restrictChatIds: false }));
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      restrictUsers: true,
+      restrictChatIds: false,
+      allowedUsers: ['ou_1'],
+      allowedChatIds: ['oc_1'],
+    });
+  });
+
   it('loads custom notification config', async () => {
     const root = await createTmpDir();
     await writeConfig(root, {
@@ -156,5 +187,12 @@ describe('loadConfig', () => {
     await writeConfig(root, validConfig({ notifications: { idleMs: 0 } }));
 
     await expect(loadConfig(root)).rejects.toThrow('Invalid config field: notifications.idleMs');
+  });
+
+  it('rejects malformed restrictUsers field', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ restrictUsers: 'yes' }));
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config field: restrictUsers');
   });
 });

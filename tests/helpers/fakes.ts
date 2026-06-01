@@ -4,6 +4,8 @@ import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.j
 export function sampleConfig(projectPath: string): BotConfig {
   return {
     feishu: { appId: 'cli', appSecret: 'secret' },
+    restrictUsers: true,
+    restrictChatIds: true,
     allowedUsers: ['ou_1'],
     allowedChatIds: ['oc_1'],
     projects: [

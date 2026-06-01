@@ -16,6 +16,13 @@ function requireStringArray(value: unknown, field: string): string[] {
   return value;
 }
 
+function optionalStringArray(value: unknown, field: string): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  return requireStringArray(value, field);
+}
+
 function requirePositiveNumber(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new Error(`Invalid config field: ${field}`);
@@ -91,8 +98,10 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
       appId: requireString(feishu.appId, 'feishu.appId'),
       appSecret: requireString(feishu.appSecret, 'feishu.appSecret'),
     },
-    allowedUsers: requireStringArray(record.allowedUsers, 'allowedUsers'),
-    allowedChatIds: requireStringArray(record.allowedChatIds, 'allowedChatIds'),
+    restrictUsers: optionalBoolean(record.restrictUsers, false, 'restrictUsers'),
+    restrictChatIds: optionalBoolean(record.restrictChatIds, false, 'restrictChatIds'),
+    allowedUsers: optionalStringArray(record.allowedUsers, 'allowedUsers'),
+    allowedChatIds: optionalStringArray(record.allowedChatIds, 'allowedChatIds'),
     projects,
     output: {
       directMaxChars: requirePositiveNumber(output.directMaxChars, 'output.directMaxChars'),

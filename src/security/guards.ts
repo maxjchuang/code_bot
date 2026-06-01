@@ -7,10 +7,13 @@ export interface IncomingPrincipal {
 }
 
 export function isAuthorizedMessage(config: BotConfig, principal: IncomingPrincipal): boolean {
-  if (!config.allowedUsers.includes(principal.userId)) {
+  if (config.restrictUsers && !config.allowedUsers.includes(principal.userId)) {
     return false;
   }
   if (principal.chatType === 'private') {
+    return true;
+  }
+  if (!config.restrictChatIds) {
     return true;
   }
   return config.allowedChatIds.includes(principal.chatId);

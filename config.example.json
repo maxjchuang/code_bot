@@ -3,6 +3,8 @@
     "appId": "cli_your_feishu_app_id",
     "appSecret": "your_feishu_app_secret"
   },
+  "restrictUsers": false,
+  "restrictChatIds": false,
   "allowedUsers": [
     "ou_allowed_user_open_id"
   ],

@@ -21,6 +21,8 @@ export interface BotConfig {
     appId: string;
     appSecret: string;
   };
+  restrictUsers: boolean;
+  restrictChatIds: boolean;
   allowedUsers: string[];
   allowedChatIds: string[];
   projects: ProjectConfig[];
