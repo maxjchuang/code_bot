@@ -3,10 +3,15 @@ import { constants } from 'node:fs';
 import { delimiter, isAbsolute } from 'node:path';
 import pty from 'node-pty';
 
+export type CodexStartMode =
+  | { kind: 'new' }
+  | { kind: 'resume'; target: string };
+
 export interface CodexRunOptions {
   sessionId: string;
   cwd: string;
   args: string[];
+  mode?: CodexStartMode;
   onOutput: (text: string) => void;
   onExit: (exitCode: number | undefined) => void;
 }
@@ -39,7 +44,12 @@ export class PtyCodexRunner implements CodexRunner {
     if (this.processes.has(options.sessionId)) {
       throw new Error(`Codex session is already running: ${options.sessionId}`);
     }
-    const term = this.ptyModule.spawn(this.config.command, [...this.config.defaultArgs, ...options.args], {
+    const mode = options.mode ?? { kind: 'new' };
+    const args =
+      mode.kind === 'resume'
+        ? ['resume', ...this.config.defaultArgs, ...options.args, mode.target]
+        : [...this.config.defaultArgs, ...options.args];
+    const term = this.ptyModule.spawn(this.config.command, args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,

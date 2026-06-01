@@ -17,6 +17,7 @@ export function sampleConfig(projectPath: string): BotConfig {
 
 export class FakeCodexRunner implements CodexRunner {
   readonly sentMessages: string[] = [];
+  readonly starts: CodexRunOptions[] = [];
   startError?: Error;
   private readonly sessions = new Set<string>();
   private readonly sessionOptions = new Map<string, CodexRunOptions>();
@@ -26,6 +27,9 @@ export class FakeCodexRunner implements CodexRunner {
   }
 
   async start(options: CodexRunOptions): Promise<void> {
+    if (!this.starts.includes(options)) {
+      this.starts.push(options);
+    }
     if (this.startError) {
       throw this.startError;
     }
