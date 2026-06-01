@@ -31,6 +31,26 @@ describe('FileStateStore', () => {
     }));
   });
 
+  it('appends error logs as json lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-05-31T10:00:00.000Z'));
+    await store.appendErrorLog({
+      at: '2026-05-31T10:00:00.000Z',
+      source: 'feishu.gateway',
+      message: 'Request failed with status code 400',
+      data: { responseStatus: 400, code: 230028 },
+    });
+
+    const errors = await readFile(join(root, '.code-bot/logs/errors/2026-05-31.jsonl'), 'utf8');
+
+    expect(errors.trim()).toBe(JSON.stringify({
+      at: '2026-05-31T10:00:00.000Z',
+      source: 'feishu.gateway',
+      message: 'Request failed with status code 400',
+      data: { responseStatus: 400, code: 230028 },
+    }));
+  });
+
   it('stores and tails session logs', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

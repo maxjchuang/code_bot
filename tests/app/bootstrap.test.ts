@@ -43,7 +43,14 @@ describe('bootstrap', () => {
     });
 
     expect(logger.error).toHaveBeenCalledWith('Codex health check failed: bad health');
-    expect(createGateway).toHaveBeenCalledWith('app', 'secret');
+    expect(createGateway).toHaveBeenCalledWith(
+      'app',
+      'secret',
+      expect.objectContaining({
+        recordEvent: expect.any(Function),
+        recordError: expect.any(Function),
+      }),
+    );
     expect(gatewayStart).toHaveBeenCalledOnce();
 
     const day = new Date().toISOString().slice(0, 10);
@@ -120,5 +127,33 @@ describe('bootstrap', () => {
     } as any);
 
     expect(createApp).toHaveBeenCalledWith(expect.objectContaining({ notifier: gateway }));
+  });
+
+  it('records inbound message and reply events around gateway dispatch', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<string>) => {
+      await expect(onMessage({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: '/tail 20' })).resolves.toBe('tail output');
+    });
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => sampleConfig(root),
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway: () => ({ start: gatewayStart, sendText: async () => undefined }),
+      createApp: () =>
+        ({
+          sessionManager: { handleText: async () => ({ reply: 'tail output' }) },
+          healthCheck: async () => ({ ok: true }),
+        }) as never,
+    });
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"command.received"');
+    expect(content).toContain('"text":"/tail 20"');
+    expect(content).toContain('"type":"command.replied"');
+    expect(content).toContain('"replyPreview":"tail output"');
   });
 });

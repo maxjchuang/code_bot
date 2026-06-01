@@ -1,5 +1,7 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import type { ChatType } from '../domain/types.js';
+import type { BotErrorLogEntry, BotEvent } from '../domain/types.js';
+import { sanitizeFeishuText } from './FeishuTextSanitizer.js';
 
 export interface FeishuIncomingMessage {
   chatId: string;
@@ -57,6 +59,8 @@ interface LarkGatewayDeps {
   wsClient?: LarkWSClientLike;
   createEventDispatcher?: () => EventDispatcherLike;
   logger?: LoggerLike;
+  recordEvent?: (event: BotEvent) => Promise<void>;
+  recordError?: (entry: BotErrorLogEntry) => Promise<void>;
 }
 
 export class LarkLongConnectionGateway implements FeishuGateway {
@@ -64,40 +68,53 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   private readonly wsClient: LarkWSClientLike;
   private readonly createEventDispatcher: () => EventDispatcherLike;
   private readonly logger: LoggerLike;
+  private readonly recordEvent?: (event: BotEvent) => Promise<void>;
+  private readonly recordError?: (entry: BotErrorLogEntry) => Promise<void>;
 
   constructor(appId: string, appSecret: string, deps?: LarkGatewayDeps) {
     this.client = deps?.client ?? new lark.Client({ appId, appSecret });
     this.wsClient = deps?.wsClient ?? new lark.WSClient({ appId, appSecret });
     this.createEventDispatcher = deps?.createEventDispatcher ?? (() => new lark.EventDispatcher({}));
     this.logger = deps?.logger ?? console;
+    this.recordEvent = deps?.recordEvent;
+    this.recordError = deps?.recordError;
   }
 
   async start(onMessage: (message: FeishuIncomingMessage) => Promise<string>): Promise<void> {
     const dispatcher = this.createEventDispatcher();
     dispatcher.register({
         'im.message.receive_v1': async (data: LarkReceiveMessageEvent) => {
+          const message = data.message;
+          const sender = data.sender?.sender_id;
+          if (!message?.chat_id || !message.content || !sender?.open_id) {
+            return;
+          }
+          if (message.message_type !== 'text') {
+            return;
+          }
+
+          const content = JSON.parse(message.content) as { text?: string };
+          const text = content.text ?? '';
+          const incomingMessage: FeishuIncomingMessage = {
+            chatId: message.chat_id,
+            chatType: message.chat_type === 'group' ? 'group' : 'private',
+            userId: sender.open_id,
+            text,
+          };
+
+          let reply: string;
           try {
-            const message = data.message;
-            const sender = data.sender?.sender_id;
-            if (!message?.chat_id || !message.content || !sender?.open_id) {
-              return;
-            }
-            if (message.message_type !== 'text') {
-              return;
-            }
+            reply = await onMessage(incomingMessage);
+          } catch (error) {
+            await this.recordProcessingFailure('handle_message', incomingMessage, undefined, error);
+            this.logger.error('Failed to process Feishu incoming message', error);
+            return;
+          }
 
-            const content = JSON.parse(message.content) as { text?: string };
-            const text = content.text ?? '';
-
-            const reply = await onMessage({
-              chatId: message.chat_id,
-              chatType: message.chat_type === 'group' ? 'group' : 'private',
-              userId: sender.open_id,
-              text,
-            });
-
+          try {
             await this.sendText(message.chat_id, reply);
           } catch (error) {
+            await this.recordProcessingFailure('send_reply', incomingMessage, reply, error);
             this.logger.error('Failed to process Feishu incoming message', error);
           }
         },
@@ -108,13 +125,102 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   }
 
   async sendText(chatId: string, text: string): Promise<void> {
+    const sanitizedText = sanitizeFeishuText(text);
     await this.client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
         msg_type: 'text',
-        content: JSON.stringify({ text }),
+        content: JSON.stringify({ text: sanitizedText }),
       },
     });
   }
+
+  private async recordProcessingFailure(
+    stage: 'handle_message' | 'send_reply',
+    message: FeishuIncomingMessage,
+    reply: string | undefined,
+    error: unknown,
+  ): Promise<void> {
+    const at = new Date().toISOString();
+    const details = serializeError(error);
+    const data: Record<string, unknown> = {
+      stage,
+      chatId: message.chatId,
+      chatType: message.chatType,
+      userId: message.userId,
+      text: message.text,
+      ...details,
+    };
+    if (reply !== undefined) {
+      data.replyPreview = reply.length <= 200 ? reply : `${reply.slice(0, 197)}...`;
+    }
+
+    if (this.recordEvent) {
+      await this.recordEvent({
+        type: 'feishu.message_processing_failed',
+        at,
+        data,
+      });
+    }
+    if (this.recordError) {
+      const errorMessage = typeof details.errorMessage === 'string' ? details.errorMessage : 'Unknown error';
+      await this.recordError({
+        at,
+        source: 'feishu.gateway',
+        message: errorMessage,
+        data,
+      });
+    }
+  }
+}
+
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    const result: Record<string, unknown> = {
+      errorMessage: error.message,
+    };
+    const maybeCode = Reflect.get(error, 'code');
+    if (typeof maybeCode === 'string' && maybeCode.length > 0) {
+      result.errorCode = maybeCode;
+    }
+    const maybeStack = Reflect.get(error, 'stack');
+    if (typeof maybeStack === 'string' && maybeStack.length > 0) {
+      result.errorStack = maybeStack;
+    }
+    const maybeResponse = Reflect.get(error, 'response');
+    if (typeof maybeResponse === 'object' && maybeResponse !== null) {
+      const status = Reflect.get(maybeResponse, 'status');
+      if (typeof status === 'number') {
+        result.responseStatus = status;
+      }
+      const data = Reflect.get(maybeResponse, 'data');
+      if (data !== undefined) {
+        result.responseData = normalizeUnknown(data);
+      }
+    }
+    return result;
+  }
+
+  return {
+    errorMessage: typeof error === 'string' ? error : String(error),
+    errorValue: normalizeUnknown(error),
+  };
+}
+
+function normalizeUnknown(value: unknown): unknown {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeUnknown(item));
+  }
+  if (typeof value === 'object') {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      normalized[key] = normalizeUnknown(entry);
+    }
+    return normalized;
+  }
+  return String(value);
 }

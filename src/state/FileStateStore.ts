@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFile, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { ApprovalRecord, BotEvent, ChatContext, SessionRecord } from '../domain/types.js';
+import type { ApprovalRecord, BotErrorLogEntry, BotEvent, ChatContext, SessionRecord } from '../domain/types.js';
 
 type Clock = () => Date;
 
@@ -104,6 +104,15 @@ export class FileStateStore {
       const filePath = join(this.baseDir, 'events', `${day}.jsonl`);
       await mkdir(dirname(filePath), { recursive: true });
       await appendFile(filePath, `${JSON.stringify(event)}\n`, 'utf8');
+    });
+  }
+
+  async appendErrorLog(entry: BotErrorLogEntry): Promise<void> {
+    const day = this.clock().toISOString().slice(0, 10);
+    await this.enqueue(async () => {
+      const filePath = join(this.baseDir, 'logs/errors', `${day}.jsonl`);
+      await mkdir(dirname(filePath), { recursive: true });
+      await appendFile(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
     });
   }
 

@@ -79,3 +79,10 @@ export interface BotEvent {
   at: string;
   data: Record<string, unknown>;
 }
+
+export interface BotErrorLogEntry {
+  at: string;
+  source: string;
+  message: string;
+  data: Record<string, unknown>;
+}

@@ -10,6 +10,8 @@ function createGatewayHarness() {
   let handler: ReceiveHandler | undefined;
   const sent: Array<{ receive_id: string; content: string }> = [];
   const errors: unknown[][] = [];
+  const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
+  const errorLogs: Array<{ at: string; source: string; message: string; data: Record<string, unknown> }> = [];
 
   const gateway = new LarkLongConnectionGateway('app', 'secret', {
     client: {
@@ -37,12 +39,20 @@ function createGatewayHarness() {
         errors.push(args);
       },
     },
+    recordEvent: async (event) => {
+      events.push(event);
+    },
+    recordError: async (entry) => {
+      errorLogs.push(entry);
+    },
   });
 
   return {
     gateway,
     sent,
     errors,
+    events,
+    errorLogs,
     getHandler: () => {
       if (!handler) {
         throw new Error('handler not registered');
@@ -141,6 +151,17 @@ describe('LarkLongConnectionGateway', () => {
 
     expect(harness.errors.length).toBe(1);
     expect(harness.sent).toEqual([]);
+    expect(harness.events).toContainEqual(
+      expect.objectContaining({
+        type: 'feishu.message_processing_failed',
+        data: expect.objectContaining({
+          stage: 'handle_message',
+          chatId: 'oc_1',
+          userId: 'ou_1',
+          errorMessage: 'handler failed',
+        }),
+      }),
+    );
   });
 
   it('isolates sendText errors and logs without throwing', async () => {
@@ -184,5 +205,135 @@ describe('LarkLongConnectionGateway', () => {
       }),
     ).resolves.toBeUndefined();
     expect(errors.length).toBe(1);
+  });
+
+  it('records outbound reply send failures as events', async () => {
+    let handler: ReceiveHandler | undefined;
+    const errors: unknown[][] = [];
+    const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
+    const errorLogs: Array<{ at: string; source: string; message: string; data: Record<string, unknown> }> = [];
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        im: {
+          v1: {
+            message: {
+              create: async () => {
+                const error = new Error('Request failed with status code 400') as Error & {
+                  code?: string;
+                  response?: { status: number; data: unknown };
+                };
+                error.code = 'ERR_BAD_REQUEST';
+                error.response = {
+                  status: 400,
+                  data: {
+                    code: 230028,
+                    msg: 'The messages do NOT pass the audit, ext=contain sensitive data: EMAIL_ADDRESS',
+                    log_id: 'log_123',
+                  },
+                };
+                throw error;
+              },
+            },
+          },
+        },
+      },
+      wsClient: { start: async () => undefined },
+      createEventDispatcher: () => ({
+        register: (handlers) => {
+          handler = handlers['im.message.receive_v1'];
+          return handlers;
+        },
+      }),
+      logger: { error: (...args: unknown[]) => errors.push(args) },
+      recordEvent: async (event) => {
+        events.push(event);
+      },
+      recordError: async (entry) => {
+        errorLogs.push(entry);
+      },
+    });
+    await gateway.start(async () => 'reply');
+    if (!handler) {
+      throw new Error('handler not registered');
+    }
+
+    await expect(
+      handler({
+        message: {
+          chat_id: 'oc_1',
+          chat_type: 'group',
+          message_type: 'text',
+          content: JSON.stringify({ text: '/tail 20' }),
+        },
+        sender: { sender_id: { open_id: 'ou_1' } },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(errors.length).toBe(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'feishu.message_processing_failed',
+        data: expect.objectContaining({
+          stage: 'send_reply',
+          chatId: 'oc_1',
+          userId: 'ou_1',
+          text: '/tail 20',
+          replyPreview: 'reply',
+          errorMessage: 'Request failed with status code 400',
+          errorCode: 'ERR_BAD_REQUEST',
+          responseStatus: 400,
+          responseData: expect.objectContaining({
+            code: 230028,
+            msg: expect.stringContaining('EMAIL_ADDRESS'),
+            log_id: 'log_123',
+          }),
+        }),
+      }),
+    );
+    expect(errorLogs).toContainEqual(
+      expect.objectContaining({
+        source: 'feishu.gateway',
+        message: 'Request failed with status code 400',
+        data: expect.objectContaining({
+          stage: 'send_reply',
+          responseStatus: 400,
+        }),
+      }),
+    );
+  });
+
+  it('redacts email addresses before sending text', async () => {
+    const harness = createGatewayHarness();
+
+    await harness.gateway.sendText('oc_1', 'tail output: user@example.com');
+
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        content: JSON.stringify({ text: 'tail output: [EMAIL_REDACTED]' }),
+      },
+    ]);
+  });
+
+  it('redacts email addresses in replies from incoming messages', async () => {
+    const harness = createGatewayHarness();
+    await harness.gateway.start(async () => 'contact: dev-team@example.com');
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: '/tail 20' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        content: JSON.stringify({ text: 'contact: [EMAIL_REDACTED]' }),
+      },
+    ]);
   });
 });

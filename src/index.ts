@@ -26,7 +26,14 @@ export interface BootstrapDeps {
     healthCheck: () => Promise<{ ok: true } | { ok: false; reason: string }>;
     recoverStartupState?: () => Promise<void>;
   };
-  createGateway?: (appId: string, appSecret: string) => FeishuGateway;
+  createGateway?: (
+    appId: string,
+    appSecret: string,
+    observability?: {
+      recordEvent: (event: import('./domain/types.js').BotEvent) => Promise<void>;
+      recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void>;
+    },
+  ) => FeishuGateway;
   logger?: Pick<typeof console, 'error'>;
 }
 
@@ -36,13 +43,19 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const createStoreFn = deps.createStore ?? ((root: string) => new FileStateStore(root));
   const createCodexRunnerFn = deps.createCodexRunner ?? ((config: BotConfig['codex']) => new PtyCodexRunner(config));
   const createAppFn = deps.createApp ?? createApp;
-  const createGatewayFn = deps.createGateway ?? ((appId: string, appSecret: string) => new LarkLongConnectionGateway(appId, appSecret));
+  const createGatewayFn =
+    deps.createGateway ??
+    ((appId: string, appSecret: string, observability?: { recordEvent: (event: import('./domain/types.js').BotEvent) => Promise<void>; recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void> }) =>
+      new LarkLongConnectionGateway(appId, appSecret, observability));
   const logger = deps.logger ?? console;
 
   const config = await loadConfigFn(projectRoot);
   const store = createStoreFn(projectRoot);
   const codexRunner = createCodexRunnerFn(config.codex);
-  const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret);
+  const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret, {
+    recordEvent: (event) => store.appendEvent(event),
+    recordError: (entry) => store.appendErrorLog(entry),
+  });
   const app = createAppFn({ projectRoot, config, store, codexRunner, notifier: gateway });
   const health = await app.healthCheck();
   if (!health.ok) {
@@ -59,7 +72,32 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     }
   }
   await (app.recoverStartupState?.() ?? recoverStartupState(store));
-  await gateway.start((message) => app.sessionManager.handleText(message).then((result) => result.reply));
+  await gateway.start(async (message) => {
+    const receivedAt = new Date().toISOString();
+    await store.appendEvent({
+      type: 'command.received',
+      at: receivedAt,
+      data: {
+        chatId: message.chatId,
+        chatType: message.chatType,
+        userId: message.userId,
+        text: message.text,
+      },
+    });
+    const result = await app.sessionManager.handleText(message);
+    await store.appendEvent({
+      type: 'command.replied',
+      at: new Date().toISOString(),
+      data: {
+        chatId: message.chatId,
+        chatType: message.chatType,
+        userId: message.userId,
+        text: message.text,
+        replyPreview: result.reply.length <= 200 ? result.reply : `${result.reply.slice(0, 197)}...`,
+      },
+    });
+    return result.reply;
+  });
 }
 
 async function main(): Promise<void> {
