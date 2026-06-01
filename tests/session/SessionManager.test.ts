@@ -301,6 +301,68 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
+  it('acknowledges normal tasks immediately when notifications are enabled', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    expect(sent.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
+    expect(runner.sentMessages).toEqual(['inspect status']);
+    expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('rejects a second normal task while a pending notified turn is active', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
+    const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
+
+    expect(second.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
+    expect(runner.sentMessages).toEqual(['first task']);
+  });
+
+  it('keeps /tail available while a pending notified turn is active', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
+    await runner.emitOutput(sessionId, 'partial output\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
+
+    expect(tail.reply).toBe('partial output');
+  });
+
+  it('uses legacy send reply when notifications are disabled', async () => {
+    const root = await createTmpDir();
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, enabled: false } };
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(config, store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    expect(sent.reply).toBe(`Sent to Codex session ${sessionId}.`);
+    expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
   it('resumes from a code_bot session id with a known Codex id', async () => {
     const root = await createTmpDir();
     const repoPath = join(root, 'repo');

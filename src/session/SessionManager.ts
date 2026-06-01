@@ -43,9 +43,23 @@ export interface SessionManagerDeps {
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
 const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
 
+interface PendingTurn {
+  id: string;
+  sessionId: string;
+  chatId: string;
+  projectId: string;
+  prompt: string;
+  startedAt: string;
+  outputStartIndex: number;
+  notified: boolean;
+  lastCandidate?: string;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
+  private readonly pendingTurns = new Map<string, PendingTurn>();
 
   constructor(
     private readonly config: BotConfig,
@@ -67,7 +81,7 @@ export class SessionManager {
 
     const parsed = parseIncomingText(input.text);
     if (parsed.kind === 'message') {
-      return this.sendToCurrentSession(input.chatId, parsed.text);
+      return this.sendToCurrentSession(input, parsed.text);
     }
 
     switch (parsed.name) {
@@ -82,7 +96,7 @@ export class SessionManager {
       case 'resume':
         return this.resumeSession(input, parsed.args[0], parsed.args[1]);
       case 'send':
-        return this.sendToCurrentSession(input.chatId, parsed.args[0] ?? '');
+        return this.sendToCurrentSession(input, parsed.args[0] ?? '');
       case 'status':
         return this.status(input.chatId);
       case 'tail':
@@ -375,8 +389,12 @@ export class SessionManager {
     await sleep(ms);
   }
 
-  private async sendToCurrentSession(chatId: string, text: string): Promise<BotTextResult> {
-    const chat = await this.store.getChat(chatId);
+  private notificationsEnabled(): boolean {
+    return this.config.notifications.enabled && !!this.deps.notifier;
+  }
+
+  private async sendToCurrentSession(input: IncomingBotText, text: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(input.chatId);
     if (!chat?.currentSessionId) {
       return { reply: 'No active session. Run /projects and /new <project> first.' };
     }
@@ -384,9 +402,35 @@ export class SessionManager {
     if (!session || session.status !== 'running') {
       return { reply: 'No running session. Run /new <project> first.' };
     }
+    if (this.notificationsEnabled() && this.pendingTurns.has(chat.currentSessionId)) {
+      await this.store.appendEvent({
+        type: 'notification.turn_busy_rejected',
+        at: new Date().toISOString(),
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId },
+      });
+      return { reply: '当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。' };
+    }
+
+    const notificationEnabled = this.notificationsEnabled();
+    const notificationStartedAt = new Date().toISOString();
+    if (notificationEnabled) {
+      const outputStartIndex = (await this.store.tailSessionLog(chat.currentSessionId, 100000)).length;
+      this.pendingTurns.set(chat.currentSessionId, {
+        id: `${chat.currentSessionId}:${Date.now()}`,
+        sessionId: chat.currentSessionId,
+        chatId: input.chatId,
+        projectId: session.projectId,
+        prompt: text,
+        startedAt: notificationStartedAt,
+        outputStartIndex,
+        notified: false,
+      });
+    }
+
     try {
       await this.runner.send(chat.currentSessionId, text);
     } catch (error) {
+      this.pendingTurns.delete(chat.currentSessionId);
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
       await this.store.updateSession(chat.currentSessionId, (latest) => {
@@ -403,9 +447,17 @@ export class SessionManager {
       await this.store.appendEvent({
         type: 'session.send_failed',
         at: failedAt,
-        data: { sessionId: chat.currentSessionId, chatId, reason: message },
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId, reason: message },
       });
       return { reply: 'No running session. Run /new <project> first.' };
+    }
+    if (notificationEnabled) {
+      await this.store.appendEvent({
+        type: 'notification.turn_started',
+        at: notificationStartedAt,
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId, projectId: session.projectId },
+      });
+      return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
     }
     await this.store.appendEvent({
       type: 'session.input',
