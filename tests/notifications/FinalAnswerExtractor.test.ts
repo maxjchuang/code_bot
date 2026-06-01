@@ -174,6 +174,29 @@ describe('FinalAnswerExtractor', () => {
     expect(result.kind).toBe('empty');
   });
 
+  it('keeps the last answer when Codex redraws a divider and prompt after answering', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        '› 当前分支是什么？',
+        '• Working',
+        '• 我会直接检查当前仓库的 Git 分支状态。',
+        '• Ran git branch --show-current',
+        '└ feat/codex-completion-notifications',
+        '────────────────────────────────────────────────────────────────',
+        '• 当前分支是 feat/codex-completion-notifications。',
+        '────────────────────────────────────────────────────────────────',
+        '› Use /skills to list available skills',
+      ],
+      prompt: '当前分支是什么？',
+      maxChars: 8000,
+    });
+
+    expect(result).toEqual({
+      kind: 'answer',
+      text: '• 当前分支是 feat/codex-completion-notifications。',
+    });
+  });
+
   it('formats success and failure notifications', () => {
     expect(formatCompletionNotification({ projectId: 'repo', extraction: { kind: 'answer', text: '完成了' } })).toBe(
       'Codex 已完成：repo\n\n完成了',

@@ -14,27 +14,14 @@ export interface ExtractFinalAnswerInput {
 }
 
 export function extractFinalAnswer(input: ExtractFinalAnswerInput): FinalAnswerExtraction {
-  const scopedRawLines = scopeRawLinesForFinalAnswer(input.rawLines);
-  if (scopedRawLines.length === 0) {
-    return { kind: 'empty', reason: 'No final answer detected.' };
+  for (const candidateRawLines of scopeRawLineCandidatesForFinalAnswer(input.rawLines)) {
+    const answerLines = extractAnswerLines(candidateRawLines, input.prompt);
+    if (answerLines.length === 0) {
+      continue;
+    }
+    return { kind: 'answer', text: truncateWithTailHint(answerLines.join('\n').trim(), input.maxChars) };
   }
-  const sanitized = sanitizeTerminalOutput(scopedRawLines.map(protectMarkdownHorizontalRule));
-  const prompt = normalizeComparable(input.prompt ?? '');
-  const lines = sanitized.readableLines
-    .flatMap((line) => line.split('\n'))
-    .map(restoreMarkdownHorizontalRule)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .filter((line) => !isProcessLine(line))
-    .filter((line) => normalizeComparable(line) !== prompt)
-    .filter((line) => !line.startsWith(`› ${input.prompt ?? ''}`));
-
-  const answerLines = dropCommandTranscript(lines);
-  if (answerLines.length === 0) {
-    return { kind: 'empty', reason: 'No final answer detected.' };
-  }
-
-  return { kind: 'answer', text: truncateWithTailHint(answerLines.join('\n').trim(), input.maxChars) };
+  return { kind: 'empty', reason: 'No final answer detected.' };
 }
 
 export function formatCompletionNotification(input: {
@@ -53,6 +40,7 @@ function isProcessLine(line: string): boolean {
   return (
     line.includes('OpenAI Codex') ||
     line.startsWith('Tip:') ||
+    line.startsWith('›') ||
     line.startsWith('Starting MCP servers') ||
     line.startsWith('Booting MCP server') ||
     line.startsWith('⚠ The ') ||
@@ -65,29 +53,48 @@ function isProcessLine(line: string): boolean {
   );
 }
 
-function scopeRawLinesForFinalAnswer(rawLines: string[]): string[] {
-  let lastDividerIndex = -1;
+function scopeRawLineCandidatesForFinalAnswer(rawLines: string[]): string[][] {
+  const dividerIndexes: number[] = [];
   let lastCommandIndex = -1;
-  for (let index = rawLines.length - 1; index >= 0; index -= 1) {
+  for (let index = 0; index < rawLines.length; index += 1) {
     const line = rawLines[index] ?? '';
-    if (lastDividerIndex < 0 && isDividerLine(line)) {
-      lastDividerIndex = index;
+    if (isDividerLine(line)) {
+      dividerIndexes.push(index);
     }
-    if (lastCommandIndex < 0 && isCommandTranscriptLine(line)) {
+    if (isCommandTranscriptLine(line)) {
       lastCommandIndex = index;
     }
-    if (lastDividerIndex >= 0 && lastCommandIndex >= 0) {
-      break;
-    }
   }
-  if (lastCommandIndex >= 0 && lastDividerIndex < lastCommandIndex) {
+
+  const lastDividerIndex = dividerIndexes.at(-1) ?? -1;
+  if (lastCommandIndex >= 0 && lastDividerIndex < lastCommandIndex && dividerIndexes.length === 0) {
     return [];
   }
-  return lastDividerIndex >= 0 ? rawLines.slice(lastDividerIndex + 1) : rawLines;
+
+  if (dividerIndexes.length === 0) {
+    return [rawLines];
+  }
+
+  return [...dividerIndexes].reverse().map((index) => rawLines.slice(index + 1));
+}
+
+function extractAnswerLines(rawLines: string[], promptText?: string): string[] {
+  const sanitized = sanitizeTerminalOutput(rawLines.map(protectMarkdownHorizontalRule));
+  const prompt = normalizeComparable(promptText ?? '');
+  const lines = sanitized.readableLines
+    .flatMap((line) => line.split('\n'))
+    .map(restoreMarkdownHorizontalRule)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !isProcessLine(line))
+    .filter((line) => normalizeComparable(line) !== prompt)
+    .filter((line) => !line.startsWith(`› ${promptText ?? ''}`));
+
+  return dropCommandTranscript(lines);
 }
 
 function isDividerLine(line: string): boolean {
-  return /^─{16,}$/.test(stripTerminalControlSequences(line).trim());
+  return /─{16,}/.test(stripTerminalControlSequences(line));
 }
 
 function isCommandTranscriptLine(line: string): boolean {
