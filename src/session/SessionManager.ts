@@ -703,22 +703,23 @@ export class SessionManager {
     if (extraction.kind !== 'answer') {
       return;
     }
-    if (turn.lastCandidate !== extraction.text) {
-      turn.lastCandidate = extraction.text;
-      if (turn.timer) {
-        clearTimeout(turn.timer);
-      }
-      await this.store.appendEvent({
-        type: 'notification.answer_candidate_updated',
-        at: new Date().toISOString(),
-        data: { sessionId, chatId: turn.chatId },
-      }).catch((error) =>
-        this.recordBackgroundError('notification.answer_candidate_updated_persist_failed', error, {
-          sessionId,
-          chatId: turn.chatId,
-        }).catch(() => undefined),
-      );
+    if (turn.lastCandidate === extraction.text) {
+      return;
     }
+    turn.lastCandidate = extraction.text;
+    if (turn.timer) {
+      clearTimeout(turn.timer);
+    }
+    await this.store.appendEvent({
+      type: 'notification.answer_candidate_updated',
+      at: new Date().toISOString(),
+      data: { sessionId, chatId: turn.chatId },
+    }).catch((error) =>
+      this.recordBackgroundError('notification.answer_candidate_updated_persist_failed', error, {
+        sessionId,
+        chatId: turn.chatId,
+      }).catch(() => undefined),
+    );
     turn.timer = setTimeout(() => {
       return this.completePendingTurn(sessionId, 'stable').catch((error) =>
         this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
@@ -735,14 +736,12 @@ export class SessionManager {
     if (turn.timer) {
       clearTimeout(turn.timer);
     }
-    const extraction =
-      reason === 'stable' && turn.lastCandidate
-        ? ({ kind: 'answer', text: turn.lastCandidate } as const)
-        : extractFinalAnswer({
-            rawLines: (await this.store.tailSessionLog(sessionId, 100000)).slice(turn.outputStartIndex),
-            prompt: turn.prompt,
-            maxChars: this.config.notifications.maxFinalChars,
-          });
+    const lines = await this.store.tailSessionLog(sessionId, 100000);
+    const extraction = extractFinalAnswer({
+      rawLines: lines.slice(turn.outputStartIndex),
+      prompt: turn.prompt,
+      maxChars: this.config.notifications.maxFinalChars,
+    });
     const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
     await this.deps.notifier!.sendText(turn.chatId, message);
     this.pendingTurns.delete(sessionId);

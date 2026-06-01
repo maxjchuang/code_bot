@@ -416,8 +416,70 @@ describe('SessionManager', () => {
       expect(notifier.sendText).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(notifier.sendText).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
       expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n当前分支：develop');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits for the latest changed answer candidate to stabilize before notifying', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'status' });
+
+      await runner.emitOutput(sessionId, 'draft answer\n');
+      await vi.advanceTimersByTimeAsync(20);
+      await runner.emitOutput(sessionId, '• Working\n');
+      await vi.advanceTimersByTimeAsync(20);
+      await runner.emitOutput(sessionId, '────────────────\nfinal answer\n');
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(notifier.sendText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(39);
+      expect(notifier.sendText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      vi.useRealTimers();
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\nfinal answer');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-extracts latest pending output before sending stable completion', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'status' });
+
+      await runner.emitOutput(sessionId, 'stale answer\n');
+      await store.appendSessionLog(sessionId, '────────────────\nlatest answer\n');
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\nlatest answer');
     } finally {
       vi.useRealTimers();
     }
