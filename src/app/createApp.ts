@@ -17,14 +17,27 @@ export function createApp(deps: AppDependencies): {
   healthCheck: () => Promise<{ ok: true } | { ok: false; reason: string }>;
   recoverStartupState: () => Promise<void>;
 } {
+  const sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, { notifier: deps.notifier });
   return {
-    sessionManager: new SessionManager(deps.config, deps.store, deps.codexRunner, { notifier: deps.notifier }),
+    sessionManager,
     healthCheck: () => deps.codexRunner.healthCheck(),
-    recoverStartupState: () => recoverStartupState(deps.store, deps.config, deps.codexRunner),
+    recoverStartupState: () =>
+      recoverStartupState(deps.store, deps.config, deps.codexRunner, {
+        onOutput: (sessionId, text) => sessionManager.handleRunnerOutput(sessionId, text),
+      }),
   };
 }
 
-export async function recoverStartupState(store: FileStateStore, config?: BotConfig, codexRunner?: CodexRunner): Promise<void> {
+interface StartupRecoveryHooks {
+  onOutput?(sessionId: string, text: string): Promise<void>;
+}
+
+export async function recoverStartupState(
+  store: FileStateStore,
+  config?: BotConfig,
+  codexRunner?: CodexRunner,
+  hooks: StartupRecoveryHooks = {},
+): Promise<void> {
   const sessions = await store.listSessions();
   const recoveredSessions = new Map<string, SessionRecord>();
 
@@ -65,7 +78,7 @@ export async function recoverStartupState(store: FileStateStore, config?: BotCon
     if (chat.currentSessionId && recoveredSessions.has(chat.currentSessionId)) {
       const recoveredSession = recoveredSessions.get(chat.currentSessionId)!;
       const resumedSessionId =
-        config && codexRunner ? await autoResumeRecoveredSession(store, config, codexRunner, recoveredSession).catch(() => undefined) : undefined;
+        config && codexRunner ? await autoResumeRecoveredSession(store, config, codexRunner, recoveredSession, hooks).catch(() => undefined) : undefined;
       await store.saveChat({
         chatId: chat.chatId,
         chatType: chat.chatType,
@@ -81,6 +94,7 @@ async function autoResumeRecoveredSession(
   config: BotConfig,
   codexRunner: CodexRunner,
   sourceSession: SessionRecord,
+  hooks: StartupRecoveryHooks,
 ): Promise<string | undefined> {
   if (!sourceSession.codexSessionId) {
     return undefined;
@@ -115,7 +129,8 @@ async function autoResumeRecoveredSession(
       args: project.codexArgs,
       mode: { kind: 'resume', target: sourceSession.codexSessionId },
       onOutput: (text) => {
-        void store.appendSessionLog(sessionId, text).catch((error) =>
+        const persistOutput = hooks.onOutput ? hooks.onOutput(sessionId, text) : store.appendSessionLog(sessionId, text);
+        void persistOutput.catch((error) =>
           recordAutoResumeBackgroundError(store, 'session.output_persist_failed', error, { sessionId }).catch(() => undefined),
         );
       },

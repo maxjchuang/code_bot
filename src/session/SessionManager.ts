@@ -691,6 +691,10 @@ export class SessionManager {
     }
   }
 
+  async handleRunnerOutput(sessionId: string, text: string): Promise<void> {
+    await this.appendSessionOutput(sessionId, text);
+  }
+
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
     await this.store.appendSessionLog(sessionId, text);
     await this.observePendingTurnOutput(sessionId);
