@@ -483,8 +483,11 @@ export class SessionManager {
     if (sessions.length === 0) {
       return { reply: 'No sessions for this chat yet. Run /new <project> to start one.' };
     }
+    const chat = await this.store.getChat(chatId);
     return {
-      reply: sessions.map((session) => `${session.id} | ${session.projectId} | ${session.status} | ${session.updatedAt}`).join('\n'),
+      reply: sessions
+        .map((session) => `${session.id} | ${sessionResumeState(session, chat?.currentSessionId)} | ${session.projectId} | ${session.status} | ${session.updatedAt}`)
+        .join('\n'),
     };
   }
 
@@ -614,16 +617,27 @@ export class SessionManager {
   private helpText(): string {
     const commands =
       '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+    const resumeHelp = [
+      'Resume: /resume <session> [project]',
+      '- session can be a code_bot session id from /sessions or a Codex native id',
+    ].join('\n');
     const restrictions = [
       'Restrictions:',
       `- Allowed users: ${this.config.allowedUsers.length}`,
       `- Allowed chats: ${this.config.allowedChatIds.length}`,
       `- Projects: ${this.config.projects.map((project) => project.id).join(', ') || 'none'}`,
     ].join('\n');
-    return `${commands}\n\n${restrictions}`;
+    return `${commands}\n\n${resumeHelp}\n\n${restrictions}`;
   }
 }
 
 function isActiveSession(session: SessionRecord): boolean {
   return session.status === 'running' || session.status === 'starting';
+}
+
+function sessionResumeState(session: SessionRecord, currentSessionId: string | undefined): 'current' | 'resumable' | 'not-resumable' {
+  if (session.id === currentSessionId) {
+    return 'current';
+  }
+  return session.codexSessionId ? 'resumable' : 'not-resumable';
 }

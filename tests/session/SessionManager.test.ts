@@ -1048,6 +1048,8 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/resume <session> [project]');
     expect(help.reply).toContain('/tail [n]');
     expect(help.reply).toContain('/rawtail [n]');
+    expect(help.reply).toContain('Resume: /resume <session> [project]');
+    expect(help.reply).toContain('session can be a code_bot session id from /sessions or a Codex native id');
     expect(help.reply).toContain('Restrictions:');
     expect(help.reply).toContain('Allowed users: 1');
     expect(help.reply).toContain('Allowed chats: 1');
@@ -1483,6 +1485,65 @@ describe('SessionManager', () => {
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
     expect(listed.reply).toContain('repo');
     expect(listed.reply).toContain('running');
+  });
+
+  it('marks current and resumable sessions without exposing native ids in /sessions', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+
+    await store.saveSession({
+      id: 'sess_current',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:02:00.000Z',
+      logPath: join(root, 'current.log'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116f',
+    });
+    await store.saveSession({
+      id: 'sess_resumable',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:01:00.000Z',
+      logPath: join(root, 'resumable.log'),
+      codexSessionId,
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: 'sess_current' });
+
+    const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+
+    expect(listed.reply).toContain('sess_current | current | repo | running');
+    expect(listed.reply).toContain('sess_resumable | resumable | repo | exited');
+    expect(listed.reply).not.toContain(codexSessionId);
+    expect(listed.reply).not.toContain('019e7f20-a667-7632-a808-c9595d77116f');
+  });
+
+  it('marks sessions without Codex session ids as not-resumable in /sessions', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await store.saveSession({
+      id: 'sess_missing_native_id',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:01:00.000Z',
+      logPath: join(root, 'missing-native-id.log'),
+    });
+
+    const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+
+    expect(listed.reply).toContain('sess_missing_native_id | not-resumable | repo | exited');
   });
 
   it('supports /approve and /reject approval commands', async () => {
