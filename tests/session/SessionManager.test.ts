@@ -356,6 +356,30 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['first task']);
   });
 
+  it('rejects a second normal task when busy event recording fails', async () => {
+    class BusyRejectedFailingStore extends FileStateStore {
+      async appendEvent(event: BotEvent): Promise<void> {
+        if (event.type === 'notification.turn_busy_rejected') {
+          throw new Error('event log unavailable');
+        }
+        await super.appendEvent(event);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new BusyRejectedFailingStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' })).resolves.toEqual({
+      reply: '当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。',
+    });
+    expect(runner.sentMessages).toEqual(['first task']);
+  });
+
   it('keeps /tail available while a pending notified turn is active', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

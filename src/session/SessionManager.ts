@@ -407,7 +407,12 @@ export class SessionManager {
         type: 'notification.turn_busy_rejected',
         at: new Date().toISOString(),
         data: { sessionId: chat.currentSessionId, chatId: input.chatId },
-      });
+      }).catch((error) =>
+        this.recordBackgroundError('notification.turn_busy_rejected_persist_failed', error, {
+          sessionId: chat.currentSessionId,
+          chatId: input.chatId,
+        }).catch(() => undefined),
+      );
       return { reply: '当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。' };
     }
 
