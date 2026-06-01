@@ -35,7 +35,11 @@ export function formatOutput(text: string, limits: OutputLimits): FormattedOutpu
   };
 }
 
-export function formatTail(lines: string[]): string {
+export function formatReadableTail(lines: string[]): string {
+  return lines.join('\n');
+}
+
+export function formatLogTail(lines: string[]): string {
   const content = lines.join('\n');
   const matches = content.match(/`+/g);
   const maxRun = matches === null ? 0 : Math.max(...matches.map((run) => run.length));

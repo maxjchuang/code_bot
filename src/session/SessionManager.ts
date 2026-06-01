@@ -2,7 +2,7 @@ import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
-import { formatTail } from '../output/OutputFormatter.js';
+import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
@@ -253,7 +253,7 @@ export class SessionManager {
       return { reply: 'No readable output yet. Use /rawtail 80 for raw terminal logs.' };
     }
 
-    return { reply: formatTail(sanitized.readableLines) };
+    return { reply: formatReadableTail(sanitized.readableLines) };
   }
 
   private async rawTail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
@@ -262,7 +262,7 @@ export class SessionManager {
       return rawLines;
     }
 
-    return { reply: formatTail(rawLines.lines) };
+    return { reply: formatLogTail(rawLines.lines) };
   }
 
   private async tailRawLines(chatId: string, requestedCount?: string): Promise<BotTextResult | { lines: string[] }> {

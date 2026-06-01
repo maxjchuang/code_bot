@@ -92,4 +92,46 @@ describe('sanitizeTerminalOutput', () => {
     expect(result.removedLineCount).toBeGreaterThan(0);
     expect(result.hadControlSequences).toBe(true);
   });
+
+  it('does not concatenate cursor redraw frames into spinner text', () => {
+    const result = sanitizeTerminalOutput(['•Working\u001b[1D\u001b[K•Workin\u001b[1D\u001b[K•Working']);
+
+    expect(result.readableLines).toEqual([]);
+    expect(result.removedLineCount).toBe(1);
+    expect(result.hadControlSequences).toBe(true);
+  });
+
+  it('preserves useful output when status redraws move elsewhere on screen', () => {
+    const result = sanitizeTerminalOutput([
+      '└ ## develop...origin/develop\u001b[10;1H\u001b[K•Working\u001b[10;2H\u001b[KWorking',
+    ]);
+
+    expect(result.readableLines).toEqual(['└ ## develop...origin/develop']);
+    expect(result.removedLineCount).toBe(1);
+    expect(result.hadControlSequences).toBe(true);
+  });
+
+  it('drops status bar and numeric redraw residue from terminal-controlled lines', () => {
+    const result = sanitizeTerminalOutput([
+      '\u001b[17;48H85',
+      '\u001b[20;3H•iWorking1235',
+      'gpt-5.5 medium · 5h 98% left · weekly 97% left · 29.6K used · Context 6% used',
+      '当前提交：079db17d',
+    ]);
+
+    expect(result.readableLines).toEqual(['当前提交：079db17d']);
+    expect(result.removedLineCount).toBe(3);
+    expect(result.hadControlSequences).toBe(true);
+  });
+
+  it('removes inline background-terminal status residue without dropping the useful sentence', () => {
+    const result = sanitizeTerminalOutput([
+      '• 已经切到本地 develop，它落后远端 6 个提交；我会执行一次快进更新，让它对齐 origin/develop。•WWorking7 ·91 background terminal running · /ps to view · /stop to close',
+    ]);
+
+    expect(result.readableLines).toEqual([
+      '• 已经切到本地 develop，它落后远端 6 个提交；我会执行一次快进更新，让它对齐 origin/develop。',
+    ]);
+    expect(result.removedLineCount).toBe(0);
+  });
 });

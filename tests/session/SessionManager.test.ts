@@ -388,8 +388,7 @@ describe('SessionManager', () => {
     expect(status.reply).toContain('Project: repo');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
-    expect(tail.reply).toContain('```text');
-    expect(tail.reply).toContain('ready');
+    expect(tail.reply).toBe('ready');
   });
 
   it('returns no active session for /tail and /rawtail before a session exists', async () => {
@@ -530,7 +529,7 @@ describe('SessionManager', () => {
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
-    expect(tail.reply).toContain('```text');
+    expect(tail.reply).not.toContain('```text');
     expect(tail.reply).toContain('⚠ MCP startup incomplete (failed: figma)');
     expect(tail.reply).toContain('› 只读查看当前目录，回复 pwd 和文件列表，不要修改文件');
     expect(tail.reply).toContain('/Users/bytedance/Projects/github/code_bot');
