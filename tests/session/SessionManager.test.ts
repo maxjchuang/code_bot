@@ -5,7 +5,7 @@ import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { createTmpDir } from '../helpers/tmp.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
-import type { BotConfig, SessionRecord } from '../../src/domain/types.js';
+import type { BotConfig, BotEvent, SessionRecord } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -316,6 +316,30 @@ describe('SessionManager', () => {
     expect(sent.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
     expect(runner.sentMessages).toEqual(['inspect status']);
     expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges notified tasks when turn started event recording fails', async () => {
+    class TurnStartedFailingStore extends FileStateStore {
+      async appendEvent(event: BotEvent): Promise<void> {
+        if (event.type === 'notification.turn_started') {
+          throw new Error('event log unavailable');
+        }
+        await super.appendEvent(event);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new TurnStartedFailingStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' })).resolves.toEqual({
+      reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`,
+    });
+    expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
   it('rejects a second normal task while a pending notified turn is active', async () => {

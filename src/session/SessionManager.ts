@@ -456,7 +456,13 @@ export class SessionManager {
         type: 'notification.turn_started',
         at: notificationStartedAt,
         data: { sessionId: chat.currentSessionId, chatId: input.chatId, projectId: session.projectId },
-      });
+      }).catch((error) =>
+        this.recordBackgroundError('notification.turn_started_persist_failed', error, {
+          sessionId: chat.currentSessionId,
+          chatId: input.chatId,
+          projectId: session.projectId,
+        }).catch(() => undefined),
+      );
       return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
     }
     await this.store.appendEvent({
