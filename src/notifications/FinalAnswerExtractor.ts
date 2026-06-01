@@ -12,7 +12,7 @@ export interface ExtractFinalAnswerInput {
 }
 
 export function extractFinalAnswer(input: ExtractFinalAnswerInput): FinalAnswerExtraction {
-  const sanitized = sanitizeTerminalOutput(input.rawLines);
+  const sanitized = sanitizeTerminalOutput(scopeRawLinesAfterLastDivider(input.rawLines));
   const prompt = normalizeComparable(input.prompt ?? '');
   const lines = sanitized.readableLines
     .flatMap((line) => line.split('\n'))
@@ -52,6 +52,7 @@ function isProcessLine(line: string): boolean {
     line.startsWith('⚠ The ') ||
     line.startsWith('⚠ MCP ') ||
     line.startsWith('gpt-') ||
+    isCodexStatusOrQuotaLine(line) ||
     line.includes('Context ') ||
     line.includes('weekly ') ||
     line.includes('esc to interrupt') ||
@@ -59,6 +60,46 @@ function isProcessLine(line: string): boolean {
     /^W*o*r*k*i*n*g*\d*$/.test(line.replace(/[•\s]/g, '')) ||
     /^[-─]{8,}$/.test(line)
   );
+}
+
+function scopeRawLinesAfterLastDivider(rawLines: string[]): string[] {
+  let lastDividerIndex = -1;
+  for (let index = rawLines.length - 1; index >= 0; index -= 1) {
+    if (isDividerLine(rawLines[index] ?? '')) {
+      lastDividerIndex = index;
+      break;
+    }
+  }
+  return lastDividerIndex >= 0 ? rawLines.slice(lastDividerIndex + 1) : rawLines;
+}
+
+function isDividerLine(line: string): boolean {
+  return /^[-─]{8,}$/.test(stripTerminalControlSequences(line).trim());
+}
+
+function isCodexStatusOrQuotaLine(line: string): boolean {
+  const lower = line.toLowerCase();
+  if (/^status:\s/.test(lower)) {
+    return (
+      lower.includes('background terminal') ||
+      lower.includes('running') ||
+      lower.includes('/ps') ||
+      lower.includes('/stop') ||
+      lower.includes('to view') ||
+      lower.includes('to close')
+    );
+  }
+  if (/^quota:\s/.test(lower)) {
+    return /\b(daily|weekly|monthly|left|used|remaining|limit|reset)\b/.test(lower);
+  }
+  return /^context:?\s*\d+%/.test(lower) || /\bcontext\s+\d+%\s+used\b/.test(lower);
+}
+
+function stripTerminalControlSequences(line: string): string {
+  return line
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)?/g, '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, '');
 }
 
 function dropCommandTranscript(lines: string[]): string[] {
