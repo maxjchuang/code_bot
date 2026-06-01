@@ -43,6 +43,10 @@ export interface SessionManagerDeps {
 
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
 const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
+const SEND_TEXT_PREVIEW_LIMIT = 120;
+const PTY_SEND_TERMINATOR = '\r';
+const SEND_SUBMIT_CONFIRM_DELAY_MS = 250;
+const SEND_SUBMIT_RETRY_LIMIT = 1;
 
 interface PendingTurn {
   id: string;
@@ -56,6 +60,8 @@ interface PendingTurn {
   notified: boolean;
   lastCandidate?: string;
   timer?: ReturnType<typeof setTimeout>;
+  submitRetryCount: number;
+  submitRetryTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class SessionManager {
@@ -433,8 +439,25 @@ export class SessionManager {
         outputStartIndex,
         outputStartOffset,
         notified: false,
+        submitRetryCount: 0,
       });
     }
+
+    const sendRequestedAt = new Date().toISOString();
+    await this.store.appendEvent({
+      type: 'session.send_requested',
+      at: sendRequestedAt,
+      data: {
+        sessionId: chat.currentSessionId,
+        chatId: input.chatId,
+        projectId: session.projectId,
+        textLength: text.length,
+        textPreview: previewText(text),
+        notificationsEnabled: notificationEnabled,
+        pendingTurnId: this.pendingTurns.get(chat.currentSessionId)?.id,
+        transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
+      },
+    });
 
     try {
       await this.runner.send(chat.currentSessionId, text);
@@ -459,6 +482,23 @@ export class SessionManager {
         data: { sessionId: chat.currentSessionId, chatId: input.chatId, reason: message },
       });
       return { reply: 'No running session. Run /new <project> first.' };
+    }
+    await this.store.appendEvent({
+      type: 'session.send_dispatched',
+      at: new Date().toISOString(),
+      data: {
+        sessionId: chat.currentSessionId,
+        chatId: input.chatId,
+        projectId: session.projectId,
+        textLength: text.length,
+        textPreview: previewText(text),
+        notificationsEnabled: notificationEnabled,
+        pendingTurnId: this.pendingTurns.get(chat.currentSessionId)?.id,
+        transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
+      },
+    });
+    if (notificationEnabled) {
+      this.scheduleSubmitConfirmation(chat.currentSessionId);
     }
     if (notificationEnabled) {
       await this.store.appendEvent({
@@ -706,6 +746,10 @@ export class SessionManager {
       return;
     }
     const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
+    if (hasObservedTurnProgress(pendingLines, turn.prompt) && turn.submitRetryTimer) {
+      clearTimeout(turn.submitRetryTimer);
+      turn.submitRetryTimer = undefined;
+    }
     const extraction = extractFinalAnswer({
       rawLines: pendingLines,
       prompt: turn.prompt,
@@ -775,8 +819,54 @@ export class SessionManager {
       if (turn.timer) {
         clearTimeout(turn.timer);
       }
+      if (turn.submitRetryTimer) {
+        clearTimeout(turn.submitRetryTimer);
+      }
       this.pendingTurns.delete(sessionId);
     }
+  }
+
+  private scheduleSubmitConfirmation(sessionId: string): void {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    if (turn.submitRetryTimer) {
+      clearTimeout(turn.submitRetryTimer);
+    }
+    turn.submitRetryTimer = setTimeout(() => {
+      return this.confirmTurnSubmission(sessionId).catch((error) =>
+        this.recordBackgroundError('session.send_submit_retry_failed', error, { sessionId }).catch(() => undefined),
+      );
+    }, SEND_SUBMIT_CONFIRM_DELAY_MS);
+  }
+
+  private async confirmTurnSubmission(sessionId: string): Promise<void> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    turn.submitRetryTimer = undefined;
+    const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
+    if (hasObservedTurnProgress(pendingLines, turn.prompt)) {
+      return;
+    }
+    if (turn.submitRetryCount >= SEND_SUBMIT_RETRY_LIMIT) {
+      return;
+    }
+    turn.submitRetryCount += 1;
+    await this.store.appendEvent({
+      type: 'session.send_submit_retry',
+      at: new Date().toISOString(),
+      data: {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+        retryCount: turn.submitRetryCount,
+      },
+    });
+    await this.runner.send(sessionId, '');
+    this.scheduleSubmitConfirmation(sessionId);
   }
 
   private async pendingTurnLogLines(sessionId: string, turn: PendingTurn): Promise<string[]> {
@@ -826,4 +916,36 @@ function sessionResumeState(session: SessionRecord, currentSessionId: string | u
     return 'current';
   }
   return session.codexSessionId ? 'resumable' : 'not-resumable';
+}
+
+function previewText(text: string): string {
+  return text.length <= SEND_TEXT_PREVIEW_LIMIT ? text : `${text.slice(0, SEND_TEXT_PREVIEW_LIMIT - 3)}...`;
+}
+
+function hasObservedTurnProgress(rawLines: string[], prompt: string): boolean {
+  const promptComparable = prompt.replace(/\s+/g, '').trim();
+  const sanitized = sanitizeTerminalOutput(rawLines);
+  for (const line of sanitized.readableLines.flatMap((readableLine) => readableLine.split('\n'))) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const comparable = trimmed.replace(/\s+/g, '');
+    if (comparable === promptComparable || comparable === `›${promptComparable}`) {
+      continue;
+    }
+    if (
+      trimmed.startsWith('• Ran ') ||
+      trimmed.startsWith('└ ') ||
+      trimmed.includes('Working') ||
+      /^W*o*r*k*i*n*g*\d*$/.test(trimmed.replace(/[•\s]/g, '')) ||
+      /─{16,}/.test(trimmed)
+    ) {
+      return true;
+    }
+    if (!trimmed.startsWith('›')) {
+      return true;
+    }
+  }
+  return false;
 }

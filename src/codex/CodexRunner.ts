@@ -3,6 +3,8 @@ import { constants } from 'node:fs';
 import { delimiter, isAbsolute } from 'node:path';
 import pty from 'node-pty';
 
+const SUBMIT_ENTER_DELAY_MS = 10;
+
 export type CodexStartMode =
   | { kind: 'new' }
   | { kind: 'resume'; target: string };
@@ -66,7 +68,9 @@ export class PtyCodexRunner implements CodexRunner {
 
   async send(sessionId: string, text: string): Promise<void> {
     const term = this.requireProcess(sessionId);
-    term.write(`${text}\r`);
+    term.write(text);
+    await delay(SUBMIT_ENTER_DELAY_MS);
+    term.write('\r');
   }
 
   async stop(sessionId: string): Promise<void> {
@@ -82,6 +86,10 @@ export class PtyCodexRunner implements CodexRunner {
     }
     return term;
   }
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 async function findExecutable(command: string): Promise<boolean> {

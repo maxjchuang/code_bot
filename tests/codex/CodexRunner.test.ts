@@ -160,24 +160,36 @@ describe('PtyCodexRunner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('submits prompts with text and enter in one write', async () => {
-    const fake = createFakeTerm();
-    const spawn = vi.fn(() => fake.term as any);
-    const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);
+  it('submits prompts by writing enter after a short delay', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = createFakeTerm();
+      const spawn = vi.fn(() => fake.term as any);
+      const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);
 
-    await runner.start({
-      sessionId: 'sess-send-stop',
-      cwd: process.cwd(),
-      args: [],
-      onOutput: vi.fn(),
-      onExit: vi.fn(),
-    });
+      await runner.start({
+        sessionId: 'sess-send-stop',
+        cwd: process.cwd(),
+        args: [],
+        onOutput: vi.fn(),
+        onExit: vi.fn(),
+      });
 
-    await runner.send('sess-send-stop', 'ping');
-    expect(fake.writes).toEqual(['ping\r']);
+      const sendPromise = runner.send('sess-send-stop', 'ping');
+      expect(fake.writes).toEqual(['ping']);
 
-    await runner.stop('sess-send-stop');
-    expect(fake.kill).toHaveBeenCalledTimes(1);
-    await expect(runner.send('sess-send-stop', 'again')).rejects.toThrow('Codex session is not running: sess-send-stop');
+      await vi.advanceTimersByTimeAsync(9);
+      expect(fake.writes).toEqual(['ping']);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await sendPromise;
+      expect(fake.writes).toEqual(['ping', '\r']);
+
+      await runner.stop('sess-send-stop');
+      expect(fake.kill).toHaveBeenCalledTimes(1);
+      await expect(runner.send('sess-send-stop', 'again')).rejects.toThrow('Codex session is not running: sess-send-stop');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

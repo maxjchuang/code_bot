@@ -318,6 +318,42 @@ describe('SessionManager', () => {
     expect(notifier.sendText).not.toHaveBeenCalled();
   });
 
+  it('records send diagnostics before and after dispatching a normal task', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"session.send_requested"');
+    expect(content).toContain('"type":"session.send_dispatched"');
+    expect(content).toContain(`"sessionId":"${sessionId}"`);
+    expect(content).toContain('"textPreview":"inspect status"');
+    expect(content).toContain('"transportTerminator":"\\\\r"');
+  });
+
+  it('retries submit once when output shows only prompt echo without turn progress', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '最近的一个 commit 做了什么事情？' });
+
+    await runner.emitOutput(sessionId, '›最近的一个commit做了什么事情？\n');
+    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？']);
+
+    await delay(300);
+    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？', '']);
+  });
+
   it('acknowledges notified tasks when turn started event recording fails', async () => {
     class TurnStartedFailingStore extends FileStateStore {
       async appendEvent(event: BotEvent): Promise<void> {
@@ -1454,6 +1490,7 @@ describe('SessionManager', () => {
     const day = new Date().toISOString().slice(0, 10);
     const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
     const content = await readFile(eventPath, 'utf8');
+    expect(content).toContain('"type":"session.send_requested"');
     expect(content).toContain('"type":"session.send_failed"');
   });
 

@@ -74,12 +74,33 @@ function scopeRawLineCandidatesForFinalAnswer(rawLines: string[], requireComplet
 
   if (dividerIndexes.length === 0) {
     if (requireCompletionMarker) {
-      return [];
+      return hasPromptRedrawAfterAnswer(rawLines) ? [rawLines] : [];
     }
     return [rawLines];
   }
 
   return [...dividerIndexes].reverse().map((index) => rawLines.slice(index + 1));
+}
+
+function hasPromptRedrawAfterAnswer(rawLines: string[]): boolean {
+  const sanitized = sanitizeTerminalOutput(rawLines);
+  let sawAnswerLikeLine = false;
+  for (const line of sanitized.readableLines.flatMap((readableLine) => readableLine.split('\n'))) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    if (trimmed.startsWith('›')) {
+      if (sawAnswerLikeLine) {
+        return true;
+      }
+      continue;
+    }
+    if (!isProcessLine(trimmed)) {
+      sawAnswerLikeLine = true;
+    }
+  }
+  return false;
 }
 
 function extractAnswerLines(rawLines: string[], promptText?: string): string[] {

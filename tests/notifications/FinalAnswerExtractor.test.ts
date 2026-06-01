@@ -189,6 +189,42 @@ describe('FinalAnswerExtractor', () => {
     expect(result.kind).toBe('empty');
   });
 
+  it('treats prompt redraw after answer as a completion marker when no divider is present', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        '我是问题它做了什么',
+        '',
+        '• 它修了一个启动恢复时的 bug。',
+        '›Explain this codebase',
+        '',
+        '具体来说，之前如果 bot 重启时要恢复的旧 session 还没有保存 codexSessionId，系统就不会继续自动续接这个 session。这个',
+        'commit 改成：',
+        '1. 启动恢复时，如果旧 session 缺少 codexSessionId，先去做一次受控发现。',
+        '2. 如果找到了对应的 Codex session id，就把它回写到原 session。',
+        '3. 然后继续创建 auto-resume session，正常恢复执行。',
+        '4. 同时补了测试，覆盖这个缺少 codexSessionId 的场景。',
+        '一句话说，就是：修复了“重启后某些 session 因为缺少 Codex ID 而无法自动恢复”的问题。',
+      ],
+      prompt: '我是问题它做了什么',
+      maxChars: 8000,
+      requireCompletionMarker: true,
+    });
+
+    expect(result).toEqual({
+      kind: 'answer',
+      text: [
+        '• 它修了一个启动恢复时的 bug。',
+        '具体来说，之前如果 bot 重启时要恢复的旧 session 还没有保存 codexSessionId，系统就不会继续自动续接这个 session。这个',
+        'commit 改成：',
+        '1. 启动恢复时，如果旧 session 缺少 codexSessionId，先去做一次受控发现。',
+        '2. 如果找到了对应的 Codex session id，就把它回写到原 session。',
+        '3. 然后继续创建 auto-resume session，正常恢复执行。',
+        '4. 同时补了测试，覆盖这个缺少 codexSessionId 的场景。',
+        '一句话说，就是：修复了“重启后某些 session 因为缺少 Codex ID 而无法自动恢复”的问题。',
+      ].join('\n'),
+    });
+  });
+
   it('keeps the last answer when Codex redraws a divider and prompt after answering', () => {
     const result = extractFinalAnswer({
       rawLines: [
