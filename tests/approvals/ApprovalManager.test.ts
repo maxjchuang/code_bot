@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
@@ -26,7 +26,7 @@ describe('ApprovalManager', () => {
     expect(approved.status).toBe('approved');
     expect(approved.resolvedBy).toBe('ou_1');
 
-    const events = await readFile(join(root, '.code-bot/events/2026-05-31.jsonl'), 'utf8');
+    const events = await readEventLog(root);
     expect(events).toContain('"type":"approval.created"');
     expect(events).toContain('"type":"approval.approved"');
   });
@@ -63,7 +63,7 @@ describe('ApprovalManager', () => {
     const stored = await store.getApproval(approval.id);
     expect(stored?.status).toBe((fulfilled as PromiseFulfilledResult<{ status: 'approved' | 'rejected' }>).value.status);
 
-    const events = await readFile(join(root, '.code-bot/events/2026-05-31.jsonl'), 'utf8');
+    const events = await readEventLog(root);
     const terminalEvents = events
       .trim()
       .split('\n')
@@ -94,7 +94,7 @@ describe('ApprovalManager', () => {
     const stored = await store.getApproval(approval.id);
     expect(stored?.status).toBe('expired');
 
-    const events = await readFile(join(root, '.code-bot/events/2026-05-31.jsonl'), 'utf8');
+    const events = await readEventLog(root);
     expect(events).toContain('"type":"approval.expired"');
   });
 
@@ -142,3 +142,10 @@ describe('ApprovalManager', () => {
     expect(stored?.status).toBe('expired');
   });
 });
+
+async function readEventLog(root: string): Promise<string> {
+  const eventsDir = join(root, '.code-bot/events');
+  const eventFiles = (await readdir(eventsDir)).filter((fileName) => fileName.endsWith('.jsonl'));
+  const contents = await Promise.all(eventFiles.map((fileName) => readFile(join(eventsDir, fileName), 'utf8')));
+  return contents.join('');
+}

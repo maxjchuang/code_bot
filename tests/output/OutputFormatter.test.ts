@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatOutput, formatTail } from '../../src/output/OutputFormatter.js';
+import { formatLogTail, formatReadableTail, formatOutput } from '../../src/output/OutputFormatter.js';
 
 describe('OutputFormatter', () => {
   it('returns direct output when text is short', () => {
@@ -18,12 +18,16 @@ describe('OutputFormatter', () => {
     });
   });
 
-  it('formats tail lines', () => {
-    expect(formatTail(['one', 'two'])).toBe('```text\none\ntwo\n```');
+  it('formats readable tail lines as plain text', () => {
+    expect(formatReadableTail(['one', 'two'])).toBe('one\ntwo');
   });
 
-  it('uses longer fence when tail contains code fences', () => {
-    const output = formatTail(['```json', 'value']);
+  it('formats raw log tail lines as a fenced text block', () => {
+    expect(formatLogTail(['one', 'two'])).toBe('```text\none\ntwo\n```');
+  });
+
+  it('uses longer fence when raw log tail contains code fences', () => {
+    const output = formatLogTail(['```json', 'value']);
     expect(output.startsWith('````text\n')).toBe(true);
     expect(output.endsWith('\n````')).toBe(true);
   });
