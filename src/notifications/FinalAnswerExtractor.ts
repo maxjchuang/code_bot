@@ -11,10 +11,11 @@ export interface ExtractFinalAnswerInput {
   rawLines: string[];
   prompt?: string;
   maxChars: number;
+  requireCompletionMarker?: boolean;
 }
 
 export function extractFinalAnswer(input: ExtractFinalAnswerInput): FinalAnswerExtraction {
-  for (const candidateRawLines of scopeRawLineCandidatesForFinalAnswer(input.rawLines)) {
+  for (const candidateRawLines of scopeRawLineCandidatesForFinalAnswer(input.rawLines, input.requireCompletionMarker ?? false)) {
     const answerLines = extractAnswerLines(candidateRawLines, input.prompt);
     if (answerLines.length === 0) {
       continue;
@@ -53,7 +54,7 @@ function isProcessLine(line: string): boolean {
   );
 }
 
-function scopeRawLineCandidatesForFinalAnswer(rawLines: string[]): string[][] {
+function scopeRawLineCandidatesForFinalAnswer(rawLines: string[], requireCompletionMarker: boolean): string[][] {
   const dividerIndexes: number[] = [];
   let lastCommandIndex = -1;
   for (let index = 0; index < rawLines.length; index += 1) {
@@ -72,10 +73,34 @@ function scopeRawLineCandidatesForFinalAnswer(rawLines: string[]): string[][] {
   }
 
   if (dividerIndexes.length === 0) {
+    if (requireCompletionMarker) {
+      return hasPromptRedrawAfterAnswer(rawLines) ? [rawLines] : [];
+    }
     return [rawLines];
   }
 
   return [...dividerIndexes].reverse().map((index) => rawLines.slice(index + 1));
+}
+
+function hasPromptRedrawAfterAnswer(rawLines: string[]): boolean {
+  const sanitized = sanitizeTerminalOutput(rawLines);
+  let sawAnswerLikeLine = false;
+  for (const line of sanitized.readableLines.flatMap((readableLine) => readableLine.split('\n'))) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    if (trimmed.startsWith('›')) {
+      if (sawAnswerLikeLine) {
+        return true;
+      }
+      continue;
+    }
+    if (!isProcessLine(trimmed)) {
+      sawAnswerLikeLine = true;
+    }
+  }
+  return false;
 }
 
 function extractAnswerLines(rawLines: string[], promptText?: string): string[] {

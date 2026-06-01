@@ -1,7 +1,8 @@
 import type { BotConfig, SessionRecord } from '../domain/types.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
-import { SessionManager, type Notifier } from '../session/SessionManager.js';
+import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
+import { SessionManager, type CodexSessionDiscovery, type Notifier } from '../session/SessionManager.js';
 import { resolveProject } from '../security/guards.js';
 
 export interface AppDependencies {
@@ -10,6 +11,8 @@ export interface AppDependencies {
   store: FileStateStore;
   codexRunner: CodexRunner;
   notifier?: Notifier;
+  codexSessionRegistry?: CodexSessionDiscovery;
+  codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
 }
 
 export function createApp(deps: AppDependencies): {
@@ -17,20 +20,37 @@ export function createApp(deps: AppDependencies): {
   healthCheck: () => Promise<{ ok: true } | { ok: false; reason: string }>;
   recoverStartupState: () => Promise<void>;
 } {
-  const sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, { notifier: deps.notifier });
+  const sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, {
+    notifier: deps.notifier,
+    codexSessionRegistry: deps.codexSessionRegistry,
+    codexSessionDiscovery: deps.codexSessionDiscovery,
+  });
   return {
     sessionManager,
     healthCheck: () => deps.codexRunner.healthCheck(),
     recoverStartupState: () =>
       recoverStartupState(deps.store, deps.config, deps.codexRunner, {
         onOutput: (sessionId, text) => sessionManager.handleRunnerOutput(sessionId, text),
+        codexSessionRegistry: deps.codexSessionRegistry,
+        codexSessionDiscovery: deps.codexSessionDiscovery,
       }),
   };
 }
 
+interface StartupCodexSessionDiscoveryOptions {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
 interface StartupRecoveryHooks {
   onOutput?(sessionId: string, text: string): Promise<void>;
+  codexSessionRegistry?: CodexSessionDiscovery;
+  codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
 }
+
+const DEFAULT_STARTUP_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 3;
+const DEFAULT_STARTUP_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
 
 export async function recoverStartupState(
   store: FileStateStore,
@@ -96,7 +116,8 @@ async function autoResumeRecoveredSession(
   sourceSession: SessionRecord,
   hooks: StartupRecoveryHooks,
 ): Promise<string | undefined> {
-  if (!sourceSession.codexSessionId) {
+  const codexSessionId = sourceSession.codexSessionId ?? (await discoverRecoveredCodexSessionId(store, config, sourceSession, hooks));
+  if (!codexSessionId) {
     return undefined;
   }
   const project = resolveProject(config, sourceSession.projectId);
@@ -115,7 +136,7 @@ async function autoResumeRecoveredSession(
     createdAt: now,
     updatedAt: now,
     logPath: store.sessionLogPath(sessionId),
-    codexSessionId: sourceSession.codexSessionId,
+    codexSessionId,
     resumedFromSessionId: sourceSession.id,
     resumeSource: 'code_bot',
     lastSummary: 'Auto-resumed after bot restart.',
@@ -127,7 +148,7 @@ async function autoResumeRecoveredSession(
       sessionId,
       cwd: project.path,
       args: project.codexArgs,
-      mode: { kind: 'resume', target: sourceSession.codexSessionId },
+      mode: { kind: 'resume', target: codexSessionId },
       onOutput: (text) => {
         const persistOutput = hooks.onOutput ? hooks.onOutput(sessionId, text) : store.appendSessionLog(sessionId, text);
         void persistOutput.catch((error) =>
@@ -147,7 +168,7 @@ async function autoResumeRecoveredSession(
       ...session,
       status: 'exited',
       updatedAt: failedAt,
-      lastSummary: `Failed to auto-resume Codex session ${sourceSession.codexSessionId}: ${message}`,
+      lastSummary: `Failed to auto-resume Codex session ${codexSessionId}: ${message}`,
     });
     await store.appendEvent({
       type: 'session.auto_resume_failed',
@@ -163,6 +184,70 @@ async function autoResumeRecoveredSession(
     data: { sessionId, sourceSessionId: sourceSession.id, projectId: sourceSession.projectId, chatId: sourceSession.chatId },
   });
   return sessionId;
+}
+
+async function discoverRecoveredCodexSessionId(
+  store: FileStateStore,
+  config: BotConfig,
+  sourceSession: SessionRecord,
+  hooks: StartupRecoveryHooks,
+): Promise<string | undefined> {
+  const project = resolveProject(config, sourceSession.projectId);
+  if (!project) {
+    return undefined;
+  }
+
+  const maxAttempts = Math.max(1, hooks.codexSessionDiscovery?.maxAttempts ?? DEFAULT_STARTUP_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS);
+  const retryDelayMs = hooks.codexSessionDiscovery?.retryDelayMs ?? DEFAULT_STARTUP_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS;
+  let lastFailureReason: 'not-found' | 'ambiguous' = 'not-found';
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let result: Awaited<ReturnType<CodexSessionDiscovery['discoverForProject']>>;
+    try {
+      result = await codexSessionRegistry(hooks).discoverForProject({ projectPath: project.path, startedAt: sourceSession.createdAt });
+    } catch (error) {
+      await recordAutoResumeBackgroundError(store, 'session.codex_id_discovery_failed', error, {
+        sessionId: sourceSession.id,
+        projectPath: project.path,
+      });
+      return undefined;
+    }
+
+    if (result.ok) {
+      const discoveredAt = new Date().toISOString();
+      await store.updateSession(sourceSession.id, (latest) => ({
+        ...latest,
+        codexSessionId: result.codexSessionId,
+        updatedAt: discoveredAt,
+      }));
+      await store.appendEvent({
+        type: 'session.codex_id_discovered',
+        at: discoveredAt,
+        data: { sessionId: sourceSession.id, projectPath: project.path, codexSessionId: result.codexSessionId },
+      });
+      return result.codexSessionId;
+    }
+
+    lastFailureReason = result.reason;
+    if (attempt < maxAttempts) {
+      await startupCodexSessionDiscoverySleep(hooks, retryDelayMs);
+    }
+  }
+
+  await store.appendEvent({
+    type: 'session.codex_id_discovery_failed',
+    at: new Date().toISOString(),
+    data: { sessionId: sourceSession.id, projectPath: project.path, reason: lastFailureReason },
+  });
+  return undefined;
+}
+
+function codexSessionRegistry(hooks: StartupRecoveryHooks): CodexSessionDiscovery {
+  return hooks.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+}
+
+async function startupCodexSessionDiscoverySleep(hooks: StartupRecoveryHooks, ms: number): Promise<void> {
+  const sleep = hooks.codexSessionDiscovery?.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+  await sleep(ms);
 }
 
 async function markAutoResumedExited(store: FileStateStore, sessionId: string, exitCode: number | undefined): Promise<void> {

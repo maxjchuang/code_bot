@@ -318,6 +318,42 @@ describe('SessionManager', () => {
     expect(notifier.sendText).not.toHaveBeenCalled();
   });
 
+  it('records send diagnostics before and after dispatching a normal task', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"session.send_requested"');
+    expect(content).toContain('"type":"session.send_dispatched"');
+    expect(content).toContain(`"sessionId":"${sessionId}"`);
+    expect(content).toContain('"textPreview":"inspect status"');
+    expect(content).toContain('"transportTerminator":"\\\\r"');
+  });
+
+  it('retries submit once when output shows only prompt echo without turn progress', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '最近的一个 commit 做了什么事情？' });
+
+    await runner.emitOutput(sessionId, '›最近的一个commit做了什么事情？\n');
+    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？']);
+
+    await delay(300);
+    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？', '']);
+  });
+
   it('acknowledges notified tasks when turn started event recording fails', async () => {
     class TurnStartedFailingStore extends FileStateStore {
       async appendEvent(event: BotEvent): Promise<void> {
@@ -411,7 +447,7 @@ describe('SessionManager', () => {
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
 
       await runner.emitOutput(sessionId, '• Working\n');
-      await runner.emitOutput(sessionId, '当前分支：develop\n');
+      await runner.emitOutput(sessionId, '────────────────\n当前分支：develop\n');
       await vi.advanceTimersByTimeAsync(49);
       expect(notifier.sendText).not.toHaveBeenCalled();
 
@@ -492,6 +528,33 @@ describe('SessionManager', () => {
     }
   });
 
+  it('does not complete from in-progress commentary before a final-answer divider', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '切换到最新的main分支' });
+
+      await runner.emitOutput(sessionId, '• Working\n');
+      await runner.emitOutput(sessionId, '• 我会先检查当前 git 状态和分支情况，确认是否有未提交改动，再安全地切到最新的 main。\n');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(notifier.sendText).not.toHaveBeenCalled();
+
+      const busy = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+      expect(busy.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
+      expect(runner.sentMessages).toEqual(['切换到最新的main分支']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('cancels a pending completion timer when later command output invalidates the answer candidate', async () => {
     vi.useFakeTimers();
     try {
@@ -542,7 +605,7 @@ describe('SessionManager', () => {
       await store.appendSessionLog(sessionId, 'previous partial');
 
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'status' });
-      await runner.emitOutput(sessionId, 'final answer\n');
+      await runner.emitOutput(sessionId, '────────────────\nfinal answer\n');
       await vi.advanceTimersByTimeAsync(50);
       vi.useRealTimers();
 
@@ -567,7 +630,7 @@ describe('SessionManager', () => {
       const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'status' });
 
-      await runner.emitOutput(sessionId, 'stale answer\n');
+      await runner.emitOutput(sessionId, '────────────────\nstale answer\n');
       await store.appendSessionLog(sessionId, '────────────────\nlatest answer\n');
       await vi.advanceTimersByTimeAsync(50);
       vi.useRealTimers();
@@ -592,7 +655,7 @@ describe('SessionManager', () => {
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
       const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first' });
-      await runner.emitOutput(sessionId, 'first answer\n');
+      await runner.emitOutput(sessionId, '────────────────\nfirst answer\n');
       await vi.advanceTimersByTimeAsync(1);
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second' });
@@ -625,7 +688,7 @@ describe('SessionManager', () => {
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
       const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
       await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first' });
-      await runner.emitOutput(sessionId, 'first answer\n');
+      await runner.emitOutput(sessionId, '────────────────\nfirst answer\n');
 
       await vi.advanceTimersByTimeAsync(1);
       vi.useRealTimers();
@@ -1427,6 +1490,7 @@ describe('SessionManager', () => {
     const day = new Date().toISOString().slice(0, 10);
     const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
     const content = await readFile(eventPath, 'utf8');
+    expect(content).toContain('"type":"session.send_requested"');
     expect(content).toContain('"type":"session.send_failed"');
   });
 
