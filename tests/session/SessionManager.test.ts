@@ -396,6 +396,57 @@ describe('SessionManager', () => {
     expect(tail.reply).toBe('partial output');
   });
 
+  it('sends one proactive notification when final answer output stabilizes', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+
+      await runner.emitOutput(sessionId, '• Working\n');
+      await runner.emitOutput(sessionId, '当前分支：develop\n');
+      await vi.advanceTimersByTimeAsync(49);
+      expect(notifier.sendText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(notifier.sendText).toHaveBeenCalledTimes(1);
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n当前分支：develop');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows a new task after the prior turn notification is sent', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first' });
+      await runner.emitOutput(sessionId, 'first answer\n');
+      await vi.advanceTimersByTimeAsync(1);
+
+      const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second' });
+      expect(second.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
+      expect(runner.sentMessages).toEqual(['first', 'second']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses legacy send reply when notifications are disabled', async () => {
     const root = await createTmpDir();
     const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, enabled: false } };

@@ -3,6 +3,7 @@ import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
+import { extractFinalAnswer, formatCompletionNotification } from '../notifications/FinalAnswerExtractor.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -684,6 +685,78 @@ export class SessionManager {
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
     await this.store.appendSessionLog(sessionId, text);
+    await this.observePendingTurnOutput(sessionId);
+  }
+
+  private async observePendingTurnOutput(sessionId: string): Promise<void> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    const lines = await this.store.tailSessionLog(sessionId, 100000);
+    const pendingLines = lines.slice(turn.outputStartIndex);
+    const extraction = extractFinalAnswer({
+      rawLines: pendingLines,
+      prompt: turn.prompt,
+      maxChars: this.config.notifications.maxFinalChars,
+    });
+    if (extraction.kind !== 'answer') {
+      return;
+    }
+    if (turn.lastCandidate !== extraction.text) {
+      turn.lastCandidate = extraction.text;
+      if (turn.timer) {
+        clearTimeout(turn.timer);
+      }
+      await this.store.appendEvent({
+        type: 'notification.answer_candidate_updated',
+        at: new Date().toISOString(),
+        data: { sessionId, chatId: turn.chatId },
+      }).catch((error) =>
+        this.recordBackgroundError('notification.answer_candidate_updated_persist_failed', error, {
+          sessionId,
+          chatId: turn.chatId,
+        }).catch(() => undefined),
+      );
+    }
+    turn.timer = setTimeout(() => {
+      return this.completePendingTurn(sessionId, 'stable').catch((error) =>
+        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
+      );
+    }, this.config.notifications.idleMs);
+  }
+
+  private async completePendingTurn(sessionId: string, reason: 'stable' | 'exit'): Promise<void> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    turn.notified = true;
+    if (turn.timer) {
+      clearTimeout(turn.timer);
+    }
+    const extraction =
+      reason === 'stable' && turn.lastCandidate
+        ? ({ kind: 'answer', text: turn.lastCandidate } as const)
+        : extractFinalAnswer({
+            rawLines: (await this.store.tailSessionLog(sessionId, 100000)).slice(turn.outputStartIndex),
+            prompt: turn.prompt,
+            maxChars: this.config.notifications.maxFinalChars,
+          });
+    const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
+    await this.deps.notifier!.sendText(turn.chatId, message);
+    this.pendingTurns.delete(sessionId);
+    await this.store.appendEvent({
+      type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
+      at: new Date().toISOString(),
+      data: { sessionId, chatId: turn.chatId, projectId: turn.projectId, extraction: extraction.kind },
+    }).catch((error) =>
+      this.recordBackgroundError('notification.turn_completed_persist_failed', error, {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+      }).catch(() => undefined),
+    );
   }
 
   private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {
