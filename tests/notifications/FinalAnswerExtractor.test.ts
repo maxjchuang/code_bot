@@ -105,16 +105,62 @@ describe('FinalAnswerExtractor', () => {
   });
 
   it('truncates long final answers with a tail hint', () => {
+    const maxChars = 40;
     const result = extractFinalAnswer({
-      rawLines: ['第一行', '第二行', '第三行'],
+      rawLines: ['第一行内容很长，需要保留开头', '第二行内容也很长，需要触发截断', '第三行内容仍然很长，需要通过 tail 查看'],
       prompt: '总结',
-      maxChars: 8,
+      maxChars,
     });
 
     if (result.kind !== 'answer') {
       throw new Error(`Expected answer extraction, received ${result.kind}`);
     }
-    expect(result.text).toBe('第一行\n第二…\n\n输出已截断，可使用 /tail 查看完整内容。');
+    expect(result.text.length).toBeLessThanOrEqual(maxChars);
+    expect(result.text).toContain('…\n\n输出已截断，可使用 /tail 查看完整内容。');
+  });
+
+  it('preserves answer lines that mention context, weekly reports, gpt-prefixed terms, and tree output', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        'Context API 需要传入 requestId。',
+        'weekly report 已生成。',
+        'gpt-model 字段保留原样。',
+        '└ src/index.ts',
+      ],
+      prompt: '总结',
+      maxChars: 8000,
+    });
+
+    expect(result).toEqual({
+      kind: 'answer',
+      text: ['Context API 需要传入 requestId。', 'weekly report 已生成。', 'gpt-model 字段保留原样。', '└ src/index.ts'].join('\n'),
+    });
+  });
+
+  it('preserves Markdown horizontal rules inside final answers', () => {
+    const result = extractFinalAnswer({
+      rawLines: ['结论如下：', '---', '后续保持观察。'],
+      prompt: '总结',
+      maxChars: 8000,
+    });
+
+    expect(result).toEqual({
+      kind: 'answer',
+      text: ['结论如下：', '---', '后续保持观察。'].join('\n'),
+    });
+  });
+
+  it('removes only direct command transcript child output after a ran line', () => {
+    const result = extractFinalAnswer({
+      rawLines: ['• Ran tree src', '└ src', '输出结构：', '└ notifications'],
+      prompt: '列目录',
+      maxChars: 8000,
+    });
+
+    expect(result).toEqual({
+      kind: 'answer',
+      text: ['输出结构：', '└ notifications'].join('\n'),
+    });
   });
 
   it('formats success and failure notifications', () => {
@@ -127,7 +173,7 @@ describe('FinalAnswerExtractor', () => {
         sessionId: 'sess_1',
         extraction: { kind: 'empty', reason: 'No final answer detected.' },
       }),
-    ).toBe('Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail sess_1 查看最近输出。');
+    ).toBe('Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail 查看最近输出。');
     expect(
       formatCompletionNotification({
         projectId: 'repo',

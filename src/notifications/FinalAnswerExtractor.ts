@@ -1,5 +1,7 @@
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 
+const MARKDOWN_HORIZONTAL_RULE_PLACEHOLDER = '__CODE_BOT_MARKDOWN_HORIZONTAL_RULE__';
+
 export type FinalAnswerExtraction =
   | { kind: 'answer'; text: string }
   | { kind: 'empty'; reason: string }
@@ -12,10 +14,11 @@ export interface ExtractFinalAnswerInput {
 }
 
 export function extractFinalAnswer(input: ExtractFinalAnswerInput): FinalAnswerExtraction {
-  const sanitized = sanitizeTerminalOutput(scopeRawLinesAfterLastDivider(input.rawLines));
+  const sanitized = sanitizeTerminalOutput(scopeRawLinesAfterLastDivider(input.rawLines).map(protectMarkdownHorizontalRule));
   const prompt = normalizeComparable(input.prompt ?? '');
   const lines = sanitized.readableLines
     .flatMap((line) => line.split('\n'))
+    .map(restoreMarkdownHorizontalRule)
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .filter((line) => !isProcessLine(line))
@@ -39,8 +42,7 @@ export function formatCompletionNotification(input: {
     return `Codex 已完成：${input.projectId}\n\n${input.extraction.text}`;
   }
   const diagnostic = input.extraction.kind === 'failure' && input.extraction.diagnostic ? `\n\n${input.extraction.diagnostic}` : '';
-  const tailCommand = input.sessionId ? `/tail ${input.sessionId}` : '/tail';
-  return `Codex 任务结束，但未能提取明确最终回答。\n\n原因：${input.extraction.reason}${diagnostic}\n可使用 ${tailCommand} 查看最近输出。`;
+  return `Codex 任务结束，但未能提取明确最终回答。\n\n原因：${input.extraction.reason}${diagnostic}\n可使用 /tail 查看最近输出。`;
 }
 
 function isProcessLine(line: string): boolean {
@@ -51,14 +53,11 @@ function isProcessLine(line: string): boolean {
     line.startsWith('Booting MCP server') ||
     line.startsWith('⚠ The ') ||
     line.startsWith('⚠ MCP ') ||
-    line.startsWith('gpt-') ||
     isCodexStatusOrQuotaLine(line) ||
-    line.includes('Context ') ||
-    line.includes('weekly ') ||
     line.includes('esc to interrupt') ||
     /^•\s*Working/.test(line) ||
     /^W*o*r*k*i*n*g*\d*$/.test(line.replace(/[•\s]/g, '')) ||
-    /^[-─]{8,}$/.test(line)
+    /^─{8,}$/.test(line)
   );
 }
 
@@ -74,11 +73,14 @@ function scopeRawLinesAfterLastDivider(rawLines: string[]): string[] {
 }
 
 function isDividerLine(line: string): boolean {
-  return /^[-─]{8,}$/.test(stripTerminalControlSequences(line).trim());
+  return /^─{16,}$/.test(stripTerminalControlSequences(line).trim());
 }
 
 function isCodexStatusOrQuotaLine(line: string): boolean {
   const lower = line.toLowerCase();
+  if (/^gpt-[\w.-]+\s+.*·/.test(lower)) {
+    return /\b(context|weekly|daily|left|used)\b/.test(lower);
+  }
   if (/^status:\s/.test(lower)) {
     return (
       lower.includes('background terminal') ||
@@ -95,6 +97,14 @@ function isCodexStatusOrQuotaLine(line: string): boolean {
   return /^context:?\s*\d+%/.test(lower) || /\bcontext\s+\d+%\s+used\b/.test(lower);
 }
 
+function protectMarkdownHorizontalRule(line: string): string {
+  return /^-{3,}$/.test(stripTerminalControlSequences(line).trim()) ? MARKDOWN_HORIZONTAL_RULE_PLACEHOLDER : line;
+}
+
+function restoreMarkdownHorizontalRule(line: string): string {
+  return line === MARKDOWN_HORIZONTAL_RULE_PLACEHOLDER ? '---' : line;
+}
+
 function stripTerminalControlSequences(line: string): string {
   return line
     .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)?/g, '')
@@ -103,15 +113,18 @@ function stripTerminalControlSequences(line: string): string {
 }
 
 function dropCommandTranscript(lines: string[]): string[] {
-  let lastDividerIndex = -1;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (/^[-─]{8,}$/.test(lines[index] ?? '')) {
-      lastDividerIndex = index;
-      break;
+  const answerLines: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    if (line.startsWith('• Ran ')) {
+      if (lines[index + 1]?.startsWith('└ ')) {
+        index += 1;
+      }
+      continue;
     }
+    answerLines.push(line);
   }
-  const scoped = lastDividerIndex >= 0 ? lines.slice(lastDividerIndex + 1) : lines;
-  return scoped.filter((line) => !line.startsWith('• Ran ') && !line.startsWith('└ '));
+  return answerLines;
 }
 
 function normalizeComparable(value: string): string {
@@ -123,5 +136,9 @@ function truncateWithTailHint(text: string, maxChars: number): string {
     return text;
   }
   const suffix = '\n\n输出已截断，可使用 /tail 查看完整内容。';
-  return `${text.slice(0, Math.max(1, maxChars - 2))}…${suffix}`;
+  const prefixLength = maxChars - suffix.length - 1;
+  if (prefixLength <= 0) {
+    return `…${suffix}`.slice(0, Math.max(0, maxChars));
+  }
+  return `${text.slice(0, prefixLength)}…${suffix}`;
 }
