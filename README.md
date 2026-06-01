@@ -35,6 +35,7 @@ Edit `.code-bot/config.json`:
 - Keep `output.directMaxChars` and `output.chunkSize` as reserved config schema fields; current Feishu replies do not enforce these limits.
 - Keep `codex.command` as `codex` when the CLI is on `PATH`, or set it to an absolute executable path.
 - Use `codex.defaultArgs` for arguments shared by all sessions, and `projects[].codexArgs` for project-specific Codex arguments.
+- Configure `notifications.enabled`, `notifications.idleMs`, `notifications.maxFinalChars`, and `notifications.failureTailChars` to control proactive completion messages. Notifications are enabled by default.
 - If Codex CLI is missing when the bot starts, the Feishu gateway still connects. Starting a session with `/new` will report the Codex start failure in chat.
 
 Start the bot:
@@ -57,6 +58,8 @@ In an allowed Feishu chat:
 ```
 
 After `/new <project>`, plain text messages are sent to the active Codex session. You can also send explicit input with:
+
+With completion notifications enabled, plain text messages receive an immediate acknowledgement, then the bot sends a second Feishu message when Codex's final answer is detected. Use `/tail` or `/rawtail` to inspect process output while a task is running.
 
 ```text
 /send <text>
