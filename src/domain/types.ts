@@ -47,6 +47,9 @@ export interface SessionRecord {
   exitCode?: number;
   lastSummary?: string;
   stopRequested?: boolean;
+  codexSessionId?: string;
+  resumedFromSessionId?: string;
+  resumeSource?: 'code_bot' | 'codex';
 }
 
 export interface ApprovalRecord {

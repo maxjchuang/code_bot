@@ -14,6 +14,22 @@ describe('parseIncomingText', () => {
     });
   });
 
+  it('parses resume command with optional project', () => {
+    expect(parseIncomingText('/resume sess_1')).toEqual({
+      kind: 'command',
+      name: 'resume',
+      args: ['sess_1'],
+      raw: '/resume sess_1',
+    });
+
+    expect(parseIncomingText('/resume sess_1 chatbot')).toEqual({
+      kind: 'command',
+      name: 'resume',
+      args: ['sess_1', 'chatbot'],
+      raw: '/resume sess_1 chatbot',
+    });
+  });
+
   it('treats non-command text as codex input', () => {
     expect(parseIncomingText('please inspect this repo')).toEqual({ kind: 'message', text: 'please inspect this repo' });
   });
