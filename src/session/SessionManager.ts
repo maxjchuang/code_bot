@@ -681,6 +681,11 @@ export class SessionManager {
         data: { sessionId, exitCode },
       });
     }
+    if (this.pendingTurns.has(sessionId)) {
+      await this.completePendingTurn(sessionId, 'exit').catch((error) =>
+        this.recordBackgroundError('notification.send_failed', error, { sessionId }),
+      );
+    }
   }
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {

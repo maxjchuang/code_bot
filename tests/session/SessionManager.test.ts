@@ -556,6 +556,60 @@ describe('SessionManager', () => {
     }
   });
 
+  it('sends an exit fallback notification for a pending turn', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'summarize' });
+    await runner.emitOutput(sessionId, '最终结果\n');
+    await runner.exit(sessionId, 0);
+
+    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n最终结果');
+  });
+
+  it('sends a failure-style fallback when exit has no final answer', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'summarize' });
+    await runner.emitOutput(sessionId, '• Working\n');
+    await runner.exit(sessionId, 1);
+
+    expect(notifier.sendText).toHaveBeenCalledWith(
+      'oc_1',
+      'Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail 查看最近输出。',
+    );
+  });
+
+  it('records notifier failures without throwing through output handling', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockRejectedValue(new Error('feishu unavailable')) };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'summarize' });
+    await runner.emitOutput(sessionId, '最终结果\n');
+    await runner.exit(sessionId, 0);
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"notification.send_failed"');
+    expect(content).toContain('"reason":"feishu unavailable"');
+  });
+
   it('uses legacy send reply when notifications are disabled', async () => {
     const root = await createTmpDir();
     const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, enabled: false } };
