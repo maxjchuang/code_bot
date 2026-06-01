@@ -14,6 +14,7 @@ const config: BotConfig = {
   projects: [],
   output: { directMaxChars: 1000, chunkSize: 500 },
   codex: { command: 'codex', defaultArgs: [] },
+  notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
 };
 
 describe('bootstrap', () => {

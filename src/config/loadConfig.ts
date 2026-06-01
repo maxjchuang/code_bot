@@ -40,6 +40,16 @@ function optionalPositiveNumber(value: unknown, defaultValue: number, field: str
   return requirePositiveNumber(value, field);
 }
 
+function optionalRecord(value: unknown, field: string): Record<string, unknown> {
+  if (value === undefined) {
+    return {};
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid config field: ${field}`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function normalizeProject(value: unknown, projectRoot: string): ProjectConfig {
   if (typeof value !== 'object' || value === null) {
     throw new Error('Invalid config field: projects');
@@ -62,7 +72,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
   const feishu = record.feishu as Record<string, unknown> | undefined;
   const output = record.output as Record<string, unknown> | undefined;
   const codex = record.codex as Record<string, unknown> | undefined;
-  const notifications = (record.notifications as Record<string, unknown> | undefined) ?? {};
+  const notifications = optionalRecord(record.notifications, 'notifications');
   if (!feishu || !output || !codex || !Array.isArray(record.projects)) {
     throw new Error('Invalid config structure');
   }
