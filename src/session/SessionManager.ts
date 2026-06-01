@@ -170,11 +170,15 @@ export class SessionManager {
       };
     }
 
-    const sourceSession = await this.store.getSession(target);
     const isCodeBotSessionId = target.startsWith('sess_');
+    if (!isValidSessionTarget(target)) {
+      return { reply: `Invalid session target: ${target}` };
+    }
     let selectedProjectId: string | undefined;
+    let sourceSession: SessionRecord | undefined;
     let nativeStoredSession: SessionRecord | undefined;
     if (isCodeBotSessionId) {
+      sourceSession = await this.store.getSession(target);
       if (!sourceSession) {
         return { reply: `Session not found: ${target}` };
       }
@@ -458,7 +462,7 @@ export class SessionManager {
       return { reply: 'No active session.' };
     }
     const session = await this.store.getSession(chat.currentSessionId);
-    if (!session || session.status !== 'running') {
+    if (!session || !isActiveSession(session)) {
       await this.store.saveChat({
         chatId: input.chatId,
         chatType: input.chatType,
@@ -633,6 +637,10 @@ export class SessionManager {
 
 function isActiveSession(session: SessionRecord): boolean {
   return session.status === 'running' || session.status === 'starting';
+}
+
+function isValidSessionTarget(target: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(target) && target !== '.' && target !== '..' && !target.startsWith('-');
 }
 
 function sessionResumeState(session: SessionRecord, currentSessionId: string | undefined): 'current' | 'resumable' | 'not-resumable' {
