@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ApprovalRecord, BotEvent, ChatContext, SessionRecord } from '../domain/types.js';
 
@@ -124,6 +124,35 @@ export class FileStateStore {
         lines.pop();
       }
       return lines.slice(-lineCount);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  async sessionLogSize(sessionId: string): Promise<number> {
+    await this.waitForPendingWrites();
+    try {
+      return (await stat(this.sessionLogPath(sessionId))).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return 0;
+      }
+      throw error;
+    }
+  }
+
+  async sessionLogLinesFrom(sessionId: string, byteOffset: number): Promise<string[]> {
+    await this.waitForPendingWrites();
+    try {
+      const content = await readFile(this.sessionLogPath(sessionId));
+      const lines = content.subarray(byteOffset).toString('utf8').split(/\r?\n/);
+      if (lines[lines.length - 1] === '') {
+        lines.pop();
+      }
+      return lines;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return [];

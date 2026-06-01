@@ -12,6 +12,7 @@ export function sampleConfig(projectPath: string): BotConfig {
     ],
     output: { directMaxChars: 1800, chunkSize: 1500 },
     codex: { command: 'codex', defaultArgs: [] },
+    notifications: { enabled: true, idleMs: 10, maxFinalChars: 8000, failureTailChars: 2000 },
   };
 }
 

@@ -5,6 +5,7 @@ import { bootstrap } from '../../src/index.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import type { BotConfig } from '../../src/domain/types.js';
 import type { FeishuIncomingMessage } from '../../src/feishu/FeishuGateway.js';
+import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
 import { createTmpDir } from '../helpers/tmp.js';
 
 const config: BotConfig = {
@@ -14,6 +15,7 @@ const config: BotConfig = {
   projects: [],
   output: { directMaxChars: 1000, chunkSize: 500 },
   codex: { command: 'codex', defaultArgs: [] },
+  notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
 };
 
 describe('bootstrap', () => {
@@ -98,5 +100,25 @@ describe('bootstrap', () => {
     const content = await readFile(eventPath, 'utf8');
     expect(content).toContain('"type":"session.recovered_interrupted"');
     expect(content).toContain('"sessionId":"sess_running"');
+  });
+
+  it('creates the app with the Feishu gateway as notifier', async () => {
+    const gateway = { start: vi.fn(), sendText: vi.fn() };
+    const createApp = vi.fn().mockReturnValue({
+      sessionManager: { handleText: vi.fn().mockResolvedValue({ reply: 'ok' }) },
+      healthCheck: vi.fn().mockResolvedValue({ ok: true }),
+      recoverStartupState: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await bootstrap({
+      projectRoot: '/tmp/code-bot',
+      loadConfig: vi.fn().mockResolvedValue(sampleConfig('/tmp/code-bot')),
+      createStore: vi.fn().mockReturnValue({ appendEvent: vi.fn() }),
+      createCodexRunner: vi.fn().mockReturnValue(new FakeCodexRunner()),
+      createGateway: vi.fn().mockReturnValue(gateway),
+      createApp,
+    } as any);
+
+    expect(createApp).toHaveBeenCalledWith(expect.objectContaining({ notifier: gateway }));
   });
 });

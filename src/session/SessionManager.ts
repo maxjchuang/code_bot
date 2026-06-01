@@ -3,6 +3,7 @@ import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
+import { extractFinalAnswer, formatCompletionNotification } from '../notifications/FinalAnswerExtractor.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -26,7 +27,12 @@ export interface CodexSessionDiscovery {
   >;
 }
 
+export interface Notifier {
+  sendText(chatId: string, text: string): Promise<void>;
+}
+
 export interface SessionManagerDeps {
+  notifier?: Notifier;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: {
     maxAttempts?: number;
@@ -38,9 +44,24 @@ export interface SessionManagerDeps {
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
 const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
 
+interface PendingTurn {
+  id: string;
+  sessionId: string;
+  chatId: string;
+  projectId: string;
+  prompt: string;
+  startedAt: string;
+  outputStartIndex: number;
+  outputStartOffset: number;
+  notified: boolean;
+  lastCandidate?: string;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
+  private readonly pendingTurns = new Map<string, PendingTurn>();
 
   constructor(
     private readonly config: BotConfig,
@@ -62,7 +83,7 @@ export class SessionManager {
 
     const parsed = parseIncomingText(input.text);
     if (parsed.kind === 'message') {
-      return this.sendToCurrentSession(input.chatId, parsed.text);
+      return this.sendToCurrentSession(input, parsed.text);
     }
 
     switch (parsed.name) {
@@ -77,7 +98,7 @@ export class SessionManager {
       case 'resume':
         return this.resumeSession(input, parsed.args[0], parsed.args[1]);
       case 'send':
-        return this.sendToCurrentSession(input.chatId, parsed.args[0] ?? '');
+        return this.sendToCurrentSession(input, parsed.args[0] ?? '');
       case 'status':
         return this.status(input.chatId);
       case 'tail':
@@ -370,8 +391,12 @@ export class SessionManager {
     await sleep(ms);
   }
 
-  private async sendToCurrentSession(chatId: string, text: string): Promise<BotTextResult> {
-    const chat = await this.store.getChat(chatId);
+  private notificationsEnabled(): boolean {
+    return this.config.notifications.enabled && !!this.deps.notifier;
+  }
+
+  private async sendToCurrentSession(input: IncomingBotText, text: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(input.chatId);
     if (!chat?.currentSessionId) {
       return { reply: 'No active session. Run /projects and /new <project> first.' };
     }
@@ -379,9 +404,42 @@ export class SessionManager {
     if (!session || session.status !== 'running') {
       return { reply: 'No running session. Run /new <project> first.' };
     }
+    if (this.notificationsEnabled() && this.pendingTurns.has(chat.currentSessionId)) {
+      await this.store.appendEvent({
+        type: 'notification.turn_busy_rejected',
+        at: new Date().toISOString(),
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId },
+      }).catch((error) =>
+        this.recordBackgroundError('notification.turn_busy_rejected_persist_failed', error, {
+          sessionId: chat.currentSessionId,
+          chatId: input.chatId,
+        }).catch(() => undefined),
+      );
+      return { reply: '当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。' };
+    }
+
+    const notificationEnabled = this.notificationsEnabled();
+    const notificationStartedAt = new Date().toISOString();
+    if (notificationEnabled) {
+      const outputStartIndex = (await this.store.tailSessionLog(chat.currentSessionId, 100000)).length;
+      const outputStartOffset = await this.store.sessionLogSize(chat.currentSessionId);
+      this.pendingTurns.set(chat.currentSessionId, {
+        id: `${chat.currentSessionId}:${Date.now()}`,
+        sessionId: chat.currentSessionId,
+        chatId: input.chatId,
+        projectId: session.projectId,
+        prompt: text,
+        startedAt: notificationStartedAt,
+        outputStartIndex,
+        outputStartOffset,
+        notified: false,
+      });
+    }
+
     try {
       await this.runner.send(chat.currentSessionId, text);
     } catch (error) {
+      this.pendingTurns.delete(chat.currentSessionId);
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
       await this.store.updateSession(chat.currentSessionId, (latest) => {
@@ -398,9 +456,23 @@ export class SessionManager {
       await this.store.appendEvent({
         type: 'session.send_failed',
         at: failedAt,
-        data: { sessionId: chat.currentSessionId, chatId, reason: message },
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId, reason: message },
       });
       return { reply: 'No running session. Run /new <project> first.' };
+    }
+    if (notificationEnabled) {
+      await this.store.appendEvent({
+        type: 'notification.turn_started',
+        at: notificationStartedAt,
+        data: { sessionId: chat.currentSessionId, chatId: input.chatId, projectId: session.projectId },
+      }).catch((error) =>
+        this.recordBackgroundError('notification.turn_started_persist_failed', error, {
+          sessionId: chat.currentSessionId,
+          chatId: input.chatId,
+          projectId: session.projectId,
+        }).catch(() => undefined),
+      );
+      return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
     }
     await this.store.appendEvent({
       type: 'session.input',
@@ -612,10 +684,105 @@ export class SessionManager {
         data: { sessionId, exitCode },
       });
     }
+    if (this.pendingTurns.has(sessionId)) {
+      await this.completePendingTurn(sessionId, 'exit').catch((error) =>
+        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
+      );
+    }
+  }
+
+  async handleRunnerOutput(sessionId: string, text: string): Promise<void> {
+    await this.appendSessionOutput(sessionId, text);
   }
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
     await this.store.appendSessionLog(sessionId, text);
+    await this.observePendingTurnOutput(sessionId);
+  }
+
+  private async observePendingTurnOutput(sessionId: string): Promise<void> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
+    const extraction = extractFinalAnswer({
+      rawLines: pendingLines,
+      prompt: turn.prompt,
+      maxChars: this.config.notifications.maxFinalChars,
+    });
+    if (extraction.kind !== 'answer') {
+      if (turn.timer) {
+        clearTimeout(turn.timer);
+        turn.timer = undefined;
+      }
+      turn.lastCandidate = undefined;
+      return;
+    }
+    if (turn.lastCandidate === extraction.text) {
+      return;
+    }
+    turn.lastCandidate = extraction.text;
+    if (turn.timer) {
+      clearTimeout(turn.timer);
+    }
+    await this.store.appendEvent({
+      type: 'notification.answer_candidate_updated',
+      at: new Date().toISOString(),
+      data: { sessionId, chatId: turn.chatId },
+    }).catch((error) =>
+      this.recordBackgroundError('notification.answer_candidate_updated_persist_failed', error, {
+        sessionId,
+        chatId: turn.chatId,
+      }).catch(() => undefined),
+    );
+    turn.timer = setTimeout(() => {
+      return this.completePendingTurn(sessionId, 'stable').catch((error) =>
+        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
+      );
+    }, this.config.notifications.idleMs);
+  }
+
+  private async completePendingTurn(sessionId: string, reason: 'stable' | 'exit'): Promise<void> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    turn.notified = true;
+    try {
+      const lines = await this.pendingTurnLogLines(sessionId, turn);
+      const extraction = extractFinalAnswer({
+        rawLines: lines,
+        prompt: turn.prompt,
+        maxChars: this.config.notifications.maxFinalChars,
+      });
+      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
+      await this.deps.notifier!.sendText(turn.chatId, message);
+      await this.store.appendEvent({
+        type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
+        at: new Date().toISOString(),
+        data: { sessionId, chatId: turn.chatId, projectId: turn.projectId, extraction: extraction.kind },
+      }).catch((error) =>
+        this.recordBackgroundError('notification.turn_completed_persist_failed', error, {
+          sessionId,
+          chatId: turn.chatId,
+          projectId: turn.projectId,
+        }).catch(() => undefined),
+      );
+    } finally {
+      if (turn.timer) {
+        clearTimeout(turn.timer);
+      }
+      this.pendingTurns.delete(sessionId);
+    }
+  }
+
+  private async pendingTurnLogLines(sessionId: string, turn: PendingTurn): Promise<string[]> {
+    if (turn.outputStartOffset !== undefined) {
+      return this.store.sessionLogLinesFrom(sessionId, turn.outputStartOffset);
+    }
+    const lines = await this.store.tailSessionLog(sessionId, 100000);
+    return lines.slice(turn.outputStartIndex);
   }
 
   private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {

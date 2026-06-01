@@ -9,6 +9,7 @@ const config: BotConfig = {
   projects: [{ id: 'repo', name: 'Repo', path: '/tmp/repo', codexArgs: [] }],
   output: { directMaxChars: 1800, chunkSize: 1500 },
   codex: { command: 'codex', defaultArgs: [] },
+  notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
 };
 
 describe('security guards', () => {

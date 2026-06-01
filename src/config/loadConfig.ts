@@ -23,6 +23,33 @@ function requirePositiveNumber(value: unknown, field: string): number {
   return value;
 }
 
+function optionalBoolean(value: unknown, defaultValue: boolean, field: string): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error(`Invalid config field: ${field}`);
+  }
+  return value;
+}
+
+function optionalPositiveNumber(value: unknown, defaultValue: number, field: string): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  return requirePositiveNumber(value, field);
+}
+
+function optionalRecord(value: unknown, field: string): Record<string, unknown> {
+  if (value === undefined) {
+    return {};
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid config field: ${field}`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function normalizeProject(value: unknown, projectRoot: string): ProjectConfig {
   if (typeof value !== 'object' || value === null) {
     throw new Error('Invalid config field: projects');
@@ -45,6 +72,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
   const feishu = record.feishu as Record<string, unknown> | undefined;
   const output = record.output as Record<string, unknown> | undefined;
   const codex = record.codex as Record<string, unknown> | undefined;
+  const notifications = optionalRecord(record.notifications, 'notifications');
   if (!feishu || !output || !codex || !Array.isArray(record.projects)) {
     throw new Error('Invalid config structure');
   }
@@ -73,6 +101,12 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
     codex: {
       command: requireString(codex.command, 'codex.command'),
       defaultArgs: codex.defaultArgs === undefined ? [] : requireStringArray(codex.defaultArgs, 'codex.defaultArgs'),
+    },
+    notifications: {
+      enabled: optionalBoolean(notifications.enabled, true, 'notifications.enabled'),
+      idleMs: optionalPositiveNumber(notifications.idleMs, 3000, 'notifications.idleMs'),
+      maxFinalChars: optionalPositiveNumber(notifications.maxFinalChars, 8000, 'notifications.maxFinalChars'),
+      failureTailChars: optionalPositiveNumber(notifications.failureTailChars, 2000, 'notifications.failureTailChars'),
     },
   };
 }
