@@ -166,7 +166,7 @@ export class SessionManager {
     const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
     if (previousSession && isActiveSession(previousSession)) {
       return {
-        reply: `Current session ${previousSession.id} is still running. Run /stop and approve it before starting a new session.`,
+        reply: `Current session ${previousSession.id} is still running. Run /stop before resuming another session.`,
       };
     }
 
@@ -182,7 +182,7 @@ export class SessionManager {
         return { reply: `Session not found: ${target}` };
       }
       if (!sourceSession.codexSessionId) {
-        return { reply: `Session ${target} has no Codex session id to resume.` };
+        return { reply: `Session ${target} cannot be resumed because no Codex session id was captured.` };
       }
       if (projectId && projectId !== sourceSession.projectId) {
         return { reply: `Project ${projectId} does not match session ${target} project ${sourceSession.projectId}.` };
@@ -201,7 +201,7 @@ export class SessionManager {
     }
 
     if (!selectedProjectId) {
-      return { reply: 'Choose a project with /projects and /resume <session> <project>.' };
+      return { reply: 'Choose a project with /projects and /resume <codex-session-id> <project>.' };
     }
     if (nativeStoredSession && nativeStoredSession.projectId !== selectedProjectId) {
       return { reply: `Project ${selectedProjectId} does not match session ${nativeStoredSession.id} project ${nativeStoredSession.projectId}.` };
@@ -271,7 +271,8 @@ export class SessionManager {
       await this.store.saveSession({
         ...session,
         status: 'exited',
-        lastSummary: `Failed to start Codex: ${message}`,
+        lastSummary:
+          options.mode.kind === 'resume' ? `Failed to resume Codex session ${options.mode.target}: ${message}` : `Failed to start Codex: ${message}`,
         updatedAt: failedAt,
       });
       await this.store.appendEvent({
@@ -279,6 +280,9 @@ export class SessionManager {
         at: failedAt,
         data: { sessionId, projectId: project.id, chatId: input.chatId, reason: message },
       });
+      if (options.mode.kind === 'resume') {
+        return { reply: `Failed to resume Codex session ${options.mode.target} for project ${project.id}: ${message}` };
+      }
       return { reply: `Failed to start Codex for project ${project.id}: ${message}` };
     }
     await this.store.appendEvent({
