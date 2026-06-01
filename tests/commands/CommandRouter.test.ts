@@ -6,6 +6,12 @@ describe('parseIncomingText', () => {
     expect(parseIncomingText('/new repo')).toEqual({ kind: 'command', name: 'new', args: ['repo'], raw: '/new repo' });
     expect(parseIncomingText('/new\trepo')).toEqual({ kind: 'command', name: 'new', args: ['repo'], raw: '/new\trepo' });
     expect(parseIncomingText('/tail 120')).toEqual({ kind: 'command', name: 'tail', args: ['120'], raw: '/tail 120' });
+    expect(parseIncomingText('/rawtail 120')).toEqual({
+      kind: 'command',
+      name: 'rawtail',
+      args: ['120'],
+      raw: '/rawtail 120',
+    });
   });
 
   it('treats non-command text as codex input', () => {

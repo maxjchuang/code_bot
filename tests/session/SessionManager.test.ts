@@ -373,19 +373,33 @@ describe('SessionManager', () => {
   it('supports /use, /status, and /tail', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
-    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
 
     await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo' })).resolves.toEqual({
       reply: 'Current project set to repo.',
     });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.emitOutput(sessionId, 'ready\n');
 
     const status = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
     expect(status.reply).toContain('Project: repo');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
     expect(tail.reply).toContain('```text');
+    expect(tail.reply).toContain('ready');
+  });
+
+  it('returns no active session for /tail and /rawtail before a session exists', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    for (const command of ['/tail', '/rawtail']) {
+      const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: command });
+      expect(result.reply).toBe('No active session.');
+    }
   });
 
   it('returns help command listing', async () => {
@@ -397,6 +411,7 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
     expect(help.reply).toContain('/tail [n]');
+    expect(help.reply).toContain('/rawtail [n]');
     expect(help.reply).toContain('Restrictions:');
     expect(help.reply).toContain('Allowed users: 1');
     expect(help.reply).toContain('Allowed chats: 1');
@@ -493,6 +508,114 @@ describe('SessionManager', () => {
     const invalids = ['10abc', '1e3', '0', '-1'];
     for (const value of invalids) {
       const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/tail ${value}` });
+      expect(result.reply).toBe('Invalid tail count.');
+    }
+  });
+
+  it('sanitizes /tail output for Feishu readability', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    await runner.emitOutput(sessionId, '\u001b[?2004h\u001b[1;1H\u001b[J');
+    await runner.emitOutput(sessionId, '╭────────────────────╮\n');
+    await runner.emitOutput(sessionId, '│ >_ OpenAI Codex │\n');
+    await runner.emitOutput(sessionId, '⚠ MCP startup incomplete (failed: figma)\n');
+    await runner.emitOutput(sessionId, '› 只读查看当前目录，回复 pwd 和文件列表，不要修改文件\n');
+    await runner.emitOutput(sessionId, '/Users/bytedance/Projects/github/code_bot\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toContain('```text');
+    expect(tail.reply).toContain('⚠ MCP startup incomplete (failed: figma)');
+    expect(tail.reply).toContain('› 只读查看当前目录，回复 pwd 和文件列表，不要修改文件');
+    expect(tail.reply).toContain('/Users/bytedance/Projects/github/code_bot');
+    expect(tail.reply).not.toContain('\u001b[');
+    expect(tail.reply).not.toContain('OpenAI Codex');
+    expect(tail.reply).not.toContain('╭');
+  });
+
+  it('returns a helpful message when /tail has no readable output', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.emitOutput(sessionId, '\u001b[?2026h\u001b[14;2H\u001b[0m\u001b[49m\u001b[K\n');
+    await runner.emitOutput(sessionId, '╭────────────────────╮\n╰────────────────────╯\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toBe('No readable output yet. Use /rawtail 80 for raw terminal logs.');
+  });
+
+  it('returns raw terminal output with /rawtail', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.emitOutput(sessionId, '\u001b[?2004hraw terminal line\n');
+
+    const rawtail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/rawtail 10' });
+
+    expect(rawtail.reply).toContain('```text');
+    expect(rawtail.reply).toContain('\u001b[?2004hraw terminal line');
+  });
+
+  it('defaults /tail to the latest 80 readable lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const lines = Array.from({ length: 85 }, (_, index) => `plain-line-${index + 1}`);
+    await runner.emitOutput(sessionId, `${lines.join('\n')}\n`);
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail' });
+
+    expect(tail.reply).toContain('plain-line-6');
+    expect(tail.reply).toContain('plain-line-85');
+    expect(tail.reply).not.toContain('\nplain-line-5\n');
+  });
+
+  it('defaults /rawtail to the latest 80 raw lines', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const lines = Array.from({ length: 85 }, (_, index) => `\u001b[${index + 1}mraw-line-${index + 1}`);
+    await runner.emitOutput(sessionId, `${lines.join('\n')}\n`);
+
+    const rawtail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/rawtail' });
+
+    expect(rawtail.reply).toContain('\u001b[6mraw-line-6');
+    expect(rawtail.reply).toContain('\u001b[85mraw-line-85');
+    expect(rawtail.reply).not.toContain('\u001b[5mraw-line-5');
+  });
+
+  it('validates /rawtail count like /tail', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    for (const value of ['10abc', '1e3', '0', '-1']) {
+      const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/rawtail ${value}` });
       expect(result.reply).toBe('Invalid tail count.');
     }
   });

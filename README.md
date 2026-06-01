@@ -72,6 +72,7 @@ After `/new <project>`, plain text messages are sent to the active Codex session
 /send <text>
 /status
 /tail [n]
+/rawtail [n]
 /stop
 /sessions
 /approve <id>
@@ -82,7 +83,8 @@ Notes:
 
 - `/use <project>` selects a project without starting Codex.
 - `/new [project]` starts a Codex session for the named project, or for the currently selected project.
-- `/tail [n]` returns the last `n` log lines from the active session; default is 80.
+- `/tail [n]` returns readable output from the last `n` raw session log lines after removing terminal control sequences and TUI redraw noise; default is 80.
+- `/rawtail [n]` returns the last `n` raw PTY log lines for debugging; default is 80.
 - `/stop` creates a stop approval. Finish it with `/approve <id>` or `/reject <id>`.
 
 ## Build And Test
