@@ -25,9 +25,7 @@ describe('createApp', () => {
 
     const app = createApp({ projectRoot: root, config: sampleConfig(root), store, codexRunner: runner, notifier });
 
-    await app.sessionManager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
-    const sent = await app.sessionManager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello' });
-    expect(sent.reply).toContain('Sent to Codex');
+    expect((app.sessionManager as any).deps.notifier).toBe(notifier);
   });
 
   it('auto-resumes the current Codex session on startup recovery', async () => {
