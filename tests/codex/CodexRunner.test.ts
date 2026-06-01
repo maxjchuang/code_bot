@@ -160,7 +160,7 @@ describe('PtyCodexRunner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('sends and stops process lifecycle', async () => {
+  it('submits prompts with text and enter in one write', async () => {
     const fake = createFakeTerm();
     const spawn = vi.fn(() => fake.term as any);
     const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);

@@ -174,6 +174,21 @@ describe('FinalAnswerExtractor', () => {
     expect(result.kind).toBe('empty');
   });
 
+  it('does not treat in-progress commentary as a stable final answer without a divider', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        '› 切换到最新的main分支',
+        '•Working (36s • esc to interrupt)',
+        '• 我会先检查当前 git 状态和分支情况，确认是否有未提交改动，再安全地切到最新的 main。',
+      ],
+      prompt: '切换到最新的main分支',
+      maxChars: 8000,
+      requireCompletionMarker: true,
+    });
+
+    expect(result.kind).toBe('empty');
+  });
+
   it('keeps the last answer when Codex redraws a divider and prompt after answering', () => {
     const result = extractFinalAnswer({
       rawLines: [

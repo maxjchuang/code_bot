@@ -710,6 +710,7 @@ export class SessionManager {
       rawLines: pendingLines,
       prompt: turn.prompt,
       maxChars: this.config.notifications.maxFinalChars,
+      requireCompletionMarker: true,
     });
     if (extraction.kind !== 'answer') {
       if (turn.timer) {
@@ -755,6 +756,7 @@ export class SessionManager {
         rawLines: lines,
         prompt: turn.prompt,
         maxChars: this.config.notifications.maxFinalChars,
+        requireCompletionMarker: reason === 'stable',
       });
       const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
       await this.deps.notifier!.sendText(turn.chatId, message);
