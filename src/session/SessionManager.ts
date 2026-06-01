@@ -733,29 +733,32 @@ export class SessionManager {
       return;
     }
     turn.notified = true;
-    if (turn.timer) {
-      clearTimeout(turn.timer);
+    try {
+      const lines = await this.store.tailSessionLog(sessionId, 100000);
+      const extraction = extractFinalAnswer({
+        rawLines: lines.slice(turn.outputStartIndex),
+        prompt: turn.prompt,
+        maxChars: this.config.notifications.maxFinalChars,
+      });
+      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
+      await this.deps.notifier!.sendText(turn.chatId, message);
+      await this.store.appendEvent({
+        type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
+        at: new Date().toISOString(),
+        data: { sessionId, chatId: turn.chatId, projectId: turn.projectId, extraction: extraction.kind },
+      }).catch((error) =>
+        this.recordBackgroundError('notification.turn_completed_persist_failed', error, {
+          sessionId,
+          chatId: turn.chatId,
+          projectId: turn.projectId,
+        }).catch(() => undefined),
+      );
+    } finally {
+      if (turn.timer) {
+        clearTimeout(turn.timer);
+      }
+      this.pendingTurns.delete(sessionId);
     }
-    const lines = await this.store.tailSessionLog(sessionId, 100000);
-    const extraction = extractFinalAnswer({
-      rawLines: lines.slice(turn.outputStartIndex),
-      prompt: turn.prompt,
-      maxChars: this.config.notifications.maxFinalChars,
-    });
-    const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
-    await this.deps.notifier!.sendText(turn.chatId, message);
-    this.pendingTurns.delete(sessionId);
-    await this.store.appendEvent({
-      type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
-      at: new Date().toISOString(),
-      data: { sessionId, chatId: turn.chatId, projectId: turn.projectId, extraction: extraction.kind },
-    }).catch((error) =>
-      this.recordBackgroundError('notification.turn_completed_persist_failed', error, {
-        sessionId,
-        chatId: turn.chatId,
-        projectId: turn.projectId,
-      }).catch(() => undefined),
-    );
   }
 
   private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {

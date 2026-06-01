@@ -509,6 +509,53 @@ describe('SessionManager', () => {
     }
   });
 
+  it('allows a new task after stable notification sending fails', async () => {
+    vi.useFakeTimers();
+    try {
+      class ObservingStore extends FileStateStore {
+        readonly events: BotEvent[] = [];
+
+        async appendEvent(event: BotEvent): Promise<void> {
+          this.events.push(event);
+          await super.appendEvent(event);
+        }
+      }
+
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+      const store = new ObservingStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockRejectedValueOnce(new Error('notify down')).mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first' });
+      await runner.emitOutput(sessionId, 'first answer\n');
+
+      await vi.advanceTimersByTimeAsync(1);
+      vi.useRealTimers();
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      await waitForAssertion(() =>
+        expect(store.events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'notification.send_failed',
+              data: expect.objectContaining({ sessionId, reason: 'notify down' }),
+            }),
+          ]),
+        ),
+      );
+
+      const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second' });
+
+      expect(second.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
+      expect(runner.sentMessages).toEqual(['first', 'second']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses legacy send reply when notifications are disabled', async () => {
     const root = await createTmpDir();
     const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, enabled: false } };
