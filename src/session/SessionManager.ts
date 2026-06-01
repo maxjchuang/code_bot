@@ -683,7 +683,7 @@ export class SessionManager {
     }
     if (this.pendingTurns.has(sessionId)) {
       await this.completePendingTurn(sessionId, 'exit').catch((error) =>
-        this.recordBackgroundError('notification.send_failed', error, { sessionId }),
+        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
       );
     }
   }

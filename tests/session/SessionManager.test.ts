@@ -570,6 +570,9 @@ describe('SessionManager', () => {
     await runner.exit(sessionId, 0);
 
     expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n最终结果');
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"notification.turn_exit_fallback"');
   });
 
   it('sends a failure-style fallback when exit has no final answer', async () => {
@@ -591,7 +594,7 @@ describe('SessionManager', () => {
     );
   });
 
-  it('records notifier failures without throwing through output handling', async () => {
+  it('records notifier failures without throwing through exit handling', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
