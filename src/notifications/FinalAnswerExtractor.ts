@@ -1,11 +1,14 @@
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 
 const MARKDOWN_HORIZONTAL_RULE_PLACEHOLDER = '__CODE_BOT_MARKDOWN_HORIZONTAL_RULE__';
+const COMMENTARY_PREFIXES = ['我先', '我会先', '接下来', '我先检查', '我先看'];
 
 export type FinalAnswerExtraction =
   | { kind: 'answer'; text: string }
   | { kind: 'empty'; reason: string }
   | { kind: 'failure'; reason: string; diagnostic?: string };
+
+export type FinalAnswerSource = 'divider' | 'prompt_redraw' | 'standalone';
 
 export interface ExtractFinalAnswerInput {
   rawLines: string[];
@@ -15,14 +18,25 @@ export interface ExtractFinalAnswerInput {
 }
 
 export function extractFinalAnswer(input: ExtractFinalAnswerInput): FinalAnswerExtraction {
-  for (const candidateRawLines of scopeRawLineCandidatesForFinalAnswer(input.rawLines, input.requireCompletionMarker ?? false)) {
+  return inspectFinalAnswer(input).extraction;
+}
+
+export function inspectFinalAnswer(input: ExtractFinalAnswerInput): {
+  extraction: FinalAnswerExtraction;
+  source?: FinalAnswerSource;
+} {
+  for (const candidate of scopeRawLineCandidatesForFinalAnswer(input.rawLines, input.prompt, input.requireCompletionMarker ?? false)) {
+    const candidateRawLines = candidate.rawLines;
     const answerLines = extractAnswerLines(candidateRawLines, input.prompt);
     if (answerLines.length === 0) {
       continue;
     }
-    return { kind: 'answer', text: truncateWithTailHint(answerLines.join('\n').trim(), input.maxChars) };
+    return {
+      extraction: { kind: 'answer', text: truncateWithTailHint(answerLines.join('\n').trim(), input.maxChars) },
+      source: candidate.source,
+    };
   }
-  return { kind: 'empty', reason: 'No final answer detected.' };
+  return { extraction: { kind: 'empty', reason: 'No final answer detected.' } };
 }
 
 export function formatCompletionNotification(input: {
@@ -34,7 +48,8 @@ export function formatCompletionNotification(input: {
     return `Codex 已完成：${input.projectId}\n\n${input.extraction.text}`;
   }
   const diagnostic = input.extraction.kind === 'failure' && input.extraction.diagnostic ? `\n\n${input.extraction.diagnostic}` : '';
-  return `Codex 任务结束，但未能提取明确最终回答。\n\n原因：${input.extraction.reason}${diagnostic}\n可使用 /tail 查看最近输出。`;
+  const tailCommand = input.sessionId ? `/tail ${input.sessionId}` : '/tail';
+  return `Codex 任务结束，但未能提取明确最终回答。\n\n原因：${input.extraction.reason}${diagnostic}\n可使用 ${tailCommand} 查看最近输出。`;
 }
 
 function isProcessLine(line: string): boolean {
@@ -54,7 +69,11 @@ function isProcessLine(line: string): boolean {
   );
 }
 
-function scopeRawLineCandidatesForFinalAnswer(rawLines: string[], requireCompletionMarker: boolean): string[][] {
+function scopeRawLineCandidatesForFinalAnswer(
+  rawLines: string[],
+  prompt: string | undefined,
+  requireCompletionMarker: boolean,
+): Array<{ rawLines: string[]; source: FinalAnswerSource }> {
   const dividerIndexes: number[] = [];
   let lastCommandIndex = -1;
   for (let index = 0; index < rawLines.length; index += 1) {
@@ -73,13 +92,16 @@ function scopeRawLineCandidatesForFinalAnswer(rawLines: string[], requireComplet
   }
 
   if (dividerIndexes.length === 0) {
-    if (requireCompletionMarker) {
-      return hasPromptRedrawAfterAnswer(rawLines) ? [rawLines] : [];
+    if (hasPromptRedrawAfterAnswer(rawLines)) {
+      return [{ rawLines, source: 'prompt_redraw' }];
     }
-    return [rawLines];
+    if (requireCompletionMarker || !hasStandaloneAnswerWithoutTurnProgress(rawLines, prompt)) {
+      return [];
+    }
+    return [{ rawLines, source: 'standalone' }];
   }
 
-  return [...dividerIndexes].reverse().map((index) => rawLines.slice(index + 1));
+  return [...dividerIndexes].reverse().map((index) => ({ rawLines: rawLines.slice(index + 1), source: 'divider' as const }));
 }
 
 function hasPromptRedrawAfterAnswer(rawLines: string[]): boolean {
@@ -113,9 +135,44 @@ function extractAnswerLines(rawLines: string[], promptText?: string): string[] {
     .filter((line) => line.length > 0)
     .filter((line) => !isProcessLine(line))
     .filter((line) => normalizeComparable(line) !== prompt)
-    .filter((line) => !line.startsWith(`› ${promptText ?? ''}`));
+    .filter((line) => !line.startsWith(`› ${promptText ?? ''}`))
+    .filter((line) => !isLikelyCommentaryLine(line));
 
   return dropCommandTranscript(lines);
+}
+
+function hasStandaloneAnswerWithoutTurnProgress(rawLines: string[], promptText?: string): boolean {
+  const prompt = normalizeComparable(promptText ?? '');
+  const sanitized = sanitizeTerminalOutput(rawLines);
+  let sawAnswerLikeLine = false;
+  for (const line of sanitized.readableLines.flatMap((readableLine) => readableLine.split('\n'))) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const comparable = normalizeComparable(trimmed);
+    if (comparable === prompt || trimmed.startsWith(`› ${promptText ?? ''}`)) {
+      continue;
+    }
+    if (trimmed.startsWith('›')) {
+      return false;
+    }
+    if (isDividerLine(trimmed) || isCommandTranscriptLine(trimmed) || isLikelyCommentaryLine(trimmed)) {
+      return false;
+    }
+    if (
+      trimmed.includes('esc to interrupt') ||
+      /^•\s*Working/.test(trimmed) ||
+      /^W*o*r*k*i*n*g*\d*$/.test(trimmed.replace(/[•\s]/g, ''))
+    ) {
+      return false;
+    }
+    if (isProcessLine(trimmed)) {
+      continue;
+    }
+    sawAnswerLikeLine = true;
+  }
+  return sawAnswerLikeLine;
 }
 
 function isDividerLine(line: string): boolean {
@@ -179,6 +236,10 @@ function dropCommandTranscript(lines: string[]): string[] {
 
 function normalizeComparable(value: string): string {
   return value.replace(/\s+/g, '').trim();
+}
+
+function isLikelyCommentaryLine(line: string): boolean {
+  return line.startsWith('• ') && COMMENTARY_PREFIXES.some((prefix) => line.slice(2).startsWith(prefix));
 }
 
 function truncateWithTailHint(text: string, maxChars: number): string {
