@@ -427,8 +427,12 @@ describe('SessionManager', () => {
       });
       await vi.advanceTimersByTimeAsync(1);
 
-      await expect(pendingReply).resolves.toEqual({
+      await expect(pendingReply).resolves.toMatchObject({
         reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`,
+        renderedReply: expect.objectContaining({
+          preferred: expect.objectContaining({ kind: 'card' }),
+          fallback: expect.objectContaining({ kind: 'text' }),
+        }),
       });
     } finally {
       vi.useRealTimers();
@@ -1071,6 +1075,69 @@ describe('SessionManager', () => {
         }),
       ]),
     );
+  });
+
+  it('routes completion notifications through sendRenderedMessage when available', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier: notifier as any,
+      codexObservationStore: observationStore,
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a4001';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'status' });
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '**done**',
+      completedAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, 'tick\n');
+
+    await waitForAssertion(() => expect(notifier.sendRenderedMessage).toHaveBeenCalledTimes(1));
+    expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('adds a rendered reply for ordinary synchronous responses', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/help' });
+
+    expect(result.reply).toContain('/help');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+  });
+
+  it('keeps tail responses on the text-only path', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.appendSessionLog(sessionId, 'hello\nworld\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
+
+    expect(result.reply).toContain('hello');
+    expect(result.renderedReply).toBeUndefined();
   });
 
   it('does not fall back to PTY extraction when observation does not have a usable final answer', async () => {
@@ -2336,8 +2403,11 @@ describe('SessionManager', () => {
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner);
 
-    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo' })).resolves.toEqual({
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo' })).resolves.toMatchObject({
       reply: 'Current project set to repo.',
+      renderedReply: expect.objectContaining({
+        preferred: expect.objectContaining({ kind: 'card' }),
+      }),
     });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new' });
