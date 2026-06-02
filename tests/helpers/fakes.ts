@@ -89,6 +89,7 @@ export class FakeCodexObservationStore implements CodexObservationStore {
         availability: { kind: 'not_found' },
         codexSessionId: input.codexSessionId,
         status: 'unknown',
+        latestActivityAt: undefined,
         recentToolEvents: [],
       }
     );

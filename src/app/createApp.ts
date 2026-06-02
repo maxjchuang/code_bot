@@ -3,6 +3,7 @@ import { FileStateStore } from '../state/FileStateStore.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { SessionManager, type CodexSessionDiscovery, type Notifier } from '../session/SessionManager.js';
+import type { CodexObservationStore } from '../observations/CodexObservationStore.js';
 import { resolveProject } from '../security/guards.js';
 
 export interface AppDependencies {
@@ -13,6 +14,7 @@ export interface AppDependencies {
   notifier?: Notifier;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
+  codexObservationStore?: CodexObservationStore;
 }
 
 export function createApp(deps: AppDependencies): {
@@ -24,6 +26,8 @@ export function createApp(deps: AppDependencies): {
     notifier: deps.notifier,
     codexSessionRegistry: deps.codexSessionRegistry,
     codexSessionDiscovery: deps.codexSessionDiscovery,
+    codexObservationStore: deps.codexObservationStore,
+    sendConfirmation: deps.notifier ? { initialWaitMs: 3_000, retryWaitMs: 2_000, pollIntervalMs: 100 } : undefined,
   });
   return {
     sessionManager,

@@ -301,21 +301,99 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
-  it('acknowledges normal tasks immediately when notifications are enabled', async () => {
+  it('returns an unconfirmed reply and retries submit once when processing is not confirmed in time', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
-    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    } as any);
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3501';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
 
     const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
 
-    expect(sent.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
-    expect(runner.sentMessages).toEqual(['inspect status']);
+    expect(sent.reply).toBe(`消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${sessionId}`);
+    expect(runner.sentMessages).toEqual(['inspect status', '']);
     expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges tasks only after observation confirms Codex started processing', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(sampleConfig(root), store, runner, {
+        notifier,
+        codexObservationStore: observationStore,
+        sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, pollIntervalMs: 1 },
+      } as any);
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3502';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+      const pendingReply = manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+      await vi.advanceTimersByTimeAsync(1);
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'running',
+        latestCommentary: '我先检查当前状态。',
+        latestActivityAt: '2099-01-01T00:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pendingReply).resolves.toEqual({
+        reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`,
+      });
+      expect(runner.sentMessages).toEqual(['inspect status']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not treat stale previous-turn observation activity as confirmation for a new send', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    } as any);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3503';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '上一轮还在做事。',
+      latestActivityAt: '2000-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    } as any);
+
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    expect(sent.reply).toBe(`消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${sessionId}`);
+    expect(runner.sentMessages).toEqual(['inspect status', '']);
   });
 
   it('records send diagnostics before and after dispatching a normal task', async () => {

@@ -47,6 +47,12 @@ export interface SessionManagerDeps {
     retryDelayMs?: number;
     sleep?: (ms: number) => Promise<void>;
   };
+  sendConfirmation?: {
+    initialWaitMs?: number;
+    retryWaitMs?: number;
+    pollIntervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  };
   codexObservationStore?: CodexObservationStore;
 }
 
@@ -56,6 +62,9 @@ const SEND_TEXT_PREVIEW_LIMIT = 120;
 const PTY_SEND_TERMINATOR = '\r';
 const SEND_SUBMIT_CONFIRM_DELAY_MS = 250;
 const SEND_SUBMIT_RETRY_LIMIT = 1;
+const DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS = 3_000;
+const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
+const DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS = 100;
 
 interface PendingTurn {
   id: string;
@@ -511,7 +520,7 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled && !queuedTurn) {
+    if (notificationEnabled && !queuedTurn && !this.deps.sendConfirmation) {
       this.scheduleSubmitConfirmation(chat.currentSessionId);
     }
     if (notificationEnabled && !queuedTurn) {
@@ -528,6 +537,15 @@ export class SessionManager {
       );
     }
     if (notificationEnabled) {
+      if (queuedTurn && this.deps.sendConfirmation) {
+        return { reply: `消息已加入队列，当前任务完成后会发送给 Codex。\nsession: ${chat.currentSessionId}` };
+      }
+      if (!queuedTurn && this.deps.sendConfirmation) {
+        const confirmed = await this.confirmCodexStartedProcessing(chat.currentSessionId);
+        if (!confirmed) {
+          return { reply: `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` };
+        }
+      }
       return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
     }
     await this.store.appendEvent({
@@ -985,6 +1003,93 @@ export class SessionManager {
       return undefined;
     }
     return this.discoverAndStoreCodexSessionId(session.id, project.path, session.createdAt);
+  }
+
+  private async confirmCodexStartedProcessing(sessionId: string): Promise<boolean> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return false;
+    }
+
+    const initialWaitMs = Math.max(0, this.deps.sendConfirmation?.initialWaitMs ?? DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS);
+    const retryWaitMs = Math.max(0, this.deps.sendConfirmation?.retryWaitMs ?? DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS);
+    if (await this.waitForTurnProcessingEvidence(sessionId, turn, initialWaitMs)) {
+      return true;
+    }
+    if (!(await this.retryTurnSubmission(sessionId, turn))) {
+      return false;
+    }
+    return this.waitForTurnProcessingEvidence(sessionId, turn, retryWaitMs);
+  }
+
+  private async retryTurnSubmission(sessionId: string, turn: PendingTurn): Promise<boolean> {
+    if (turn.submitRetryCount >= SEND_SUBMIT_RETRY_LIMIT) {
+      return false;
+    }
+    turn.submitRetryCount += 1;
+    await this.store.appendEvent({
+      type: 'session.send_submit_retry',
+      at: new Date().toISOString(),
+      data: {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+        retryCount: turn.submitRetryCount,
+      },
+    });
+    await this.runner.send(sessionId, '');
+    return true;
+  }
+
+  private async waitForTurnProcessingEvidence(sessionId: string, turn: PendingTurn, timeoutMs: number): Promise<boolean> {
+    const pollIntervalMs = Math.max(1, this.deps.sendConfirmation?.pollIntervalMs ?? DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS);
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await this.hasObservationTurnProcessingEvidence(sessionId, turn)) {
+        return true;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await this.sendConfirmationSleep(Math.min(pollIntervalMs, remainingMs));
+    } while (Date.now() <= deadline);
+    return this.hasObservationTurnProcessingEvidence(sessionId, turn);
+  }
+
+  private async sendConfirmationSleep(ms: number): Promise<void> {
+    const sleep = this.deps.sendConfirmation?.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    await sleep(ms);
+  }
+
+  private async hasObservationTurnProcessingEvidence(sessionId: string, turn: PendingTurn): Promise<boolean> {
+    const session = await this.store.getSession(sessionId);
+    if (!session) {
+      return false;
+    }
+    const codexSessionId = session.codexSessionId ?? (await this.discoverCodexSessionIdForSession(session));
+    if (!codexSessionId) {
+      return false;
+    }
+
+    const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId }).catch(() => undefined);
+    if (!snapshot || (snapshot.availability.kind !== 'ready' && snapshot.availability.kind !== 'stale')) {
+      return false;
+    }
+
+    const startedAtMs = Date.parse(turn.startedAt);
+    if (Number.isNaN(startedAtMs)) {
+      return false;
+    }
+    const latestActivityAtMs = snapshot.latestActivityAt ? Date.parse(snapshot.latestActivityAt) : Number.NaN;
+    const hasCurrentActivity = !Number.isNaN(latestActivityAtMs) && latestActivityAtMs >= startedAtMs;
+    if (snapshot.completedAt && this.isObservationCurrentTurn(snapshot.completedAt, turn.startedAt)) {
+      return true;
+    }
+    if (!hasCurrentActivity) {
+      return false;
+    }
+    return Boolean(snapshot.latestCommentary?.trim() || snapshot.finalAnswer?.trim() || snapshot.recentToolEvents.length > 0);
   }
 
   private scheduleSubmitConfirmation(sessionId: string): void {
