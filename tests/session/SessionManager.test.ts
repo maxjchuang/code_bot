@@ -495,6 +495,78 @@ describe('SessionManager', () => {
     }
   });
 
+  it('records candidate diagnostics and the final selected answer for a stable completion', async () => {
+    vi.useFakeTimers();
+    try {
+      class ObservingStore extends FileStateStore {
+        readonly events: BotEvent[] = [];
+
+        async appendEvent(event: BotEvent): Promise<void> {
+          this.events.push(event);
+          await super.appendEvent(event);
+        }
+      }
+
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new ObservingStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'status' });
+
+      await runner.emitOutput(sessionId, '────────────────\nfinal answer\n');
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+
+      await waitForAssertion(() =>
+        expect(store.events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'notification.answer_candidate_updated',
+              data: expect.objectContaining({
+                sessionId,
+                chatId: 'oc_1',
+                candidatePreview: 'final answer',
+                candidateHash: expect.any(String),
+                source: 'divider',
+                requireCompletionMarker: true,
+              }),
+            }),
+            expect.objectContaining({
+              type: 'notification.final_extract_selected',
+              data: expect.objectContaining({
+                sessionId,
+                chatId: 'oc_1',
+                projectId: 'repo',
+                candidatePreview: 'final answer',
+                candidateHash: expect.any(String),
+                completionReason: 'stable',
+                source: 'divider',
+              }),
+            }),
+            expect.objectContaining({
+              type: 'notification.turn_completed',
+              data: expect.objectContaining({
+                sessionId,
+                chatId: 'oc_1',
+                projectId: 'repo',
+                extraction: 'answer',
+                candidateUpdateCount: 1,
+                completionReason: 'stable',
+              }),
+            }),
+          ]),
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not complete from command transcript output before a final-answer divider', async () => {
     vi.useFakeTimers();
     try {
@@ -747,7 +819,52 @@ describe('SessionManager', () => {
 
     expect(notifier.sendText).toHaveBeenCalledWith(
       'oc_1',
-      'Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail 查看最近输出。',
+      `Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail ${sessionId} 查看最近输出。`,
+    );
+  });
+
+  it('uses a failure fallback when exit only has in-progress commentary', async () => {
+    class ObservingStore extends FileStateStore {
+      readonly events: BotEvent[] = [];
+
+      async appendEvent(event: BotEvent): Promise<void> {
+        this.events.push(event);
+        await super.appendEvent(event);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new ObservingStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '切换到最新的main分支' });
+    await runner.emitOutput(
+      sessionId,
+      '• Working\n• 我会先检查当前 git 状态和分支情况，确认是否有未提交改动，再安全地切到最新的 main。\n',
+    );
+    await runner.exit(sessionId, 1);
+
+    expect(notifier.sendText).toHaveBeenCalledWith(
+      'oc_1',
+      `Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail ${sessionId} 查看最近输出。`,
+    );
+    expect(store.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'notification.final_extract_empty',
+          data: expect.objectContaining({
+            sessionId,
+            chatId: 'oc_1',
+            projectId: 'repo',
+            completionReason: 'exit',
+            reason: 'No final answer detected.',
+          }),
+        }),
+      ]),
     );
   });
 

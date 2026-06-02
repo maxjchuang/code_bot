@@ -189,6 +189,21 @@ describe('FinalAnswerExtractor', () => {
     expect(result.kind).toBe('empty');
   });
 
+  it('does not treat in-progress commentary as an exit-fallback answer without a divider', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        '› 切换到最新的main分支',
+        '• Working',
+        '• 我先检查当前 git 状态和分支情况，确认是否有未提交改动，再安全地切到最新的 main。',
+      ],
+      prompt: '切换到最新的main分支',
+      maxChars: 8000,
+      requireCompletionMarker: false,
+    });
+
+    expect(result.kind).toBe('empty');
+  });
+
   it('treats prompt redraw after answer as a completion marker when no divider is present', () => {
     const result = extractFinalAnswer({
       rawLines: [
@@ -258,12 +273,13 @@ describe('FinalAnswerExtractor', () => {
         sessionId: 'sess_1',
         extraction: { kind: 'empty', reason: 'No final answer detected.' },
       }),
-    ).toBe('Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail 查看最近输出。');
+    ).toBe('Codex 任务结束，但未能提取明确最终回答。\n\n原因：No final answer detected.\n可使用 /tail sess_1 查看最近输出。');
     expect(
       formatCompletionNotification({
         projectId: 'repo',
+        sessionId: 'sess_2',
         extraction: { kind: 'failure', reason: 'Extractor failed.', diagnostic: 'raw buffer unavailable' },
       }),
-    ).toBe('Codex 任务结束，但未能提取明确最终回答。\n\n原因：Extractor failed.\n\nraw buffer unavailable\n可使用 /tail 查看最近输出。');
+    ).toBe('Codex 任务结束，但未能提取明确最终回答。\n\n原因：Extractor failed.\n\nraw buffer unavailable\n可使用 /tail sess_2 查看最近输出。');
   });
 });

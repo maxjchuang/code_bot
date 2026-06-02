@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
-import { extractFinalAnswer, formatCompletionNotification } from '../notifications/FinalAnswerExtractor.js';
+import { extractFinalAnswer, formatCompletionNotification, inspectFinalAnswer } from '../notifications/FinalAnswerExtractor.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -59,6 +60,7 @@ interface PendingTurn {
   outputStartOffset: number;
   notified: boolean;
   lastCandidate?: string;
+  candidateUpdateCount: number;
   timer?: ReturnType<typeof setTimeout>;
   submitRetryCount: number;
   submitRetryTimer?: ReturnType<typeof setTimeout>;
@@ -439,6 +441,7 @@ export class SessionManager {
         outputStartIndex,
         outputStartOffset,
         notified: false,
+        candidateUpdateCount: 0,
         submitRetryCount: 0,
       });
     }
@@ -742,12 +745,13 @@ export class SessionManager {
       clearTimeout(turn.submitRetryTimer);
       turn.submitRetryTimer = undefined;
     }
-    const extraction = extractFinalAnswer({
+    const inspection = inspectFinalAnswer({
       rawLines: pendingLines,
       prompt: turn.prompt,
       maxChars: this.config.notifications.maxFinalChars,
       requireCompletionMarker: true,
     });
+    const extraction = inspection.extraction;
     if (extraction.kind !== 'answer') {
       if (turn.timer) {
         clearTimeout(turn.timer);
@@ -760,13 +764,21 @@ export class SessionManager {
       return;
     }
     turn.lastCandidate = extraction.text;
+    turn.candidateUpdateCount += 1;
     if (turn.timer) {
       clearTimeout(turn.timer);
     }
     await this.store.appendEvent({
       type: 'notification.answer_candidate_updated',
       at: new Date().toISOString(),
-      data: { sessionId, chatId: turn.chatId },
+      data: {
+        sessionId,
+        chatId: turn.chatId,
+        candidatePreview: previewCandidate(extraction.text),
+        candidateHash: hashCandidate(extraction.text),
+        source: inspection.source,
+        requireCompletionMarker: true,
+      },
     }).catch((error) =>
       this.recordBackgroundError('notification.answer_candidate_updated_persist_failed', error, {
         sessionId,
@@ -788,18 +800,65 @@ export class SessionManager {
     turn.notified = true;
     try {
       const lines = await this.pendingTurnLogLines(sessionId, turn);
-      const extraction = extractFinalAnswer({
+      const inspection = inspectFinalAnswer({
         rawLines: lines,
         prompt: turn.prompt,
         maxChars: this.config.notifications.maxFinalChars,
         requireCompletionMarker: reason === 'stable',
       });
+      const extraction = inspection.extraction;
+      if (extraction.kind === 'answer') {
+        void this.store.appendEvent({
+          type: 'notification.final_extract_selected',
+          at: new Date().toISOString(),
+          data: {
+            sessionId,
+            chatId: turn.chatId,
+            projectId: turn.projectId,
+            candidatePreview: previewCandidate(extraction.text),
+            candidateHash: hashCandidate(extraction.text),
+            completionReason: reason,
+            source: inspection.source,
+          },
+        }).catch((error) =>
+          this.recordBackgroundError('notification.final_extract_selected_persist_failed', error, {
+            sessionId,
+            chatId: turn.chatId,
+            projectId: turn.projectId,
+          }).catch(() => undefined),
+        );
+      } else {
+        void this.store.appendEvent({
+          type: extraction.kind === 'failure' ? 'notification.final_extract_failed' : 'notification.final_extract_empty',
+          at: new Date().toISOString(),
+          data: {
+            sessionId,
+            chatId: turn.chatId,
+            projectId: turn.projectId,
+            completionReason: reason,
+            reason: extraction.reason,
+          },
+        }).catch((error) =>
+          this.recordBackgroundError('notification.final_extract_empty_persist_failed', error, {
+            sessionId,
+            chatId: turn.chatId,
+            projectId: turn.projectId,
+          }).catch(() => undefined),
+        );
+      }
       const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
       await this.deps.notifier!.sendText(turn.chatId, message);
       await this.store.appendEvent({
         type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
         at: new Date().toISOString(),
-        data: { sessionId, chatId: turn.chatId, projectId: turn.projectId, extraction: extraction.kind },
+        data: {
+          sessionId,
+          chatId: turn.chatId,
+          projectId: turn.projectId,
+          extraction: extraction.kind,
+          candidateUpdateCount: turn.candidateUpdateCount,
+          completionReason: reason,
+        },
       }).catch((error) =>
         this.recordBackgroundError('notification.turn_completed_persist_failed', error, {
           sessionId,
@@ -912,6 +971,15 @@ function sessionResumeState(session: SessionRecord, currentSessionId: string | u
 
 function previewText(text: string): string {
   return text.length <= SEND_TEXT_PREVIEW_LIMIT ? text : `${text.slice(0, SEND_TEXT_PREVIEW_LIMIT - 3)}...`;
+}
+
+function previewCandidate(text: string): string {
+  const singleLine = text.replace(/\s+/g, ' ').trim();
+  return singleLine.length <= SEND_TEXT_PREVIEW_LIMIT ? singleLine : `${singleLine.slice(0, SEND_TEXT_PREVIEW_LIMIT - 3)}...`;
+}
+
+function hashCandidate(text: string): string {
+  return createHash('sha1').update(text).digest('hex').slice(0, 12);
 }
 
 function hasObservedTurnProgress(rawLines: string[], prompt: string): boolean {
