@@ -96,7 +96,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
         replyPreview: result.reply.length <= 200 ? result.reply : `${result.reply.slice(0, 197)}...`,
       },
     });
-    return result.reply;
+    return { text: result.reply, rendered: result.renderedReply };
   });
 }
 

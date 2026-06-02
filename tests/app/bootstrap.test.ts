@@ -26,10 +26,14 @@ describe('bootstrap', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const logger = { error: vi.fn() };
-    const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<string>) => {
-      await expect(onMessage({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' })).resolves.toBe('ok');
+    const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<{ text: string }>) => {
+      await expect(onMessage({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' })).resolves.toEqual({ text: 'ok', rendered: undefined });
     });
-    const createGateway = vi.fn(() => ({ start: gatewayStart, sendText: async () => undefined }));
+    const createGateway = vi.fn(() => ({
+      start: gatewayStart,
+      sendText: async () => undefined,
+      sendRenderedMessage: async () => undefined,
+    }));
 
     await bootstrap({
       projectRoot: root,
@@ -88,7 +92,11 @@ describe('bootstrap', () => {
       await expect(store.getChat('oc_1')).resolves.toMatchObject({ currentProjectId: 'repo' });
       expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
     });
-    const createGateway = vi.fn(() => ({ start: gatewayStart, sendText: async () => undefined }));
+    const createGateway = vi.fn(() => ({
+      start: gatewayStart,
+      sendText: async () => undefined,
+      sendRenderedMessage: async () => undefined,
+    }));
 
     await bootstrap({
       projectRoot: root,
@@ -113,7 +121,7 @@ describe('bootstrap', () => {
   });
 
   it('creates the app with the Feishu gateway as notifier', async () => {
-    const gateway = { start: vi.fn(), sendText: vi.fn() };
+    const gateway = { start: vi.fn(), sendText: vi.fn(), sendRenderedMessage: vi.fn() };
     const createApp = vi.fn().mockReturnValue({
       sessionManager: { handleText: vi.fn().mockResolvedValue({ reply: 'ok' }) },
       healthCheck: vi.fn().mockResolvedValue({ ok: true }),
@@ -135,8 +143,11 @@ describe('bootstrap', () => {
   it('records inbound message and reply events around gateway dispatch', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
-    const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<string>) => {
-      await expect(onMessage({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: '/tail 20' })).resolves.toBe('tail output');
+    const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<{ text: string }>) => {
+      await expect(onMessage({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: '/tail 20' })).resolves.toEqual({
+        text: 'tail output',
+        rendered: undefined,
+      });
     });
 
     await bootstrap({
@@ -144,7 +155,11 @@ describe('bootstrap', () => {
       loadConfig: async () => sampleConfig(root),
       createStore: () => store,
       createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
-      createGateway: () => ({ start: gatewayStart, sendText: async () => undefined }),
+      createGateway: () => ({
+        start: gatewayStart,
+        sendText: async () => undefined,
+        sendRenderedMessage: async () => undefined,
+      }),
       createApp: () =>
         ({
           sessionManager: { handleText: async () => ({ reply: 'tail output' }) },
