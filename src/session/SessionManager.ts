@@ -843,18 +843,10 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const session = await this.store.getSession(sessionId);
-      const observationSnapshot =
-        session?.codexSessionId !== undefined
-          ? await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId }).catch(() => undefined)
-          : undefined;
-      const observationFinalAnswer =
-        observationSnapshot && (observationSnapshot.availability.kind === 'ready' || observationSnapshot.availability.kind === 'stale')
-          ? observationSnapshot.finalAnswer?.trim()
-          : undefined;
-      const inspection = observationFinalAnswer
+      const observationExtraction = await this.currentTurnObservationExtraction(sessionId, turn);
+      const inspection = observationExtraction
         ? {
-            extraction: { kind: 'answer' as const, text: observationFinalAnswer },
+            extraction: observationExtraction,
             source: 'observation' as const,
           }
         : inspectFinalAnswer({
@@ -933,6 +925,46 @@ export class SessionManager {
       this.pendingTurns.delete(sessionId);
       await this.activateNextQueuedTurn(sessionId);
     }
+  }
+
+  private async currentTurnObservationExtraction(
+    sessionId: string,
+    turn: PendingTurn,
+  ): Promise<{ kind: 'answer'; text: string } | undefined> {
+    const session = await this.store.getSession(sessionId);
+    if (!session?.codexSessionId) {
+      return undefined;
+    }
+
+    const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId }).catch(() => undefined);
+    if (!snapshot || (snapshot.availability.kind !== 'ready' && snapshot.availability.kind !== 'stale')) {
+      return undefined;
+    }
+
+    const finalAnswer = snapshot.finalAnswer?.trim();
+    if (!finalAnswer || !this.isObservationCurrentTurn(snapshot.completedAt, turn.startedAt)) {
+      return undefined;
+    }
+
+    const extraction = extractFinalAnswer({
+      rawLines: finalAnswer.split('\n'),
+      prompt: turn.prompt,
+      maxChars: this.config.notifications.maxFinalChars,
+      requireCompletionMarker: false,
+    });
+    return extraction.kind === 'answer' ? extraction : undefined;
+  }
+
+  private isObservationCurrentTurn(completedAt: string | undefined, startedAt: string): boolean {
+    if (!completedAt) {
+      return false;
+    }
+    const completedAtMs = Date.parse(completedAt);
+    const startedAtMs = Date.parse(startedAt);
+    if (Number.isNaN(completedAtMs) || Number.isNaN(startedAtMs)) {
+      return false;
+    }
+    return completedAtMs >= startedAtMs;
   }
 
   private scheduleSubmitConfirmation(sessionId: string): void {

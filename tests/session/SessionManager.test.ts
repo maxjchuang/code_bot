@@ -752,24 +752,35 @@ describe('SessionManager', () => {
   });
 
   it('prefers observation final answers over PTY extraction when completing a pending turn', async () => {
+    class ObservingStore extends FileStateStore {
+      readonly events: BotEvent[] = [];
+
+      async appendEvent(event: BotEvent): Promise<void> {
+        this.events.push(event);
+        await super.appendEvent(event);
+      }
+    }
+
     const root = await createTmpDir();
-    const store = new FileStateStore(root);
+    const store = new ObservingStore(root);
     const runner = new FakeCodexRunner();
     const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
     const observationStore = new FakeCodexObservationStore();
-    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1, maxFinalChars: 40 } };
     const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
     const codexSessionId = '019e86b4-12ed-7731-9639-c128626a328b';
     await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    const longObservationAnswer =
+      '结构化 final answer 优先于 PTY 提取，而且这段内容会被截断以保持通知长度与 PTY 提取一致。';
     observationStore.snapshots.set(codexSessionId, {
       availability: { kind: 'ready' },
       codexSessionId,
       status: 'completed',
-      finalAnswer: '结构化 final answer 优先于 PTY 提取。',
-      completedAt: '2026-06-02T08:30:00.000Z',
+      finalAnswer: longObservationAnswer,
+      completedAt: '2099-06-02T08:30:00.000Z',
       recentToolEvents: [],
     });
 
@@ -777,8 +788,21 @@ describe('SessionManager', () => {
     await runner.emitOutput(sessionId, '这是 PTY 提取到的最终答案。\n');
     await runner.exit(sessionId, 0);
 
-    await waitForAssertion(() =>
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n结构化 final answer 优先于 PTY 提取。'),
+    await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n结构化 final answ…\n\n输出已截断，可使用 /tail 查看完整内容。');
+    expect(store.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'notification.final_extract_selected',
+          data: expect.objectContaining({
+            sessionId,
+            chatId: 'oc_1',
+            projectId: 'repo',
+            completionReason: 'exit',
+            source: 'observation',
+          }),
+        }),
+      ]),
     );
   });
 
@@ -810,6 +834,69 @@ describe('SessionManager', () => {
 
     await waitForAssertion(() =>
       expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是 PTY fallback 提取到的最终答案。'),
+    );
+  });
+
+  it('does not let a stale previous-turn observation override the current turn', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+      const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+      vi.setSystemTime(new Date('2026-06-02T08:31:00.000Z'));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a328d';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'stale' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: '上一轮的 observation 最终答案。',
+        completedAt: '2026-06-02T08:30:59.000Z',
+        recentToolEvents: [],
+      });
+
+      vi.setSystemTime(new Date('2026-06-02T08:31:05.000Z'));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '解释当前实现' });
+      await runner.emitOutput(sessionId, '这是当前轮次的 PTY 最终答案。\n');
+      await runner.exit(sessionId, 0);
+
+      vi.useRealTimers();
+      await waitForAssertion(() =>
+        expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是当前轮次的 PTY 最终答案。'),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to PTY extraction when observation lookup throws and still notifies', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    observationStore.readSnapshotError = new Error('observation unavailable');
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+    const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a328e';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '解释当前实现' });
+    await runner.emitOutput(sessionId, '这是 observation 抛错后的 PTY 最终答案。\n');
+    await runner.exit(sessionId, 0);
+
+    await waitForAssertion(() =>
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是 observation 抛错后的 PTY 最终答案。'),
     );
   });
 
