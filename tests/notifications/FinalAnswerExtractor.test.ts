@@ -46,6 +46,39 @@ describe('FinalAnswerExtractor', () => {
     expect(result.reason).toContain('No final answer');
   });
 
+  it('does not treat trust-directory startup prompts as a successful answer', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        '> You are in /data00/home/project',
+        'Do you trust the contents of this directory?',
+        'Working with untrusted contents comes with higher risk of prompt injection.',
+        '1. Yes, continue',
+        '2. No, quit',
+        'Press enter to continue',
+      ],
+      prompt: 'hello',
+      maxChars: 8000,
+    });
+
+    expect(result.kind).toBe('empty');
+  });
+
+  it('does not treat Codex self-update output as a successful answer', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        'Update available! 0.134.0 -> 0.136.0',
+        'Release notes: https://github.com/openai/codex/releases/latest',
+        'Updating Codex via `npm install -g @openai/codex`...',
+        'changed 2 packages in 3s',
+        'Update ran successfully! Please restart Codex.',
+      ],
+      prompt: '帮我做个方案',
+      maxChars: 8000,
+    });
+
+    expect(result.kind).toBe('empty');
+  });
+
   it('filters prompt echo and spinner fragments', () => {
     const result = extractFinalAnswer({
       rawLines: [

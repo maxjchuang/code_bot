@@ -378,24 +378,25 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
-  it('rejects a second normal task while a pending notified turn is active', async () => {
+  it('allows a second normal task while a pending notified turn is active', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
-    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
+    const first = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
     const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
 
-    expect(second.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
-    expect(runner.sentMessages).toEqual(['first task']);
+    expect(first.reply).toContain('已发送给 Codex');
+    expect(second.reply).toContain('已发送给 Codex');
+    expect(runner.sentMessages).toEqual(['first task', 'second task']);
   });
 
-  it('rejects a second normal task when busy event recording fails', async () => {
-    class BusyRejectedFailingStore extends FileStateStore {
+  it('allows a second normal task when queue event recording fails', async () => {
+    class QueueEventFailingStore extends FileStateStore {
       async appendEvent(event: BotEvent): Promise<void> {
-        if (event.type === 'notification.turn_busy_rejected') {
+        if (event.type === 'session.input_queued') {
           throw new Error('event log unavailable');
         }
         await super.appendEvent(event);
@@ -403,7 +404,7 @@ describe('SessionManager', () => {
     }
 
     const root = await createTmpDir();
-    const store = new BusyRejectedFailingStore(root);
+    const store = new QueueEventFailingStore(root);
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
 
@@ -411,9 +412,9 @@ describe('SessionManager', () => {
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
 
     await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' })).resolves.toEqual({
-      reply: '当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。',
+      reply: expect.stringContaining('已发送给 Codex'),
     });
-    expect(runner.sentMessages).toEqual(['first task']);
+    expect(runner.sentMessages).toEqual(['first task', 'second task']);
   });
 
   it('keeps /tail available while a pending notified turn is active', async () => {
@@ -585,9 +586,9 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(notifier.sendText).not.toHaveBeenCalled();
 
-      const busy = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
-      expect(busy.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
-      expect(runner.sentMessages).toEqual(['run tests']);
+      const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
+      expect(second.reply).toContain('已发送给 Codex');
+      expect(runner.sentMessages).toEqual(['run tests', 'second task']);
 
       await runner.emitOutput(sessionId, '────────────────────────────────\n测试已通过，可以继续。\n');
       await vi.advanceTimersByTimeAsync(50);
@@ -619,9 +620,9 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(notifier.sendText).not.toHaveBeenCalled();
 
-      const busy = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
-      expect(busy.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
-      expect(runner.sentMessages).toEqual(['切换到最新的main分支']);
+      const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+      expect(second.reply).toContain('已发送给 Codex');
+      expect(runner.sentMessages).toEqual(['切换到最新的main分支', '当前分支是什么']);
     } finally {
       vi.useRealTimers();
     }
@@ -647,8 +648,8 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(notifier.sendText).not.toHaveBeenCalled();
 
-      const busy = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
-      expect(busy.reply).toBe('当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。');
+      const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
+      expect(second.reply).toContain('已发送给 Codex');
 
       await runner.emitOutput(sessionId, '────────────────────────────────\n测试已通过，可以继续。\n');
       await vi.advanceTimersByTimeAsync(50);
@@ -656,7 +657,43 @@ describe('SessionManager', () => {
 
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
       expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n测试已通过，可以继续。');
-      expect(runner.sentMessages).toEqual(['run tests']);
+      expect(runner.sentMessages).toEqual(['run tests', 'second task']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not treat startup trust prompt output as turn progress or a final answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const manager = new SessionManager(config, store, runner, { notifier });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello' });
+
+      await runner.emitOutput(
+        sessionId,
+        [
+          '> You are in /data00/home/project',
+          'Do you trust the contents of this directory?',
+          '1. Yes, continue',
+          '2. No, quit',
+          'Press enter to continue',
+        ].join('\n'),
+      );
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(notifier.sendText).not.toHaveBeenCalled();
+
+      const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '1' });
+      expect(second.reply).toContain('已发送给 Codex');
+      expect(runner.sentMessages).toEqual(['hello', '', '1']);
     } finally {
       vi.useRealTimers();
     }
