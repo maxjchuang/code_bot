@@ -65,7 +65,7 @@ function createGatewayHarness() {
 describe('LarkLongConnectionGateway', () => {
   it('handles text event and sends onMessage reply to original chat', async () => {
     const harness = createGatewayHarness();
-    const onMessage = vi.fn(async () => 'bot reply');
+    const onMessage = vi.fn(async () => ({ text: 'bot reply' }));
     await harness.gateway.start(onMessage);
 
     await harness.getHandler()({
@@ -95,7 +95,7 @@ describe('LarkLongConnectionGateway', () => {
 
   it('ignores non-text message events', async () => {
     const harness = createGatewayHarness();
-    const onMessage = vi.fn(async () => 'reply');
+    const onMessage = vi.fn(async () => ({ text: 'reply' }));
     await harness.gateway.start(onMessage);
 
     await harness.getHandler()({
@@ -128,7 +128,7 @@ describe('LarkLongConnectionGateway', () => {
       }),
     });
 
-    await expect(gateway.start(async () => 'ok')).rejects.toThrow('startup failed');
+    await expect(gateway.start(async () => ({ text: 'ok' }))).rejects.toThrow('startup failed');
   });
 
   it('isolates handler errors and logs without throwing', async () => {
@@ -181,14 +181,14 @@ describe('LarkLongConnectionGateway', () => {
       },
       wsClient: { start: async () => undefined },
       createEventDispatcher: () => ({
-        register: (handlers) => {
+        register: (handlers: { 'im.message.receive_v1': ReceiveHandler }) => {
           handler = handlers['im.message.receive_v1'];
           return handlers;
         },
       }),
       logger: { error: (...args: unknown[]) => errors.push(args) },
     });
-    await gateway.start(async () => 'reply');
+    await gateway.start(async () => ({ text: 'reply' }));
     if (!handler) {
       throw new Error('handler not registered');
     }
@@ -239,7 +239,7 @@ describe('LarkLongConnectionGateway', () => {
       },
       wsClient: { start: async () => undefined },
       createEventDispatcher: () => ({
-        register: (handlers) => {
+        register: (handlers: { 'im.message.receive_v1': ReceiveHandler }) => {
           handler = handlers['im.message.receive_v1'];
           return handlers;
         },
@@ -252,7 +252,7 @@ describe('LarkLongConnectionGateway', () => {
         errorLogs.push(entry);
       },
     });
-    await gateway.start(async () => 'reply');
+    await gateway.start(async () => ({ text: 'reply' }));
     if (!handler) {
       throw new Error('handler not registered');
     }
@@ -334,7 +334,7 @@ describe('LarkLongConnectionGateway', () => {
 
   it('redacts email addresses in replies from incoming messages', async () => {
     const harness = createGatewayHarness();
-    await harness.gateway.start(async () => 'contact: dev-team@example.com');
+    await harness.gateway.start(async () => ({ text: 'contact: dev-team@example.com' }));
 
     await harness.getHandler()({
       message: {
@@ -354,9 +354,114 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('sends a card payload when the reply is rendered as a card', async () => {
+    const sent: Array<{ msg_type: string; content: string }> = [];
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        im: {
+          v1: {
+            message: {
+              create: async (payload: { data: { msg_type: string; content: string } }) => {
+                const { data } = payload;
+                sent.push({ msg_type: data.msg_type, content: data.content });
+              },
+            },
+          },
+        },
+      },
+    } as any);
+
+    await gateway.sendRenderedMessage('oc_1', {
+      preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [] } } },
+      fallback: { kind: 'text', text: 'fallback' },
+    });
+
+    expect(sent[0]).toMatchObject({ msg_type: 'interactive' });
+  });
+
+  it('falls back to text when card sending fails', async () => {
+    const sent: Array<{ msg_type: string; content: string }> = [];
+    let calls = 0;
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        im: {
+          v1: {
+            message: {
+              create: async (payload: { data: { msg_type: string; content: string } }) => {
+                const { data } = payload;
+                calls += 1;
+                if (calls === 1) {
+                  throw new Error('card failed');
+                }
+                sent.push({ msg_type: data.msg_type, content: data.content });
+              },
+            },
+          },
+        },
+      },
+    } as any);
+
+    await gateway.sendRenderedMessage('oc_1', {
+      preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [] } } },
+      fallback: { kind: 'text', text: 'fallback text' },
+    });
+
+    expect(sent).toEqual([{ msg_type: 'text', content: JSON.stringify({ text: 'fallback text' }) }]);
+  });
+
+  it('sends rendered replies from the incoming message handler as cards', async () => {
+    const sent: Array<{ msg_type?: string; content: string }> = [];
+    let handler: ReceiveHandler | undefined;
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        im: {
+          v1: {
+            message: {
+              create: async (payload: { data: { msg_type?: string; content: string } }) => {
+                sent.push({ msg_type: payload.data.msg_type, content: payload.data.content });
+              },
+            },
+          },
+        },
+      },
+      wsClient: { start: async () => undefined },
+      createEventDispatcher: () => ({
+        register: (handlers: { 'im.message.receive_v1': ReceiveHandler }) => {
+          handler = handlers['im.message.receive_v1'];
+          return handlers;
+        },
+      }),
+    } as any);
+
+    await gateway.start(async () => ({
+      text: 'fallback',
+      rendered: {
+        preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } } },
+        fallback: { kind: 'text', text: 'fallback' },
+      },
+    }));
+
+    if (!handler) {
+      throw new Error('handler not registered');
+    }
+
+    await handler({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello bot' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.msg_type).toBe('interactive');
+  });
+
   it('does not send an empty reply payload back to Feishu', async () => {
     const harness = createGatewayHarness();
-    await harness.gateway.start(async () => '');
+    await harness.gateway.start(async () => ({ text: '' }));
 
     await harness.getHandler()({
       message: {

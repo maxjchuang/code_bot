@@ -4,6 +4,7 @@ import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
+import { renderFeishuMessage, type BotMessage, type RenderedFeishuMessage } from '../feishu/FeishuMessageRenderer.js';
 import {
   extractFinalAnswer,
   formatCompletionNotification,
@@ -25,6 +26,7 @@ export interface IncomingBotText {
 
 export interface BotTextResult {
   reply: string;
+  renderedReply?: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage };
 }
 
 export interface CodexSessionDiscovery {
@@ -36,6 +38,10 @@ export interface CodexSessionDiscovery {
 
 export interface Notifier {
   sendText(chatId: string, text: string): Promise<void>;
+  sendRenderedMessage?(
+    chatId: string,
+    message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
+  ): Promise<void>;
 }
 
 export interface SessionManagerDeps {
@@ -98,7 +104,8 @@ export class SessionManager {
   }
 
   async handleText(input: IncomingBotText): Promise<BotTextResult> {
-    return this.withChatQueue(input.chatId, () => this.handleTextQueued(input));
+    const result = await this.withChatQueue(input.chatId, () => this.handleTextQueued(input));
+    return this.decorateRenderedReply(input.text, result);
   }
 
   private async handleTextQueued(input: IncomingBotText): Promise<BotTextResult> {
@@ -579,6 +586,52 @@ export class SessionManager {
     return this.uiVerbosity() === 'debug';
   }
 
+  private decorateRenderedReply(rawInputText: string, result: BotTextResult): BotTextResult {
+    if (result.reply === '' || result.renderedReply) {
+      return result;
+    }
+
+    const parsed = parseIncomingText(rawInputText);
+    if (parsed.kind === 'command' && (parsed.name === 'tail' || parsed.name === 'rawtail')) {
+      return result;
+    }
+
+    return {
+      ...result,
+      renderedReply: renderFeishuMessage(
+        {
+          kind: 'reply',
+          bodyMarkdown: result.reply,
+          fallbackText: result.reply,
+        },
+        { verbosity: this.uiVerbosity() },
+      ),
+    };
+  }
+
+  private completionBotMessage(projectId: string, sessionId: string, extraction: FinalAnswerExtraction): BotMessage {
+    if (extraction.kind === 'answer') {
+      return {
+        kind: 'completion',
+        bodyMarkdown: extraction.text,
+        fallbackText: extraction.text,
+      };
+    }
+
+    const text = formatCompletionNotification({
+      projectId,
+      sessionId,
+      extraction,
+      verbosity: this.uiVerbosity(),
+    });
+
+    return {
+      kind: 'error',
+      bodyMarkdown: text,
+      fallbackText: text,
+    };
+  }
+
   private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
     const chat = await this.store.getChat(chatId);
     if (!chat?.currentSessionId) {
@@ -910,8 +963,16 @@ export class SessionManager {
           }).catch(() => undefined),
         );
       }
-      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction, verbosity: this.uiVerbosity() });
-      await this.deps.notifier!.sendText(turn.chatId, message);
+      const message = this.completionBotMessage(turn.projectId, sessionId, extraction);
+      const rendered = renderFeishuMessage(message, { verbosity: this.uiVerbosity() });
+      if (this.deps.notifier!.sendRenderedMessage) {
+        await this.deps.notifier!.sendRenderedMessage(turn.chatId, rendered);
+      } else {
+        await this.deps.notifier!.sendText(
+          turn.chatId,
+          rendered.fallback.kind === 'text' ? rendered.fallback.text : message.fallbackText,
+        );
+      }
       await this.store.appendEvent({
         type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
         at: new Date().toISOString(),

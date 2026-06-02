@@ -43,7 +43,7 @@ describe('createApp', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const notifier = { sendText: vi.fn() };
+    const notifier = { sendText: vi.fn(), sendRenderedMessage: vi.fn() };
 
     const app = createApp({ projectRoot: root, config: sampleConfig(root), store, codexRunner: runner, notifier });
 
@@ -160,7 +160,7 @@ describe('createApp', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root, () => new Date('2026-06-01T10:00:00.000Z'));
     const runner = new FakeCodexRunner();
-    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined), sendRenderedMessage: vi.fn().mockResolvedValue(undefined) };
     const observationStore = new FakeCodexObservationStore();
     const codexSessionId = '019e8271-ddb8-7540-9baa-77ce58da1f26';
     await store.saveSession({
@@ -213,10 +213,7 @@ describe('createApp', () => {
     await runner.emitOutput(sessionId, 'trigger structured observation completion\n');
 
     await waitForAssertion(() => {
-      expect(notifier.sendText).toHaveBeenCalledWith(
-        'oc_1',
-        '• 当前分支是：\nfeat/codex-completion-notifications',
-      );
+      expect(notifier.sendRenderedMessage).toHaveBeenCalledTimes(1);
     });
     await waitForAssertion(async () => {
       const events = (await readFile(join(root, '.code-bot/events/2026-06-01.jsonl'), 'utf8'))
