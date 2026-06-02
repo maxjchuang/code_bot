@@ -1,6 +1,10 @@
 import type { CodexObservationSnapshot } from '../observations/CodexObservationStore.js';
 
 export function formatObservationTail(snapshot: CodexObservationSnapshot): string {
+  if (snapshot.availability.kind === 'parse_error') {
+    return `Structured Codex observation failed to parse. Reason: ${snapshot.availability.reason}. Use /rawtail 80 for raw terminal logs.`;
+  }
+
   if (snapshot.availability.kind !== 'ready' && snapshot.availability.kind !== 'stale') {
     return 'No structured Codex observation yet. Use /rawtail 80 for raw terminal logs.';
   }

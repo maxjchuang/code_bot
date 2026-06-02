@@ -46,6 +46,9 @@ describe('formatObservationTail', () => {
       })),
     });
 
+    expect(reply).not.toContain('exec_command: command-3');
+    expect(reply).toContain('exec_command: command-4');
+    expect(reply).toContain('exec_command: command-5');
     expect(reply).toContain('exec_command: command-6');
     expect(reply).not.toContain('exec_command: command-1');
   });
@@ -59,5 +62,18 @@ describe('formatObservationTail', () => {
     });
 
     expect(reply).toBe('No structured Codex observation yet. Use /rawtail 80 for raw terminal logs.');
+  });
+
+  it('surfaces parse errors with an operator-facing message', () => {
+    const reply = formatObservationTail({
+      availability: { kind: 'parse_error', reason: 'Unexpected token' },
+      codexSessionId: 'session-5',
+      status: 'unknown',
+      recentToolEvents: [],
+    });
+
+    expect(reply).toContain('Structured Codex observation failed to parse.');
+    expect(reply).toContain('Unexpected token');
+    expect(reply).toContain('/rawtail 80');
   });
 });
