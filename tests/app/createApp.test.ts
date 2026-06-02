@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApp } from '../../src/app/createApp.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
-import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
+import { FakeCodexObservationStore, FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
 import { createTmpDir } from '../helpers/tmp.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -161,6 +161,8 @@ describe('createApp', () => {
     const store = new FileStateStore(root, () => new Date('2026-06-01T10:00:00.000Z'));
     const runner = new FakeCodexRunner();
     const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const codexSessionId = '019e8271-ddb8-7540-9baa-77ce58da1f26';
     await store.saveSession({
       id: 'sess_last',
       chatId: 'oc_1',
@@ -170,7 +172,7 @@ describe('createApp', () => {
       createdAt: '2026-06-01T09:09:20.569Z',
       updatedAt: '2026-06-01T09:19:01.493Z',
       logPath: store.sessionLogPath('sess_last'),
-      codexSessionId: '019e8271-ddb8-7540-9baa-77ce58da1f26',
+      codexSessionId,
     });
     await store.saveChat({
       chatId: 'oc_1',
@@ -184,26 +186,36 @@ describe('createApp', () => {
       store,
       codexRunner: runner,
       notifier,
+      codexObservationStore: observationStore,
     });
 
     await app.recoverStartupState();
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '我先检查当前分支。',
+      latestActivityAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
     await app.sessionManager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么？' });
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '• 当前分支是：\nfeat/codex-completion-notifications',
+      latestActivityAt: '2099-01-01T00:00:01.000Z',
+      completedAt: '2099-01-01T00:00:01.000Z',
+      recentToolEvents: [],
+    });
 
-    await runner.emitOutput(
-      sessionId,
-      [
-        '────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────',
-        '',
-        '• 当前分支是：',
-        '  feat/codex-completion-notifications',
-      ].join('\n'),
-    );
+    await runner.emitOutput(sessionId, 'trigger structured observation completion\n');
 
     await waitForAssertion(() => {
       expect(notifier.sendText).toHaveBeenCalledWith(
         'oc_1',
-        'Codex 已完成：repo\n\n• 当前分支是：\nfeat/codex-completion-notifications',
+        '• 当前分支是：\nfeat/codex-completion-notifications',
       );
     });
     await waitForAssertion(async () => {

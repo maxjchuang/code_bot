@@ -34,6 +34,9 @@ export interface BotConfig {
     command: string;
     defaultArgs: string[];
   };
+  ui: {
+    verbosity: 'normal' | 'debug';
+  };
   notifications: NotificationConfig;
 }
 

@@ -12,6 +12,7 @@ export type CodexObservationSnapshot = {
   availability: ObservationAvailability;
   codexSessionId: string;
   status: 'running' | 'completed' | 'idle' | 'unknown';
+  latestActivityAt?: string;
   latestCommentary?: string;
   finalAnswer?: string;
   completedAt?: string;
@@ -111,6 +112,7 @@ export class FileCodexObservationStore implements CodexObservationStore {
       availability,
       codexSessionId: input.codexSessionId,
       status,
+      latestActivityAt: latestActivityTimestamp,
       latestCommentary,
       finalAnswer,
       completedAt,

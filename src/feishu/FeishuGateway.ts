@@ -63,6 +63,8 @@ interface LarkGatewayDeps {
   recordError?: (entry: BotErrorLogEntry) => Promise<void>;
 }
 
+const FEISHU_TEXT_MESSAGE_MAX_CHARS = 15_000;
+
 export class LarkLongConnectionGateway implements FeishuGateway {
   private readonly client: LarkClientLike;
   private readonly wsClient: LarkWSClientLike;
@@ -112,7 +114,9 @@ export class LarkLongConnectionGateway implements FeishuGateway {
           }
 
           try {
-            await this.sendText(message.chat_id, reply);
+            if (reply !== '') {
+              await this.sendText(message.chat_id, reply);
+            }
           } catch (error) {
             await this.recordProcessingFailure('send_reply', incomingMessage, reply, error);
             this.logger.error('Failed to process Feishu incoming message', error);
@@ -126,14 +130,16 @@ export class LarkLongConnectionGateway implements FeishuGateway {
 
   async sendText(chatId: string, text: string): Promise<void> {
     const sanitizedText = sanitizeFeishuText(text);
-    await this.client.im.v1.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text: sanitizedText }),
-      },
-    });
+    for (const chunk of splitFeishuMessages(sanitizedText)) {
+      await this.client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'text',
+          content: JSON.stringify({ text: chunk }),
+        },
+      });
+    }
   }
 
   private async recordProcessingFailure(
@@ -173,6 +179,18 @@ export class LarkLongConnectionGateway implements FeishuGateway {
       });
     }
   }
+}
+
+function splitFeishuMessages(text: string): string[] {
+  if (text.length <= FEISHU_TEXT_MESSAGE_MAX_CHARS) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += FEISHU_TEXT_MESSAGE_MAX_CHARS) {
+    chunks.push(text.slice(index, index + FEISHU_TEXT_MESSAGE_MAX_CHARS));
+  }
+  return chunks;
 }
 
 function serializeError(error: unknown): Record<string, unknown> {

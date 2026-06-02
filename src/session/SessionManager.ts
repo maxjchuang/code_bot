@@ -11,7 +11,6 @@ import {
   type FinalAnswerExtraction,
 } from '../notifications/FinalAnswerExtractor.js';
 import { FileCodexObservationStore, type CodexObservationStore } from '../observations/CodexObservationStore.js';
-import { formatObservationTail } from '../output/ObservationTailFormatter.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -47,6 +46,12 @@ export interface SessionManagerDeps {
     retryDelayMs?: number;
     sleep?: (ms: number) => Promise<void>;
   };
+  sendConfirmation?: {
+    initialWaitMs?: number;
+    retryWaitMs?: number;
+    pollIntervalMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  };
   codexObservationStore?: CodexObservationStore;
 }
 
@@ -56,6 +61,9 @@ const SEND_TEXT_PREVIEW_LIMIT = 120;
 const PTY_SEND_TERMINATOR = '\r';
 const SEND_SUBMIT_CONFIRM_DELAY_MS = 250;
 const SEND_SUBMIT_RETRY_LIMIT = 1;
+const DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS = 3_000;
+const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
+const DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS = 100;
 
 interface PendingTurn {
   id: string;
@@ -424,16 +432,15 @@ export class SessionManager {
 
     const notificationEnabled = this.notificationsEnabled();
     const notificationStartedAt = new Date().toISOString();
-    let queuedTurn = false;
+    let createdPendingTurn = false;
+    let followUpToActiveTurn = false;
     if (notificationEnabled) {
-      const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt);
       if (this.pendingTurns.has(chat.currentSessionId)) {
-        queuedTurn = true;
-        const queue = this.queuedTurns.get(chat.currentSessionId) ?? [];
-        queue.push(turn);
-        this.queuedTurns.set(chat.currentSessionId, queue);
+        followUpToActiveTurn = true;
       } else {
+        const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt);
         await this.activatePendingTurn(turn);
+        createdPendingTurn = true;
       }
     }
 
@@ -452,9 +459,9 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled && queuedTurn) {
+    if (notificationEnabled && followUpToActiveTurn) {
       await this.store.appendEvent({
-        type: 'session.input_queued',
+        type: 'session.input_follow_up',
         at: sendRequestedAt,
         data: {
           sessionId: chat.currentSessionId,
@@ -462,10 +469,10 @@ export class SessionManager {
           projectId: session.projectId,
           textLength: text.length,
           textPreview: previewText(text),
-          pendingTurnId: this.queuedTurns.get(chat.currentSessionId)?.at(-1)?.id,
+          pendingTurnId: this.pendingTurns.get(chat.currentSessionId)?.id,
         },
       }).catch((error) =>
-        this.recordBackgroundError('session.input_queued_persist_failed', error, {
+        this.recordBackgroundError('session.input_follow_up_persist_failed', error, {
           sessionId: chat.currentSessionId,
           chatId: input.chatId,
           projectId: session.projectId,
@@ -476,7 +483,9 @@ export class SessionManager {
     try {
       await this.runner.send(chat.currentSessionId, text);
     } catch (error) {
-      this.removePendingTurn(chat.currentSessionId, text, queuedTurn);
+      if (createdPendingTurn) {
+        this.removePendingTurn(chat.currentSessionId, text, false);
+      }
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
       await this.store.updateSession(chat.currentSessionId, (latest) => {
@@ -511,10 +520,10 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled && !queuedTurn) {
+    if (notificationEnabled && createdPendingTurn && !this.deps.sendConfirmation) {
       this.scheduleSubmitConfirmation(chat.currentSessionId);
     }
-    if (notificationEnabled && !queuedTurn) {
+    if (notificationEnabled && createdPendingTurn) {
       await this.store.appendEvent({
         type: 'notification.turn_started',
         at: notificationStartedAt,
@@ -528,7 +537,16 @@ export class SessionManager {
       );
     }
     if (notificationEnabled) {
-      return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
+      if (followUpToActiveTurn) {
+        return { reply: this.isDebugUi() ? `补充消息已发送给 Codex。\nsession: ${chat.currentSessionId}` : '' };
+      }
+      if (createdPendingTurn && this.deps.sendConfirmation) {
+        const confirmed = await this.confirmCodexStartedProcessing(chat.currentSessionId);
+        if (!confirmed) {
+          return { reply: this.isDebugUi() ? `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` : '' };
+        }
+      }
+      return { reply: this.isDebugUi() ? `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` : '' };
     }
     await this.store.appendEvent({
       type: 'session.input',
@@ -553,6 +571,14 @@ export class SessionManager {
     };
   }
 
+  private uiVerbosity(): 'normal' | 'debug' {
+    return this.config.ui.verbosity;
+  }
+
+  private isDebugUi(): boolean {
+    return this.uiVerbosity() === 'debug';
+  }
+
   private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
     const chat = await this.store.getChat(chatId);
     if (!chat?.currentSessionId) {
@@ -560,23 +586,6 @@ export class SessionManager {
     }
     if (this.parseTailCount(requestedCount) === undefined) {
       return { reply: 'Invalid tail count.' };
-    }
-
-    const session = await this.store.getSession(chat.currentSessionId);
-    const codexSessionId = session?.codexSessionId ?? (session ? await this.discoverCodexSessionIdForSession(session) : undefined);
-    if (codexSessionId) {
-      try {
-        const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId });
-        if (
-          snapshot.availability.kind === 'ready' ||
-          snapshot.availability.kind === 'stale' ||
-          snapshot.availability.kind === 'parse_error'
-        ) {
-          return { reply: formatObservationTail(snapshot) };
-        }
-      } catch {
-        // Fall back to PTY-derived tail output if observation lookup fails.
-      }
     }
 
     const rawLines = await this.tailRawLines(chatId, requestedCount);
@@ -901,7 +910,7 @@ export class SessionManager {
           }).catch(() => undefined),
         );
       }
-      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
+      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction, verbosity: this.uiVerbosity() });
       await this.deps.notifier!.sendText(turn.chatId, message);
       await this.store.appendEvent({
         type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
@@ -985,6 +994,93 @@ export class SessionManager {
       return undefined;
     }
     return this.discoverAndStoreCodexSessionId(session.id, project.path, session.createdAt);
+  }
+
+  private async confirmCodexStartedProcessing(sessionId: string): Promise<boolean> {
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return false;
+    }
+
+    const initialWaitMs = Math.max(0, this.deps.sendConfirmation?.initialWaitMs ?? DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS);
+    const retryWaitMs = Math.max(0, this.deps.sendConfirmation?.retryWaitMs ?? DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS);
+    if (await this.waitForTurnProcessingEvidence(sessionId, turn, initialWaitMs)) {
+      return true;
+    }
+    if (!(await this.retryTurnSubmission(sessionId, turn))) {
+      return false;
+    }
+    return this.waitForTurnProcessingEvidence(sessionId, turn, retryWaitMs);
+  }
+
+  private async retryTurnSubmission(sessionId: string, turn: PendingTurn): Promise<boolean> {
+    if (turn.submitRetryCount >= SEND_SUBMIT_RETRY_LIMIT) {
+      return false;
+    }
+    turn.submitRetryCount += 1;
+    await this.store.appendEvent({
+      type: 'session.send_submit_retry',
+      at: new Date().toISOString(),
+      data: {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+        retryCount: turn.submitRetryCount,
+      },
+    });
+    await this.runner.send(sessionId, '');
+    return true;
+  }
+
+  private async waitForTurnProcessingEvidence(sessionId: string, turn: PendingTurn, timeoutMs: number): Promise<boolean> {
+    const pollIntervalMs = Math.max(1, this.deps.sendConfirmation?.pollIntervalMs ?? DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS);
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await this.hasObservationTurnProcessingEvidence(sessionId, turn)) {
+        return true;
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await this.sendConfirmationSleep(Math.min(pollIntervalMs, remainingMs));
+    } while (Date.now() <= deadline);
+    return this.hasObservationTurnProcessingEvidence(sessionId, turn);
+  }
+
+  private async sendConfirmationSleep(ms: number): Promise<void> {
+    const sleep = this.deps.sendConfirmation?.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    await sleep(ms);
+  }
+
+  private async hasObservationTurnProcessingEvidence(sessionId: string, turn: PendingTurn): Promise<boolean> {
+    const session = await this.store.getSession(sessionId);
+    if (!session) {
+      return false;
+    }
+    const codexSessionId = session.codexSessionId ?? (await this.discoverCodexSessionIdForSession(session));
+    if (!codexSessionId) {
+      return false;
+    }
+
+    const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId }).catch(() => undefined);
+    if (!snapshot || (snapshot.availability.kind !== 'ready' && snapshot.availability.kind !== 'stale')) {
+      return false;
+    }
+
+    const startedAtMs = Date.parse(turn.startedAt);
+    if (Number.isNaN(startedAtMs)) {
+      return false;
+    }
+    const latestActivityAtMs = snapshot.latestActivityAt ? Date.parse(snapshot.latestActivityAt) : Number.NaN;
+    const hasCurrentActivity = !Number.isNaN(latestActivityAtMs) && latestActivityAtMs >= startedAtMs;
+    if (snapshot.completedAt && this.isObservationCurrentTurn(snapshot.completedAt, turn.startedAt)) {
+      return true;
+    }
+    if (!hasCurrentActivity) {
+      return false;
+    }
+    return Boolean(snapshot.latestCommentary?.trim() || snapshot.finalAnswer?.trim() || snapshot.recentToolEvents.length > 0);
   }
 
   private scheduleSubmitConfirmation(sessionId: string): void {

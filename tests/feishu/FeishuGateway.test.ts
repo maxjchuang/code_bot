@@ -315,6 +315,23 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('splits oversized text replies into multiple Feishu messages', async () => {
+    const harness = createGatewayHarness();
+    const oversized = 'x'.repeat(16_500);
+
+    await harness.gateway.sendText('oc_1', oversized);
+
+    expect(harness.sent).toHaveLength(2);
+    expect(harness.sent[0]?.receive_id).toBe('oc_1');
+    expect(harness.sent[1]?.receive_id).toBe('oc_1');
+
+    const firstText = JSON.parse(harness.sent[0]!.content) as { text: string };
+    const secondText = JSON.parse(harness.sent[1]!.content) as { text: string };
+    expect(firstText.text.length).toBeLessThan(16_500);
+    expect(secondText.text.length).toBeGreaterThan(0);
+    expect(`${firstText.text}${secondText.text}`).toBe(oversized);
+  });
+
   it('redacts email addresses in replies from incoming messages', async () => {
     const harness = createGatewayHarness();
     await harness.gateway.start(async () => 'contact: dev-team@example.com');
@@ -335,5 +352,22 @@ describe('LarkLongConnectionGateway', () => {
         content: JSON.stringify({ text: 'contact: [EMAIL_REDACTED]' }),
       },
     ]);
+  });
+
+  it('does not send an empty reply payload back to Feishu', async () => {
+    const harness = createGatewayHarness();
+    await harness.gateway.start(async () => '');
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(harness.sent).toEqual([]);
   });
 });
