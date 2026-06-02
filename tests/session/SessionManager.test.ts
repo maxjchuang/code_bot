@@ -396,6 +396,30 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status', '']);
   });
 
+  it('sends follow-up messages to an active Codex task instead of queueing them', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    } as any);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3504';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
+    const followUp = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '补充约束' });
+
+    expect(followUp.reply).toBe(`补充消息已发送给 Codex。\nsession: ${sessionId}`);
+    expect(runner.sentMessages).toEqual(['first task', '', '补充约束']);
+  });
+
   it('records send diagnostics before and after dispatching a normal task', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -1059,7 +1083,7 @@ describe('SessionManager', () => {
     }
   });
 
-  it('does not let a queued second turn notify with the first turn stale observation answer', async () => {
+  it('does not let a follow-up message trigger a second notification from stale observation state', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -1075,7 +1099,7 @@ describe('SessionManager', () => {
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first turn' });
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second turn' });
-    const queuedAt = new Date().toISOString();
+    const followUpAt = new Date().toISOString();
 
     observationStore.snapshots.set(codexSessionId, {
       availability: { kind: 'ready' },
@@ -1095,7 +1119,7 @@ describe('SessionManager', () => {
       codexSessionId,
       status: 'completed',
       finalAnswer: '第一轮 observation 最终答案。',
-      completedAt: queuedAt,
+      completedAt: followUpAt,
       recentToolEvents: [],
     });
 
@@ -1111,8 +1135,7 @@ describe('SessionManager', () => {
       recentToolEvents: [],
     });
     await runner.emitOutput(sessionId, 'tick 3\n');
-    await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(2));
-    expect(notifier.sendText).toHaveBeenNthCalledWith(2, 'oc_1', 'Codex 已完成：repo\n\n这是第二轮的 observation 最终答案。');
+    expect(notifier.sendText).toHaveBeenCalledTimes(1);
   });
 
   it('notifies on stable completion from a current-turn observation answer without a PTY final-answer candidate', async () => {

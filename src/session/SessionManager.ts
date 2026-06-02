@@ -432,16 +432,15 @@ export class SessionManager {
 
     const notificationEnabled = this.notificationsEnabled();
     const notificationStartedAt = new Date().toISOString();
-    let queuedTurn = false;
+    let createdPendingTurn = false;
+    let followUpToActiveTurn = false;
     if (notificationEnabled) {
-      const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt);
       if (this.pendingTurns.has(chat.currentSessionId)) {
-        queuedTurn = true;
-        const queue = this.queuedTurns.get(chat.currentSessionId) ?? [];
-        queue.push(turn);
-        this.queuedTurns.set(chat.currentSessionId, queue);
+        followUpToActiveTurn = true;
       } else {
+        const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt);
         await this.activatePendingTurn(turn);
+        createdPendingTurn = true;
       }
     }
 
@@ -460,9 +459,9 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled && queuedTurn) {
+    if (notificationEnabled && followUpToActiveTurn) {
       await this.store.appendEvent({
-        type: 'session.input_queued',
+        type: 'session.input_follow_up',
         at: sendRequestedAt,
         data: {
           sessionId: chat.currentSessionId,
@@ -470,10 +469,10 @@ export class SessionManager {
           projectId: session.projectId,
           textLength: text.length,
           textPreview: previewText(text),
-          pendingTurnId: this.queuedTurns.get(chat.currentSessionId)?.at(-1)?.id,
+          pendingTurnId: this.pendingTurns.get(chat.currentSessionId)?.id,
         },
       }).catch((error) =>
-        this.recordBackgroundError('session.input_queued_persist_failed', error, {
+        this.recordBackgroundError('session.input_follow_up_persist_failed', error, {
           sessionId: chat.currentSessionId,
           chatId: input.chatId,
           projectId: session.projectId,
@@ -484,7 +483,9 @@ export class SessionManager {
     try {
       await this.runner.send(chat.currentSessionId, text);
     } catch (error) {
-      this.removePendingTurn(chat.currentSessionId, text, queuedTurn);
+      if (createdPendingTurn) {
+        this.removePendingTurn(chat.currentSessionId, text, false);
+      }
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
       await this.store.updateSession(chat.currentSessionId, (latest) => {
@@ -519,10 +520,10 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled && !queuedTurn && !this.deps.sendConfirmation) {
+    if (notificationEnabled && createdPendingTurn && !this.deps.sendConfirmation) {
       this.scheduleSubmitConfirmation(chat.currentSessionId);
     }
-    if (notificationEnabled && !queuedTurn) {
+    if (notificationEnabled && createdPendingTurn) {
       await this.store.appendEvent({
         type: 'notification.turn_started',
         at: notificationStartedAt,
@@ -536,10 +537,10 @@ export class SessionManager {
       );
     }
     if (notificationEnabled) {
-      if (queuedTurn && this.deps.sendConfirmation) {
-        return { reply: `消息已加入队列，当前任务完成后会发送给 Codex。\nsession: ${chat.currentSessionId}` };
+      if (followUpToActiveTurn) {
+        return { reply: `补充消息已发送给 Codex。\nsession: ${chat.currentSessionId}` };
       }
-      if (!queuedTurn && this.deps.sendConfirmation) {
+      if (createdPendingTurn && this.deps.sendConfirmation) {
         const confirmed = await this.confirmCodexStartedProcessing(chat.currentSessionId);
         if (!confirmed) {
           return { reply: `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` };
