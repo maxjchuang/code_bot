@@ -320,9 +320,41 @@ describe('SessionManager', () => {
 
     const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
 
-    expect(sent.reply).toBe(`消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${sessionId}`);
+    expect(sent.reply).toBe('');
     expect(runner.sentMessages).toEqual(['inspect status', '']);
     expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('stays silent for successful send acknowledgements in normal mode', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const config = sampleConfig(root);
+    const manager = new SessionManager(config, store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    } as any);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3505';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '我先检查当前状态。',
+      latestActivityAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    expect(sent.reply).toBe('');
+    expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
   it('acknowledges tasks only after observation confirms Codex started processing', async () => {
@@ -356,10 +388,48 @@ describe('SessionManager', () => {
       });
       await vi.advanceTimersByTimeAsync(1);
 
+      await expect(pendingReply).resolves.toEqual({ reply: '' });
+      expect(runner.sentMessages).toEqual(['inspect status']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps verbose send acknowledgements in debug mode', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const config = { ...sampleConfig(root), ui: { verbosity: 'debug' as const } };
+      const manager = new SessionManager(config, store, runner, {
+        notifier,
+        codexObservationStore: observationStore,
+        sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, pollIntervalMs: 1 },
+      } as any);
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3506';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+      const pendingReply = manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+      await vi.advanceTimersByTimeAsync(1);
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'running',
+        latestCommentary: '我先检查当前状态。',
+        latestActivityAt: '2099-01-01T00:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
       await expect(pendingReply).resolves.toEqual({
         reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`,
       });
-      expect(runner.sentMessages).toEqual(['inspect status']);
     } finally {
       vi.useRealTimers();
     }
@@ -392,7 +462,7 @@ describe('SessionManager', () => {
 
     const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
 
-    expect(sent.reply).toBe(`消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${sessionId}`);
+    expect(sent.reply).toBe('');
     expect(runner.sentMessages).toEqual(['inspect status', '']);
   });
 
@@ -416,7 +486,7 @@ describe('SessionManager', () => {
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
     const followUp = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '补充约束' });
 
-    expect(followUp.reply).toBe(`补充消息已发送给 Codex。\nsession: ${sessionId}`);
+    expect(followUp.reply).toBe('');
     expect(runner.sentMessages).toEqual(['first task', '', '补充约束']);
   });
 
@@ -474,9 +544,7 @@ describe('SessionManager', () => {
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
 
-    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' })).resolves.toEqual({
-      reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`,
-    });
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' })).resolves.toEqual({ reply: '' });
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
@@ -490,8 +558,8 @@ describe('SessionManager', () => {
     const first = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
     const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
 
-    expect(first.reply).toContain('已发送给 Codex');
-    expect(second.reply).toContain('已发送给 Codex');
+    expect(first.reply).toBe('');
+    expect(second.reply).toBe('');
     expect(runner.sentMessages).toEqual(['first task', 'second task']);
   });
 
@@ -513,9 +581,7 @@ describe('SessionManager', () => {
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
 
-    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' })).resolves.toEqual({
-      reply: expect.stringContaining('已发送给 Codex'),
-    });
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' })).resolves.toEqual({ reply: '' });
     expect(runner.sentMessages).toEqual(['first task', 'second task']);
   });
 
@@ -567,7 +633,7 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(1);
       vi.useRealTimers();
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n当前分支：develop');
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '当前分支：develop');
     } finally {
       vi.useRealTimers();
     }
@@ -621,7 +687,7 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(1);
       vi.useRealTimers();
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\nfinal answer');
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'final answer');
     } finally {
       vi.useRealTimers();
     }
@@ -732,7 +798,7 @@ describe('SessionManager', () => {
       expect(notifier.sendText).not.toHaveBeenCalled();
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
-      expect(second.reply).toContain('已发送给 Codex');
+      expect(second.reply).toBe('');
       expect(runner.sentMessages).toEqual(['run tests', 'second task']);
 
       observationStore.snapshots.set(codexSessionId, {
@@ -748,7 +814,7 @@ describe('SessionManager', () => {
       vi.useRealTimers();
 
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n测试已通过，可以继续。');
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '测试已通过，可以继续。');
     } finally {
       vi.useRealTimers();
     }
@@ -774,7 +840,7 @@ describe('SessionManager', () => {
       expect(notifier.sendText).not.toHaveBeenCalled();
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
-      expect(second.reply).toContain('已发送给 Codex');
+      expect(second.reply).toBe('');
       expect(runner.sentMessages).toEqual(['切换到最新的main分支', '当前分支是什么']);
     } finally {
       vi.useRealTimers();
@@ -814,7 +880,7 @@ describe('SessionManager', () => {
       expect(notifier.sendText).not.toHaveBeenCalled();
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second task' });
-      expect(second.reply).toContain('已发送给 Codex');
+      expect(second.reply).toBe('');
 
       observationStore.snapshots.set(codexSessionId, {
         availability: { kind: 'ready' },
@@ -829,7 +895,7 @@ describe('SessionManager', () => {
       vi.useRealTimers();
 
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n测试已通过，可以继续。');
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '测试已通过，可以继续。');
       expect(runner.sentMessages).toEqual(['run tests', 'second task']);
     } finally {
       vi.useRealTimers();
@@ -865,7 +931,7 @@ describe('SessionManager', () => {
       expect(notifier.sendText).not.toHaveBeenCalled();
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '1' });
-      expect(second.reply).toContain('已发送给 Codex');
+      expect(second.reply).toBe('');
       expect(runner.sentMessages).toEqual(['hello', '', '1']);
     } finally {
       vi.useRealTimers();
@@ -903,7 +969,7 @@ describe('SessionManager', () => {
       vi.useRealTimers();
 
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\nfinal answer');
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'final answer');
     } finally {
       vi.useRealTimers();
     }
@@ -947,7 +1013,7 @@ describe('SessionManager', () => {
       vi.useRealTimers();
 
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\nlatest answer');
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'latest answer');
     } finally {
       vi.useRealTimers();
     }
@@ -991,7 +1057,7 @@ describe('SessionManager', () => {
     await runner.exit(sessionId, 0);
 
     await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
-    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n结构化 final answ…\n\n输出已截断，可使用 /tail 查看完整内容。');
+    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '结构化 final answ…\n\n输出已截断，可使用 /tail 查看完整内容。');
     expect(store.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1111,7 +1177,7 @@ describe('SessionManager', () => {
     });
     await runner.emitOutput(sessionId, 'tick 1\n');
     await waitForAssertion(() =>
-      expect(notifier.sendText).toHaveBeenNthCalledWith(1, 'oc_1', 'Codex 已完成：repo\n\n这是第一轮的 observation 最终答案。'),
+      expect(notifier.sendText).toHaveBeenNthCalledWith(1, 'oc_1', '这是第一轮的 observation 最终答案。'),
     );
 
     observationStore.snapshots.set(codexSessionId, {
@@ -1165,7 +1231,7 @@ describe('SessionManager', () => {
     await runner.emitOutput(sessionId, '正在整理最终答案...\n');
 
     await waitForAssertion(() =>
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是当前轮次 observation 直接给出的最终答案。'),
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '这是当前轮次 observation 直接给出的最终答案。'),
     );
     await expect(store.getSession(sessionId)).resolves.toMatchObject({ status: 'running' });
   });
@@ -1235,7 +1301,7 @@ describe('SessionManager', () => {
     await runner.exit(sessionId, 0);
 
     await waitForAssertion(() =>
-      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是延迟发现 session id 后读到的 observation 最终答案。'),
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '这是延迟发现 session id 后读到的 observation 最终答案。'),
     );
     expect(registry.discoverForProject).toHaveBeenCalledTimes(2);
     await expect(store.getSession(sessionId)).resolves.toMatchObject({ codexSessionId });
@@ -1269,7 +1335,7 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(1);
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second' });
-      expect(second.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
+      expect(second.reply).toBe('');
       expect(runner.sentMessages).toEqual(['first', 'second']);
     } finally {
       vi.useRealTimers();
@@ -1327,7 +1393,7 @@ describe('SessionManager', () => {
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second' });
 
-      expect(second.reply).toBe(`已发送给 Codex，完成后我会主动通知你。\nsession: ${sessionId}`);
+      expect(second.reply).toBe('');
       expect(runner.sentMessages).toEqual(['first', 'second']);
     } finally {
       vi.useRealTimers();
@@ -1358,7 +1424,7 @@ describe('SessionManager', () => {
     await runner.emitOutput(sessionId, 'tick\n');
     await runner.exit(sessionId, 0);
 
-    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n最终结果');
+    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '最终结果');
     const day = new Date().toISOString().slice(0, 10);
     const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
     expect(content).toContain('"type":"notification.turn_exit_fallback"');

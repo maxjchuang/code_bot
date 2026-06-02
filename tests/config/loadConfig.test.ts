@@ -113,6 +113,9 @@ describe('loadConfig', () => {
     });
 
     await expect(loadConfig(root)).resolves.toMatchObject({
+      ui: {
+        verbosity: 'normal',
+      },
       notifications: {
         enabled: true,
         idleMs: 3000,
@@ -161,9 +164,11 @@ describe('loadConfig', () => {
       output: { directMaxChars: 1800, chunkSize: 1500 },
       codex: { command: 'codex', defaultArgs: [] },
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
+      ui: { verbosity: 'debug' },
     });
 
     await expect(loadConfig(root)).resolves.toMatchObject({
+      ui: { verbosity: 'debug' },
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
     });
   });

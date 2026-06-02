@@ -114,7 +114,9 @@ export class LarkLongConnectionGateway implements FeishuGateway {
           }
 
           try {
-            await this.sendText(message.chat_id, reply);
+            if (reply !== '') {
+              await this.sendText(message.chat_id, reply);
+            }
           } catch (error) {
             await this.recordProcessingFailure('send_reply', incomingMessage, reply, error);
             this.logger.error('Failed to process Feishu incoming message', error);

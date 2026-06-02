@@ -353,4 +353,21 @@ describe('LarkLongConnectionGateway', () => {
       },
     ]);
   });
+
+  it('does not send an empty reply payload back to Feishu', async () => {
+    const harness = createGatewayHarness();
+    await harness.gateway.start(async () => '');
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(harness.sent).toEqual([]);
+  });
 });

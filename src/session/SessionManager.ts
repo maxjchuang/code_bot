@@ -538,15 +538,15 @@ export class SessionManager {
     }
     if (notificationEnabled) {
       if (followUpToActiveTurn) {
-        return { reply: `补充消息已发送给 Codex。\nsession: ${chat.currentSessionId}` };
+        return { reply: this.isDebugUi() ? `补充消息已发送给 Codex。\nsession: ${chat.currentSessionId}` : '' };
       }
       if (createdPendingTurn && this.deps.sendConfirmation) {
         const confirmed = await this.confirmCodexStartedProcessing(chat.currentSessionId);
         if (!confirmed) {
-          return { reply: `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` };
+          return { reply: this.isDebugUi() ? `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` : '' };
         }
       }
-      return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
+      return { reply: this.isDebugUi() ? `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` : '' };
     }
     await this.store.appendEvent({
       type: 'session.input',
@@ -569,6 +569,14 @@ export class SessionManager {
         `Pending approvals: ${pendingApprovals.length > 0 ? pendingApprovals.map((approval) => approval.id).join(', ') : 'none'}`,
       ].join('\n'),
     };
+  }
+
+  private uiVerbosity(): 'normal' | 'debug' {
+    return this.config.ui.verbosity;
+  }
+
+  private isDebugUi(): boolean {
+    return this.uiVerbosity() === 'debug';
   }
 
   private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
@@ -902,7 +910,7 @@ export class SessionManager {
           }).catch(() => undefined),
         );
       }
-      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction });
+      const message = formatCompletionNotification({ projectId: turn.projectId, sessionId, extraction, verbosity: this.uiVerbosity() });
       await this.deps.notifier!.sendText(turn.chatId, message);
       await this.store.appendEvent({
         type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',

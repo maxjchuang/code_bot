@@ -79,6 +79,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
   const feishu = record.feishu as Record<string, unknown> | undefined;
   const output = record.output as Record<string, unknown> | undefined;
   const codex = record.codex as Record<string, unknown> | undefined;
+  const ui = optionalRecord(record.ui, 'ui');
   const notifications = optionalRecord(record.notifications, 'notifications');
   if (!feishu || !output || !codex || !Array.isArray(record.projects)) {
     throw new Error('Invalid config structure');
@@ -111,6 +112,9 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
       command: requireString(codex.command, 'codex.command'),
       defaultArgs: codex.defaultArgs === undefined ? [] : requireStringArray(codex.defaultArgs, 'codex.defaultArgs'),
     },
+    ui: {
+      verbosity: ui.verbosity === undefined ? 'normal' : requireUiVerbosity(ui.verbosity, 'ui.verbosity'),
+    },
     notifications: {
       enabled: optionalBoolean(notifications.enabled, true, 'notifications.enabled'),
       idleMs: optionalPositiveNumber(notifications.idleMs, 3000, 'notifications.idleMs'),
@@ -118,4 +122,11 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
       failureTailChars: optionalPositiveNumber(notifications.failureTailChars, 2000, 'notifications.failureTailChars'),
     },
   };
+}
+
+function requireUiVerbosity(value: unknown, field: string): 'normal' | 'debug' {
+  if (value === 'normal' || value === 'debug') {
+    return value;
+  }
+  throw new Error(`Invalid config field: ${field}`);
 }

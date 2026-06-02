@@ -215,7 +215,7 @@ describe('createApp', () => {
     await waitForAssertion(() => {
       expect(notifier.sendText).toHaveBeenCalledWith(
         'oc_1',
-        'Codex 已完成：repo\n\n• 当前分支是：\nfeat/codex-completion-notifications',
+        '• 当前分支是：\nfeat/codex-completion-notifications',
       );
     });
     await waitForAssertion(async () => {

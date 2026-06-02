@@ -43,8 +43,13 @@ export function formatCompletionNotification(input: {
   projectId: string;
   sessionId?: string;
   extraction: FinalAnswerExtraction;
+  verbosity?: 'normal' | 'debug';
 }): string {
+  const verbosity = input.verbosity ?? 'debug';
   if (input.extraction.kind === 'answer') {
+    if (verbosity === 'normal') {
+      return input.extraction.text;
+    }
     return `Codex 已完成：${input.projectId}\n\n${input.extraction.text}`;
   }
   const diagnostic = input.extraction.kind === 'failure' && input.extraction.diagnostic ? `\n\n${input.extraction.diagnostic}` : '';
