@@ -273,6 +273,24 @@ describe('FinalAnswerExtractor', () => {
     });
   });
 
+  it('does not treat startup prompt redraw noise as a final answer when no real answer has appeared', () => {
+    const result = extractFinalAnswer({
+      rawLines: [
+        '› Use /skills to list available skills',
+        'gpt-5.4 medium · 5h 17% left · weekly 46% left · Context 0% used',
+        '你好Use /skills to list available skills',
+        '⚠ Skill descriptions were shortened to fit the 2% skills context budget.',
+        'Codex can still see every skill, but some descriptions are shorter.',
+        '› 你好',
+      ],
+      prompt: '你好',
+      maxChars: 8000,
+      requireCompletionMarker: true,
+    });
+
+    expect(result.kind).toBe('empty');
+  });
+
   it('keeps the last answer when Codex redraws a divider and prompt after answering', () => {
     const result = extractFinalAnswer({
       rawLines: [

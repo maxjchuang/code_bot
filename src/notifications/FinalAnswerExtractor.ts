@@ -68,6 +68,10 @@ function isProcessLine(line: string): boolean {
     line.includes('Update ran successfully!') ||
     line.includes('Please restart Codex.') ||
     line.startsWith('Tip:') ||
+    line.includes('Use /skills to list available skills') ||
+    line.startsWith('⚠ Skill descriptions were shortened') ||
+    line.includes('Codex can still see every skill') ||
+    line.includes('descriptions are shorter.') ||
     line.startsWith('›') ||
     line.startsWith('Starting MCP servers') ||
     line.startsWith('Booting MCP server') ||

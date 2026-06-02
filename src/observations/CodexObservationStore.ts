@@ -1,0 +1,214 @@
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+
+export type ObservationAvailability =
+  | { kind: 'ready' }
+  | { kind: 'not_found' }
+  | { kind: 'not_yet_flushed' }
+  | { kind: 'stale' }
+  | { kind: 'parse_error'; reason: string };
+
+export type CodexObservationSnapshot = {
+  availability: ObservationAvailability;
+  codexSessionId: string;
+  status: 'running' | 'completed' | 'idle' | 'unknown';
+  latestCommentary?: string;
+  finalAnswer?: string;
+  completedAt?: string;
+  recentToolEvents: Array<{
+    kind: 'tool_call' | 'tool_output';
+    toolName?: string;
+    summary: string;
+    at: string;
+  }>;
+};
+
+export interface CodexObservationStore {
+  readSnapshot(input: { codexSessionId: string }): Promise<CodexObservationSnapshot>;
+}
+
+export class FileCodexObservationStore implements CodexObservationStore {
+  constructor(
+    private readonly deps: {
+      codexHome: string;
+      staleAfterMs?: number;
+      now?: () => Date;
+    },
+  ) {}
+
+  async readSnapshot(input: { codexSessionId: string }): Promise<CodexObservationSnapshot> {
+    const rolloutPath = await findRolloutPath(join(this.deps.codexHome, 'sessions'), input.codexSessionId);
+    if (!rolloutPath) {
+      return {
+        availability: { kind: 'not_found' },
+        codexSessionId: input.codexSessionId,
+        status: 'unknown',
+        recentToolEvents: [],
+      };
+    }
+
+    let lines: string[];
+    try {
+      lines = (await readFile(rolloutPath, 'utf8')).split('\n').filter(Boolean);
+    } catch (error) {
+      return parseErrorSnapshot(input.codexSessionId, error);
+    }
+
+    const toolEvents: CodexObservationSnapshot['recentToolEvents'] = [];
+    let latestCommentary: string | undefined;
+    let finalAnswer: string | undefined;
+    let completedAt: string | undefined;
+    let latestActivityTimestamp: string | undefined;
+    let status: CodexObservationSnapshot['status'] = 'unknown';
+
+    try {
+      for (const line of lines) {
+        const event = JSON.parse(line) as { timestamp?: string; type?: string; payload?: any };
+        const eventTimestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
+        if (event.type === 'event_msg' && event.payload?.type === 'task_started') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          status = 'running';
+          toolEvents.length = 0;
+          latestCommentary = undefined;
+          finalAnswer = undefined;
+          completedAt = undefined;
+        }
+        if (event.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload?.phase === 'commentary') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          latestCommentary = event.payload.message;
+          status = 'running';
+        }
+        if (event.type === 'response_item' && event.payload?.type === 'message' && event.payload?.phase === 'final_answer') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          finalAnswer = extractOutputText(event.payload.content);
+        }
+        if (event.type === 'event_msg' && event.payload?.type === 'task_complete') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          status = 'completed';
+          completedAt = normalizeCompletedAt(event.payload.completed_at) ?? event.timestamp;
+          finalAnswer ??= event.payload.last_agent_message;
+        }
+        if (event.type === 'response_item' && event.payload?.type === 'function_call') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          toolEvents.push({
+            kind: 'tool_call',
+            toolName: event.payload.name,
+            summary: summarizeFunctionCall(event.payload.name, event.payload.arguments),
+            at: event.timestamp ?? '',
+          });
+        }
+      }
+    } catch (error) {
+      return parseErrorSnapshot(input.codexSessionId, error);
+    }
+
+    const availability = classifyAvailability(
+      latestActivityTimestamp,
+      this.deps.staleAfterMs ?? 15_000,
+      this.deps.now ?? (() => new Date()),
+    );
+    return {
+      availability,
+      codexSessionId: input.codexSessionId,
+      status,
+      latestCommentary,
+      finalAnswer,
+      completedAt,
+      recentToolEvents: toolEvents.slice(-5),
+    };
+  }
+}
+
+function extractOutputText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  return (
+    content
+      .flatMap((item) =>
+        item && typeof item === 'object' && 'text' in item && typeof (item as { text?: unknown }).text === 'string'
+          ? [(item as { text: string }).text]
+          : [],
+      )
+      .join('\n')
+      .trim() || undefined
+  );
+}
+
+function summarizeFunctionCall(name: string | undefined, argumentsText: string | undefined): string {
+  const parsed = parseJsonObject(argumentsText);
+  const cmd = typeof parsed?.cmd === 'string' ? parsed.cmd : undefined;
+  return cmd ? `${name ?? 'tool'}: ${cmd}` : `${name ?? 'tool'} invoked`;
+}
+
+function parseJsonObject(text: string | undefined): Record<string, unknown> | undefined {
+  if (!text) {
+    return undefined;
+  }
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function findRolloutPath(dir: string, codexSessionId: string): Promise<string | undefined> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries) {
+    const child = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await findRolloutPath(child, codexSessionId);
+      if (nested) {
+        return nested;
+      }
+      continue;
+    }
+    if (entry.isFile() && entry.name.includes(codexSessionId) && entry.name.endsWith('.jsonl')) {
+      return child;
+    }
+  }
+  return undefined;
+}
+
+function classifyAvailability(
+  latestTimestamp: string | undefined,
+  staleAfterMs: number,
+  now: () => Date,
+): ObservationAvailability {
+  if (!latestTimestamp) {
+    return { kind: 'not_yet_flushed' };
+  }
+  const latestMs = Date.parse(latestTimestamp);
+  if (Number.isNaN(latestMs)) {
+    return { kind: 'parse_error', reason: `Invalid timestamp: ${latestTimestamp}` };
+  }
+  if (now().getTime() - latestMs > staleAfterMs) {
+    return { kind: 'stale' };
+  }
+  return { kind: 'ready' };
+}
+
+function normalizeCompletedAt(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return undefined;
+}
+
+function parseErrorSnapshot(codexSessionId: string, error: unknown): CodexObservationSnapshot {
+  return {
+    availability: { kind: 'parse_error', reason: error instanceof Error ? error.message : String(error) },
+    codexSessionId,
+    status: 'unknown',
+    recentToolEvents: [],
+  };
+}

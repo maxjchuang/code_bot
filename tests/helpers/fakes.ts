@@ -1,5 +1,6 @@
 import type { BotConfig } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
+import type { CodexObservationSnapshot, CodexObservationStore } from '../../src/observations/CodexObservationStore.js';
 
 export function sampleConfig(projectPath: string): BotConfig {
   return {
@@ -72,5 +73,24 @@ export class FakeCodexRunner implements CodexRunner {
 
   dropSession(sessionId: string): void {
     this.sessions.delete(sessionId);
+  }
+}
+
+export class FakeCodexObservationStore implements CodexObservationStore {
+  readonly snapshots = new Map<string, CodexObservationSnapshot>();
+  readSnapshotError?: Error;
+
+  async readSnapshot(input: { codexSessionId: string }): Promise<CodexObservationSnapshot> {
+    if (this.readSnapshotError) {
+      throw this.readSnapshotError;
+    }
+    return (
+      this.snapshots.get(input.codexSessionId) ?? {
+        availability: { kind: 'not_found' },
+        codexSessionId: input.codexSessionId,
+        status: 'unknown',
+        recentToolEvents: [],
+      }
+    );
   }
 }
