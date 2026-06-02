@@ -4,7 +4,12 @@ import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
-import { extractFinalAnswer, formatCompletionNotification, inspectFinalAnswer } from '../notifications/FinalAnswerExtractor.js';
+import {
+  extractFinalAnswer,
+  formatCompletionNotification,
+  inspectFinalAnswer,
+  type FinalAnswerExtraction,
+} from '../notifications/FinalAnswerExtractor.js';
 import { FileCodexObservationStore, type CodexObservationStore } from '../observations/CodexObservationStore.js';
 import { formatObservationTail } from '../output/ObservationTailFormatter.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
@@ -558,9 +563,10 @@ export class SessionManager {
     }
 
     const session = await this.store.getSession(chat.currentSessionId);
-    if (session?.codexSessionId) {
+    const codexSessionId = session?.codexSessionId ?? (session ? await this.discoverCodexSessionIdForSession(session) : undefined);
+    if (codexSessionId) {
       try {
-        const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId });
+        const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId });
         if (
           snapshot.availability.kind === 'ready' ||
           snapshot.availability.kind === 'stale' ||
@@ -793,20 +799,13 @@ export class SessionManager {
       clearTimeout(turn.submitRetryTimer);
       turn.submitRetryTimer = undefined;
     }
-    const inspection = inspectFinalAnswer({
-      rawLines: pendingLines,
-      prompt: turn.prompt,
-      maxChars: this.config.notifications.maxFinalChars,
-      requireCompletionMarker: true,
-    });
-    const observationExtraction =
-      inspection.extraction.kind === 'answer' ? undefined : await this.currentTurnObservationExtraction(sessionId, turn);
-    const candidateInspection = observationExtraction
+    const observationExtraction = await this.currentTurnObservationExtraction(sessionId, turn, { allowDiscovery: false });
+    const candidateInspection: { extraction: FinalAnswerExtraction; source?: 'observation' } = observationExtraction
       ? {
           extraction: observationExtraction,
           source: 'observation' as const,
         }
-      : inspection;
+      : { extraction: { kind: 'empty', reason: 'No structured final answer detected.' } };
     const extraction = candidateInspection.extraction;
     if (extraction.kind !== 'answer') {
       if (turn.timer) {
@@ -855,18 +854,13 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const observationExtraction = await this.currentTurnObservationExtraction(sessionId, turn);
-      const inspection = observationExtraction
+      const observationExtraction = await this.currentTurnObservationExtraction(sessionId, turn, { allowDiscovery: true });
+      const inspection: { extraction: FinalAnswerExtraction; source?: 'observation' } = observationExtraction
         ? {
             extraction: observationExtraction,
             source: 'observation' as const,
           }
-        : inspectFinalAnswer({
-            rawLines: await this.pendingTurnLogLines(sessionId, turn),
-            prompt: turn.prompt,
-            maxChars: this.config.notifications.maxFinalChars,
-            requireCompletionMarker: reason === 'stable',
-          });
+        : { extraction: { kind: 'empty', reason: 'No structured final answer detected.' } };
       const extraction = inspection.extraction;
       if (extraction.kind === 'answer') {
         void this.store.appendEvent({
@@ -942,13 +936,19 @@ export class SessionManager {
   private async currentTurnObservationExtraction(
     sessionId: string,
     turn: PendingTurn,
+    options: { allowDiscovery: boolean },
   ): Promise<{ kind: 'answer'; text: string } | undefined> {
     const session = await this.store.getSession(sessionId);
-    if (!session?.codexSessionId) {
+    if (!session) {
       return undefined;
     }
 
-    const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId }).catch(() => undefined);
+    const codexSessionId = session.codexSessionId ?? (options.allowDiscovery ? await this.discoverCodexSessionIdForSession(session) : undefined);
+    if (!codexSessionId) {
+      return undefined;
+    }
+
+    const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId }).catch(() => undefined);
     if (!snapshot || (snapshot.availability.kind !== 'ready' && snapshot.availability.kind !== 'stale')) {
       return undefined;
     }
@@ -977,6 +977,14 @@ export class SessionManager {
       return false;
     }
     return completedAtMs >= startedAtMs;
+  }
+
+  private async discoverCodexSessionIdForSession(session: SessionRecord): Promise<string | undefined> {
+    const project = resolveProject(this.config, session.projectId);
+    if (!project) {
+      return undefined;
+    }
+    return this.discoverAndStoreCodexSessionId(session.id, project.path, session.createdAt);
   }
 
   private scheduleSubmitConfirmation(sessionId: string): void {
