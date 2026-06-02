@@ -561,7 +561,11 @@ export class SessionManager {
     if (session?.codexSessionId) {
       try {
         const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId });
-        if (snapshot.availability.kind === 'ready' || snapshot.availability.kind === 'stale') {
+        if (
+          snapshot.availability.kind === 'ready' ||
+          snapshot.availability.kind === 'stale' ||
+          snapshot.availability.kind === 'parse_error'
+        ) {
           return { reply: formatObservationTail(snapshot) };
         }
       } catch {
@@ -795,7 +799,15 @@ export class SessionManager {
       maxChars: this.config.notifications.maxFinalChars,
       requireCompletionMarker: true,
     });
-    const extraction = inspection.extraction;
+    const observationExtraction =
+      inspection.extraction.kind === 'answer' ? undefined : await this.currentTurnObservationExtraction(sessionId, turn);
+    const candidateInspection = observationExtraction
+      ? {
+          extraction: observationExtraction,
+          source: 'observation' as const,
+        }
+      : inspection;
+    const extraction = candidateInspection.extraction;
     if (extraction.kind !== 'answer') {
       if (turn.timer) {
         clearTimeout(turn.timer);
@@ -820,7 +832,7 @@ export class SessionManager {
         chatId: turn.chatId,
         candidatePreview: previewCandidate(extraction.text),
         candidateHash: hashCandidate(extraction.text),
-        source: inspection.source,
+        source: candidateInspection.source,
         requireCompletionMarker: true,
       },
     }).catch((error) =>

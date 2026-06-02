@@ -798,7 +798,6 @@ describe('SessionManager', () => {
             sessionId,
             chatId: 'oc_1',
             projectId: 'repo',
-            completionReason: 'exit',
             source: 'observation',
           }),
         }),
@@ -874,6 +873,38 @@ describe('SessionManager', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('notifies on stable completion from a current-turn observation answer without a PTY final-answer candidate', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 10 } };
+    const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3290';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '解释当前实现' });
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '这是当前轮次 observation 直接给出的最终答案。',
+      completedAt: '2099-06-02T08:31:06.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, '正在整理最终答案...\n');
+
+    await waitForAssertion(() =>
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是当前轮次 observation 直接给出的最终答案。'),
+    );
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({ status: 'running' });
   });
 
   it('falls back to PTY extraction when observation lookup throws and still notifies', async () => {
@@ -2166,6 +2197,31 @@ describe('SessionManager', () => {
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
     expect(tail.reply).toContain('PTY fallback after observation failure');
+  });
+
+  it('surfaces formatter guidance for /tail when observation snapshot has a parse error', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a3291' }));
+    observationStore.snapshots.set('019e86b4-12ed-7731-9639-c128626a3291', {
+      availability: { kind: 'parse_error', reason: 'unexpected token at line 1' },
+      codexSessionId: '019e86b4-12ed-7731-9639-c128626a3291',
+      status: 'unknown',
+      recentToolEvents: [],
+    });
+    await runner.emitOutput(sessionId, 'raw terminal fallback should not be used here\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toBe(
+      'Structured Codex observation failed to parse. Reason: unexpected token at line 1. Use /rawtail 80 for raw terminal logs.',
+    );
   });
 
   it('uses observation summary for stale snapshots and warns that rawtail may be newer', async () => {
