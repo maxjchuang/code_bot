@@ -158,6 +158,56 @@ describe('FileCodexObservationStore', () => {
     expect(snapshot.completedAt).toBe('2026-06-02T08:01:50.000Z');
   });
 
+  it('resets final-answer state when a new turn starts after a prior turn completed', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-01-55-019e86b4-12ed-7731-9639-c128626a3291.jsonl', [
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:55.000Z',
+        type: 'session_meta',
+        payload: { id: '019e86b4-12ed-7731-9639-c128626a3291', cwd: '/repo' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:56.000Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-1', started_at: 1780387316 },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:57.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: '上一轮已经完成。' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:58.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'turn-1',
+          last_agent_message: '上一轮已经完成。',
+          completed_at: 1780387318,
+          duration_ms: 2000,
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:59.000Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-2', started_at: 1780387319 },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:02:00.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a3291' });
+
+    expect(snapshot.availability.kind).toBe('ready');
+    expect(snapshot.status).toBe('running');
+    expect(snapshot.finalAnswer).toBeUndefined();
+    expect(snapshot.completedAt).toBeUndefined();
+  });
+
   it('returns not_found when no rollout exists for the requested session id', async () => {
     const codexHome = await createCodexHome();
     const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:02:00.000Z') });

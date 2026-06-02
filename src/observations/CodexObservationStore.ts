@@ -69,6 +69,8 @@ export class FileCodexObservationStore implements CodexObservationStore {
         }
         if (event.type === 'event_msg' && event.payload?.type === 'task_started') {
           status = 'running';
+          finalAnswer = undefined;
+          completedAt = undefined;
         }
         if (event.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload?.phase === 'commentary') {
           latestCommentary = event.payload.message;
