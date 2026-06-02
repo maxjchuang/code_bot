@@ -843,13 +843,26 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const lines = await this.pendingTurnLogLines(sessionId, turn);
-      const inspection = inspectFinalAnswer({
-        rawLines: lines,
-        prompt: turn.prompt,
-        maxChars: this.config.notifications.maxFinalChars,
-        requireCompletionMarker: reason === 'stable',
-      });
+      const session = await this.store.getSession(sessionId);
+      const observationSnapshot =
+        session?.codexSessionId !== undefined
+          ? await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId }).catch(() => undefined)
+          : undefined;
+      const observationFinalAnswer =
+        observationSnapshot && (observationSnapshot.availability.kind === 'ready' || observationSnapshot.availability.kind === 'stale')
+          ? observationSnapshot.finalAnswer?.trim()
+          : undefined;
+      const inspection = observationFinalAnswer
+        ? {
+            extraction: { kind: 'answer' as const, text: observationFinalAnswer },
+            source: 'observation' as const,
+          }
+        : inspectFinalAnswer({
+            rawLines: await this.pendingTurnLogLines(sessionId, turn),
+            prompt: turn.prompt,
+            maxChars: this.config.notifications.maxFinalChars,
+            requireCompletionMarker: reason === 'stable',
+          });
       const extraction = inspection.extraction;
       if (extraction.kind === 'answer') {
         void this.store.appendEvent({

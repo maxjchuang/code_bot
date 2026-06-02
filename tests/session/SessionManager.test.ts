@@ -751,6 +751,68 @@ describe('SessionManager', () => {
     }
   });
 
+  it('prefers observation final answers over PTY extraction when completing a pending turn', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+    const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a328b';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '结构化 final answer 优先于 PTY 提取。',
+      completedAt: '2026-06-02T08:30:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '继续实现 observation 方案' });
+    await runner.emitOutput(sessionId, '这是 PTY 提取到的最终答案。\n');
+    await runner.exit(sessionId, 0);
+
+    await waitForAssertion(() =>
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n结构化 final answer 优先于 PTY 提取。'),
+    );
+  });
+
+  it('falls back to PTY extraction when observation does not have a usable final answer', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+    const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a328c';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '   ',
+      completedAt: '2026-06-02T08:31:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '解释当前实现' });
+    await runner.emitOutput(sessionId, '这是 PTY fallback 提取到的最终答案。\n');
+    await runner.exit(sessionId, 0);
+
+    await waitForAssertion(() =>
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', 'Codex 已完成：repo\n\n这是 PTY fallback 提取到的最终答案。'),
+    );
+  });
+
   it('allows a new task after the prior turn notification is sent', async () => {
     vi.useFakeTimers();
     try {
