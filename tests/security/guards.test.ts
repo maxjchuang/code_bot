@@ -6,6 +6,8 @@ const config: BotConfig = {
   feishu: { appId: 'cli', appSecret: 'secret' },
   allowedUsers: ['ou_1'],
   allowedChatIds: ['oc_1'],
+  restrictUsers: true,
+  restrictChatIds: true,
   projects: [{ id: 'repo', name: 'Repo', path: '/tmp/repo', codexArgs: [] }],
   output: { directMaxChars: 1800, chunkSize: 1500 },
   codex: { command: 'codex', defaultArgs: [] },
@@ -31,6 +33,32 @@ describe('security guards', () => {
 
   it('blocks group messages outside the chat allowlist', () => {
     expect(isAuthorizedMessage(config, { userId: 'ou_1', chatId: 'oc_other', chatType: 'group' })).toBe(false);
+  });
+
+  it('allows all users and chats when restriction switches are disabled', () => {
+    const unrestricted: BotConfig = {
+      ...config,
+      restrictUsers: false,
+      restrictChatIds: false,
+      allowedUsers: [],
+      allowedChatIds: [],
+    };
+
+    expect(isAuthorizedMessage(unrestricted, { userId: 'ou_any', chatId: 'ou_any', chatType: 'private' })).toBe(true);
+    expect(isAuthorizedMessage(unrestricted, { userId: 'ou_any', chatId: 'oc_any', chatType: 'group' })).toBe(true);
+  });
+
+  it('only applies chat allowlist when chat restriction is enabled', () => {
+    const groupRestricted: BotConfig = {
+      ...config,
+      restrictUsers: false,
+      restrictChatIds: true,
+      allowedUsers: [],
+      allowedChatIds: ['oc_1'],
+    };
+
+    expect(isAuthorizedMessage(groupRestricted, { userId: 'ou_any', chatId: 'oc_1', chatType: 'group' })).toBe(true);
+    expect(isAuthorizedMessage(groupRestricted, { userId: 'ou_any', chatId: 'oc_2', chatType: 'group' })).toBe(false);
   });
 
   it('resolves projects by id only', () => {

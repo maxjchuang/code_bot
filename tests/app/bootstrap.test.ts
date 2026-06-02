@@ -10,6 +10,8 @@ import { createTmpDir } from '../helpers/tmp.js';
 
 const config: BotConfig = {
   feishu: { appId: 'app', appSecret: 'secret' },
+  restrictUsers: false,
+  restrictChatIds: false,
   allowedUsers: [],
   allowedChatIds: [],
   projects: [],

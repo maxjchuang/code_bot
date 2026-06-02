@@ -1,6 +1,6 @@
 # Feishu Codex Bot
 
-Local Feishu long-connection bot for controlling Codex CLI sessions in allowlisted project directories. The bot receives slash commands from Feishu, starts local Codex processes through a PTY, persists session state under `.code-bot/`, and returns status or log tails back to the chat.
+Local Feishu long-connection bot for controlling Codex CLI sessions in configured project directories. The bot receives slash commands from Feishu, starts local Codex processes through a PTY, persists session state under `.code-bot/`, and returns status or log tails back to the chat.
 
 ## Setup
 
@@ -29,8 +29,9 @@ cp config.example.json .code-bot/config.json
 Edit `.code-bot/config.json`:
 
 - Set `feishu.appId` and `feishu.appSecret`.
-- Add allowed Feishu user open IDs to `allowedUsers`.
-- Add allowed chat IDs to `allowedChatIds`; leave it empty only if private-chat/user allowlisting is enough for your use case.
+- Set `restrictUsers` to `true` only when you want to limit allowed Feishu user open IDs, then fill `allowedUsers`.
+- Set `restrictChatIds` to `true` only when you want to limit allowed group chat IDs, then fill `allowedChatIds`.
+- With either switch left as `false`, that dimension is unrestricted.
 - Replace project entries with your local repositories. Use absolute paths for clarity.
 - Keep `output.directMaxChars` and `output.chunkSize` as reserved config schema fields; current Feishu replies do not enforce these limits.
 - Keep `codex.command` as `codex` when the CLI is on `PATH`, or set it to an absolute executable path.
@@ -49,7 +50,7 @@ The bot reads `.code-bot/config.json` from the repository root and writes local 
 
 ## First Commands
 
-In an allowed Feishu chat:
+In Feishu chat:
 
 ```text
 /projects
