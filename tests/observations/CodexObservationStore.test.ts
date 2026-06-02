@@ -177,6 +177,11 @@ describe('FileCodexObservationStore', () => {
         payload: { type: 'agent_message', phase: 'commentary', message: '这是上一轮 commentary。' },
       }),
       JSON.stringify({
+        timestamp: '2026-06-02T08:01:56.800Z',
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"git status --short"}' },
+      }),
+      JSON.stringify({
         timestamp: '2026-06-02T08:01:57.000Z',
         type: 'response_item',
         payload: {
@@ -212,6 +217,7 @@ describe('FileCodexObservationStore', () => {
     expect(snapshot.latestCommentary).toBeUndefined();
     expect(snapshot.finalAnswer).toBeUndefined();
     expect(snapshot.completedAt).toBeUndefined();
+    expect(snapshot.recentToolEvents).toEqual([]);
   });
 
   it('returns not_found when no rollout exists for the requested session id', async () => {
