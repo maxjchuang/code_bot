@@ -172,6 +172,11 @@ describe('FileCodexObservationStore', () => {
         payload: { type: 'task_started', turn_id: 'turn-1', started_at: 1780387316 },
       }),
       JSON.stringify({
+        timestamp: '2026-06-02T08:01:56.500Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', phase: 'commentary', message: '这是上一轮 commentary。' },
+      }),
+      JSON.stringify({
         timestamp: '2026-06-02T08:01:57.000Z',
         type: 'response_item',
         payload: {
@@ -204,6 +209,7 @@ describe('FileCodexObservationStore', () => {
 
     expect(snapshot.availability.kind).toBe('ready');
     expect(snapshot.status).toBe('running');
+    expect(snapshot.latestCommentary).toBeUndefined();
     expect(snapshot.finalAnswer).toBeUndefined();
     expect(snapshot.completedAt).toBeUndefined();
   });
