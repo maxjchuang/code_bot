@@ -305,7 +305,10 @@ describe('SessionManager', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+    };
     const observationStore = new FakeCodexObservationStore();
     const manager = new SessionManager(sampleConfig(root), store, runner, {
       notifier,
@@ -329,7 +332,10 @@ describe('SessionManager', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+    };
     const observationStore = new FakeCodexObservationStore();
     const config = sampleConfig(root);
     const manager = new SessionManager(config, store, runner, {
@@ -1471,7 +1477,10 @@ describe('SessionManager', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+    };
     const observationStore = new FakeCodexObservationStore();
     const manager = new SessionManager(sampleConfig(root), store, runner, { notifier, codexObservationStore: observationStore });
 
@@ -1491,7 +1500,13 @@ describe('SessionManager', () => {
     await runner.emitOutput(sessionId, 'tick\n');
     await runner.exit(sessionId, 0);
 
-    expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '最终结果');
+    expect(notifier.sendRenderedMessage).toHaveBeenCalledWith(
+      'oc_1',
+      expect.objectContaining({
+        preferred: expect.objectContaining({ kind: 'card' }),
+        fallback: expect.objectContaining({ kind: 'text', text: '最终结果' }),
+      }),
+    );
     const day = new Date().toISOString().slice(0, 10);
     const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
     expect(content).toContain('"type":"notification.turn_exit_fallback"');
@@ -2419,6 +2434,21 @@ describe('SessionManager', () => {
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
     expect(tail.reply).toBe('ready');
+  });
+
+  it('supports commands prefixed by a group mention', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    const projects = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '@_user_1 /projects',
+    });
+
+    expect(projects.reply).toContain('repo: Repo');
+    expect(projects.reply).toContain('repo2: Repo 2');
   });
 
   it('returns no active session for /tail and /rawtail before a session exists', async () => {

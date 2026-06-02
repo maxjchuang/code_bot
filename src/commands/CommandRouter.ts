@@ -20,9 +20,9 @@ export type IncomingText =
 const payloadCommands = new Set(['send']);
 
 export function parseIncomingText(text: string): IncomingText {
-  const trimmed = text.trim();
+  const trimmed = stripLeadingMentions(text.trim());
   if (!trimmed.startsWith('/')) {
-    return { kind: 'message', text };
+    return { kind: 'message', text: trimmed };
   }
 
   const firstWhitespace = trimmed.search(/\s/);
@@ -32,4 +32,8 @@ export function parseIncomingText(text: string): IncomingText {
   const args = payloadCommands.has(name) ? (rest ? [rest] : []) : rest.split(/\s+/).filter(Boolean);
 
   return { kind: 'command', name, args, raw: trimmed };
+}
+
+function stripLeadingMentions(text: string): string {
+  return text.replace(/^(?:@\S+\s+)*/, '');
 }
