@@ -78,8 +78,12 @@ export class FakeCodexRunner implements CodexRunner {
 
 export class FakeCodexObservationStore implements CodexObservationStore {
   readonly snapshots = new Map<string, CodexObservationSnapshot>();
+  readSnapshotError?: Error;
 
   async readSnapshot(input: { codexSessionId: string }): Promise<CodexObservationSnapshot> {
+    if (this.readSnapshotError) {
+      throw this.readSnapshotError;
+    }
     return (
       this.snapshots.get(input.codexSessionId) ?? {
         availability: { kind: 'not_found' },

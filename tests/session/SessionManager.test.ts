@@ -1977,6 +1977,48 @@ describe('SessionManager', () => {
     expect(tail.reply).toContain('⚠ MCP startup incomplete (failed: figma)');
   });
 
+  it('keeps /tail count validation when observation is available', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a328d' }));
+    observationStore.snapshots.set('019e86b4-12ed-7731-9639-c128626a328d', {
+      availability: { kind: 'ready' },
+      codexSessionId: '019e86b4-12ed-7731-9639-c128626a328d',
+      status: 'running',
+      latestCommentary: 'structured progress',
+      recentToolEvents: [],
+    });
+
+    for (const value of ['10abc', '1e3', '0', '-1']) {
+      const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/tail ${value}` });
+      expect(result.reply).toBe('Invalid tail count.');
+    }
+  });
+
+  it('falls back to sanitized PTY output when observation lookup throws', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = new FakeCodexObservationStore();
+    observationStore.readSnapshotError = new Error('observation unavailable');
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a328e' }));
+    await runner.emitOutput(sessionId, 'PTY fallback after observation failure\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toContain('PTY fallback after observation failure');
+  });
+
   it('returns raw terminal output with /rawtail', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

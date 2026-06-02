@@ -553,12 +553,19 @@ export class SessionManager {
     if (!chat?.currentSessionId) {
       return { reply: 'No active session.' };
     }
+    if (this.parseTailCount(requestedCount) === undefined) {
+      return { reply: 'Invalid tail count.' };
+    }
 
     const session = await this.store.getSession(chat.currentSessionId);
     if (session?.codexSessionId) {
-      const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId });
-      if (snapshot.availability.kind === 'ready' || snapshot.availability.kind === 'stale') {
-        return { reply: formatObservationTail(snapshot) };
+      try {
+        const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId });
+        if (snapshot.availability.kind === 'ready' || snapshot.availability.kind === 'stale') {
+          return { reply: formatObservationTail(snapshot) };
+        }
+      } catch {
+        // Fall back to PTY-derived tail output if observation lookup fails.
       }
     }
 
@@ -590,15 +597,22 @@ export class SessionManager {
       return { reply: 'No active session.' };
     }
 
-    let count = 80;
-    if (requestedCount !== undefined) {
-      if (!/^[1-9]\d*$/.test(requestedCount)) {
-        return { reply: 'Invalid tail count.' };
-      }
-      count = Number.parseInt(requestedCount, 10);
+    const count = this.parseTailCount(requestedCount);
+    if (count === undefined) {
+      return { reply: 'Invalid tail count.' };
     }
 
     return { lines: await this.store.tailSessionLog(chat.currentSessionId, count) };
+  }
+
+  private parseTailCount(requestedCount?: string): number | undefined {
+    if (requestedCount === undefined) {
+      return 80;
+    }
+    if (!/^[1-9]\d*$/.test(requestedCount)) {
+      return undefined;
+    }
+    return Number.parseInt(requestedCount, 10);
   }
 
   private codexObservationStore(): CodexObservationStore {
