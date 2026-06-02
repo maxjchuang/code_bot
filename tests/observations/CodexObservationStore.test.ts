@@ -1,0 +1,157 @@
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { describe, expect, it } from 'vitest';
+import { FileCodexObservationStore } from '../../src/observations/CodexObservationStore.js';
+
+async function createCodexHome(): Promise<string> {
+  return mkdtemp(join(tmpdir(), 'code-bot-observation-'));
+}
+
+async function writeRollout(codexHome: string, relativePath: string, lines: string[]): Promise<string> {
+  const rolloutPath = join(codexHome, 'sessions', relativePath);
+  await mkdir(join(rolloutPath, '..'), { recursive: true });
+  await writeFile(rolloutPath, `${lines.join('\n')}\n`, 'utf8');
+  return rolloutPath;
+}
+
+describe('FileCodexObservationStore', () => {
+  it('extracts commentary, final answer, tool activity, and completion from a rollout file', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-00-00-019e86b4-12ed-7731-9639-c128626a328b.jsonl', [
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:00.000Z',
+        type: 'session_meta',
+        payload: { id: '019e86b4-12ed-7731-9639-c128626a328b', cwd: '/repo', cli_version: '0.135.0' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:02.000Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-1', started_at: 1780387202 },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:03.000Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', phase: 'commentary', message: '我先检查当前实现，再决定如何切 observation。' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:04.000Z',
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"rg -n \\"tail\\" src"}' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:05.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          phase: 'final_answer',
+          content: [{ type: 'output_text', text: '最终建议：保留 PTY 控制面，新增 observation 主路径。' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:05.100Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'turn-1',
+          last_agent_message: '最终建议：保留 PTY 控制面，新增 observation 主路径。',
+          completed_at: 1780387205,
+          duration_ms: 3100,
+        },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:00:06.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a328b' });
+
+    expect(snapshot.availability.kind).toBe('ready');
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.latestCommentary).toBe('我先检查当前实现，再决定如何切 observation。');
+    expect(snapshot.finalAnswer).toBe('最终建议：保留 PTY 控制面，新增 observation 主路径。');
+    expect(snapshot.recentToolEvents).toEqual([
+      {
+        kind: 'tool_call',
+        toolName: 'exec_command',
+        summary: 'exec_command: rg -n "tail" src',
+        at: '2026-06-02T08:00:04.000Z',
+      },
+    ]);
+  });
+
+  it('falls back to task_complete.last_agent_message when final_answer phase is absent', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-01-00-019e86b4-12ed-7731-9639-c128626a328c.jsonl', [
+      JSON.stringify({ timestamp: '2026-06-02T08:01:00.000Z', type: 'session_meta', payload: { id: '019e86b4-12ed-7731-9639-c128626a328c', cwd: '/repo' } }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:05.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'turn-2',
+          last_agent_message: '没有结构化 final_answer，但任务已经完成。',
+          completed_at: 1780387265,
+          duration_ms: 2000,
+        },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:01:06.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a328c' });
+
+    expect(snapshot.availability.kind).toBe('ready');
+    expect(snapshot.finalAnswer).toBe('没有结构化 final_answer，但任务已经完成。');
+    expect(snapshot.status).toBe('completed');
+  });
+
+  it('returns not_found when no rollout exists for the requested session id', async () => {
+    const codexHome = await createCodexHome();
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:02:00.000Z') });
+
+    await expect(store.readSnapshot({ codexSessionId: 'missing-session' })).resolves.toMatchObject({
+      availability: { kind: 'not_found' },
+      status: 'unknown',
+      recentToolEvents: [],
+    });
+  });
+
+  it('returns parse_error when the matching rollout file contains invalid jsonl', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-02-00-019e86b4-12ed-7731-9639-c128626a328d.jsonl', [
+      '{"timestamp":"2026-06-02T08:02:00.000Z","type":"session_meta","payload":{"id":"019e86b4-12ed-7731-9639-c128626a328d","cwd":"/repo"}}',
+      '{"timestamp":"2026-06-02T08:02:01.000Z","type":"event_msg","payload":INVALID_JSON',
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:02:02.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a328d' });
+
+    expect(snapshot.availability.kind).toBe('parse_error');
+    expect(snapshot.status).toBe('unknown');
+  });
+
+  it('returns stale when the latest rollout event is older than the freshness window', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-03-00-019e86b4-12ed-7731-9639-c128626a328e.jsonl', [
+      JSON.stringify({
+        timestamp: '2026-06-02T08:03:00.000Z',
+        type: 'session_meta',
+        payload: { id: '019e86b4-12ed-7731-9639-c128626a328e', cwd: '/repo' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:03:10.000Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', phase: 'commentary', message: '这是一条过期 commentary。' },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({
+      codexHome,
+      staleAfterMs: 5_000,
+      now: () => new Date('2026-06-02T08:03:20.000Z'),
+    });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a328e' });
+
+    expect(snapshot.availability.kind).toBe('stale');
+    expect(snapshot.latestCommentary).toBe('这是一条过期 commentary。');
+  });
+});
