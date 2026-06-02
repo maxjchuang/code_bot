@@ -69,6 +69,7 @@ describe('FileCodexObservationStore', () => {
     expect(snapshot.status).toBe('completed');
     expect(snapshot.latestCommentary).toBe('我先检查当前实现，再决定如何切 observation。');
     expect(snapshot.finalAnswer).toBe('最终建议：保留 PTY 控制面，新增 observation 主路径。');
+    expect(snapshot.completedAt).toBe('2026-06-02T08:00:05.000Z');
     expect(snapshot.recentToolEvents).toEqual([
       {
         kind: 'tool_call',
@@ -102,6 +103,59 @@ describe('FileCodexObservationStore', () => {
     expect(snapshot.availability.kind).toBe('ready');
     expect(snapshot.finalAnswer).toBe('没有结构化 final_answer，但任务已经完成。');
     expect(snapshot.status).toBe('completed');
+    expect(snapshot.completedAt).toBe('2026-06-02T08:01:05.000Z');
+  });
+
+  it('marks a started task as running before commentary appears', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-01-30-019e86b4-12ed-7731-9639-c128626a328f.jsonl', [
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:30.000Z',
+        type: 'session_meta',
+        payload: { id: '019e86b4-12ed-7731-9639-c128626a328f', cwd: '/repo' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:31.000Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-3', started_at: 1780387291 },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:01:32.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a328f' });
+
+    expect(snapshot.availability.kind).toBe('ready');
+    expect(snapshot.status).toBe('running');
+    expect(snapshot.latestCommentary).toBeUndefined();
+    expect(snapshot.finalAnswer).toBeUndefined();
+  });
+
+  it('falls back to the event timestamp when task_complete.completed_at is absent', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-01-45-019e86b4-12ed-7731-9639-c128626a3290.jsonl', [
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:45.000Z',
+        type: 'session_meta',
+        payload: { id: '019e86b4-12ed-7731-9639-c128626a3290', cwd: '/repo' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:50.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'task_complete',
+          turn_id: 'turn-4',
+          last_agent_message: '缺少 completed_at 时回退到事件时间。',
+          duration_ms: 1000,
+        },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:01:51.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a3290' });
+
+    expect(snapshot.availability.kind).toBe('ready');
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.completedAt).toBe('2026-06-02T08:01:50.000Z');
   });
 
   it('returns not_found when no rollout exists for the requested session id', async () => {

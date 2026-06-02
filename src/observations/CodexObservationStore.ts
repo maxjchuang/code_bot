@@ -67,6 +67,9 @@ export class FileCodexObservationStore implements CodexObservationStore {
         if (typeof event.timestamp === 'string') {
           latestTimestamp = event.timestamp;
         }
+        if (event.type === 'event_msg' && event.payload?.type === 'task_started') {
+          status = 'running';
+        }
         if (event.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload?.phase === 'commentary') {
           latestCommentary = event.payload.message;
           status = 'running';
@@ -76,7 +79,7 @@ export class FileCodexObservationStore implements CodexObservationStore {
         }
         if (event.type === 'event_msg' && event.payload?.type === 'task_complete') {
           status = 'completed';
-          completedAt = event.timestamp;
+          completedAt = normalizeCompletedAt(event.payload.completed_at) ?? event.timestamp;
           finalAnswer ??= event.payload.last_agent_message;
         }
         if (event.type === 'response_item' && event.payload?.type === 'function_call') {
@@ -178,6 +181,16 @@ function classifyAvailability(
     return { kind: 'stale' };
   }
   return { kind: 'ready' };
+}
+
+function normalizeCompletedAt(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return undefined;
 }
 
 function parseErrorSnapshot(codexSessionId: string, error: unknown): CodexObservationSnapshot {
