@@ -5,6 +5,8 @@ import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { extractFinalAnswer, formatCompletionNotification, inspectFinalAnswer } from '../notifications/FinalAnswerExtractor.js';
+import { FileCodexObservationStore, type CodexObservationStore } from '../observations/CodexObservationStore.js';
+import { formatObservationTail } from '../output/ObservationTailFormatter.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -40,6 +42,7 @@ export interface SessionManagerDeps {
     retryDelayMs?: number;
     sleep?: (ms: number) => Promise<void>;
   };
+  codexObservationStore?: CodexObservationStore;
 }
 
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
@@ -546,6 +549,19 @@ export class SessionManager {
   }
 
   private async tail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session.' };
+    }
+
+    const session = await this.store.getSession(chat.currentSessionId);
+    if (session?.codexSessionId) {
+      const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId: session.codexSessionId });
+      if (snapshot.availability.kind === 'ready' || snapshot.availability.kind === 'stale') {
+        return { reply: formatObservationTail(snapshot) };
+      }
+    }
+
     const rawLines = await this.tailRawLines(chatId, requestedCount);
     if ('reply' in rawLines) {
       return rawLines;
@@ -583,6 +599,15 @@ export class SessionManager {
     }
 
     return { lines: await this.store.tailSessionLog(chat.currentSessionId, count) };
+  }
+
+  private codexObservationStore(): CodexObservationStore {
+    return (
+      this.deps.codexObservationStore ??
+      new FileCodexObservationStore({
+        codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
+      })
+    );
   }
 
   private async stopCurrentSession(input: IncomingBotText): Promise<BotTextResult> {

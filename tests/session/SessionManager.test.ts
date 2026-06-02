@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { createTmpDir } from '../helpers/tmp.js';
-import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
+import { FakeCodexObservationStore, FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
 import type { BotConfig, BotEvent, SessionRecord } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 
@@ -1925,6 +1925,56 @@ describe('SessionManager', () => {
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
     expect(tail.reply).toBe('No readable output yet. Use /rawtail 80 for raw terminal logs.');
+  });
+
+  it('prefers observation summaries for /tail when a structured snapshot is available', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a328b' }));
+    observationStore.snapshots.set('019e86b4-12ed-7731-9639-c128626a328b', {
+      availability: { kind: 'ready' },
+      codexSessionId: '019e86b4-12ed-7731-9639-c128626a328b',
+      status: 'running',
+      latestCommentary: '我先看当前 tail 逻辑，再切 observation。',
+      recentToolEvents: [
+        {
+          kind: 'tool_call',
+          toolName: 'exec_command',
+          summary: "exec_command: sed -n '1,80p' src/session/SessionManager.ts",
+          at: '2026-06-02T08:20:00.000Z',
+        },
+      ],
+    });
+    await runner.emitOutput(sessionId, 'raw terminal fallback should not be used\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toContain('Status: running');
+    expect(tail.reply).toContain('我先看当前 tail 逻辑，再切 observation。');
+    expect(tail.reply).not.toContain('raw terminal fallback should not be used');
+  });
+
+  it('falls back to sanitized PTY output when observation is unavailable', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a328c' }));
+    await runner.emitOutput(sessionId, '⚠ MCP startup incomplete (failed: figma)\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toContain('⚠ MCP startup incomplete (failed: figma)');
   });
 
   it('returns raw terminal output with /rawtail', async () => {
