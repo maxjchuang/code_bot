@@ -2189,10 +2189,13 @@ describe('SessionManager', () => {
       ...latest,
       codexSessionId: '019e86b4-12ed-7731-9639-c128626a328f',
     }));
+    await runner.emitOutput(sessionId, 'raw PTY fallback should not appear here\n');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail' });
 
+    expect(tail.reply).toContain('Observation 可能比 PTY 慢一点。');
     expect(tail.reply).toContain('Observation may be stale. Use /rawtail for the latest raw terminal output.');
+    expect(tail.reply).not.toContain('raw PTY fallback should not appear here');
   });
 
   it('returns raw terminal output with /rawtail', async () => {

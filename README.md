@@ -92,8 +92,8 @@ Notes:
 - On bot restart, the last running session for each chat is marked interrupted and automatically resumed when a Codex native session ID was captured.
 - `/sessions` lists recent sessions. Session status is shown as `current`, `resumable`, or `not-resumable`.
 - `/resume <session> [project]` resumes a Codex session. Prefer the code_bot session ID shown by `/sessions`. Codex native session IDs are also supported, but you must specify `project` or already have a current project selected in the chat.
-- `/tail [n]` returns a readable progress summary for the active Codex session. It prefers structured Codex observation data and falls back to sanitized PTY output when structured observation is unavailable.
-- `/rawtail [n]` returns raw PTY terminal output for exact debugging.
+- `/tail [n]` returns a readable progress summary for the active Codex session. It accepts an optional count and defaults to 80. It prefers structured Codex observation data and falls back to sanitized PTY output when structured observation is unavailable.
+- `/rawtail [n]` returns raw PTY terminal output for exact debugging. It accepts an optional count and defaults to 80.
 - `/stop` stops the current session immediately.
 - `/approve <id>` and `/reject <id>` are reserved for future approval-gated actions.
 - Resume limits: old sessions without a captured Codex native ID cannot be resumed by code_bot session ID; stop the active session before resuming another one; when you pass an explicit `project`, it must match the session history.
