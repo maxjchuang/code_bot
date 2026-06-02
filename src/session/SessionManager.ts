@@ -56,8 +56,8 @@ interface PendingTurn {
   projectId: string;
   prompt: string;
   startedAt: string;
-  outputStartIndex: number;
-  outputStartOffset: number;
+  outputStartIndex?: number;
+  outputStartOffset?: number;
   notified: boolean;
   lastCandidate?: string;
   candidateUpdateCount: number;
@@ -70,6 +70,7 @@ export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
+  private readonly queuedTurns = new Map<string, PendingTurn[]>();
 
   constructor(
     private readonly config: BotConfig,
@@ -412,38 +413,20 @@ export class SessionManager {
     if (!session || session.status !== 'running') {
       return { reply: 'No running session. Run /new <project> first.' };
     }
-    if (this.notificationsEnabled() && this.pendingTurns.has(chat.currentSessionId)) {
-      await this.store.appendEvent({
-        type: 'notification.turn_busy_rejected',
-        at: new Date().toISOString(),
-        data: { sessionId: chat.currentSessionId, chatId: input.chatId },
-      }).catch((error) =>
-        this.recordBackgroundError('notification.turn_busy_rejected_persist_failed', error, {
-          sessionId: chat.currentSessionId,
-          chatId: input.chatId,
-        }).catch(() => undefined),
-      );
-      return { reply: '当前 session 正在执行任务，请等待完成后再发送新任务，或使用 /tail 查看进度。' };
-    }
 
     const notificationEnabled = this.notificationsEnabled();
     const notificationStartedAt = new Date().toISOString();
+    let queuedTurn = false;
     if (notificationEnabled) {
-      const outputStartIndex = (await this.store.tailSessionLog(chat.currentSessionId, 100000)).length;
-      const outputStartOffset = await this.store.sessionLogSize(chat.currentSessionId);
-      this.pendingTurns.set(chat.currentSessionId, {
-        id: `${chat.currentSessionId}:${Date.now()}`,
-        sessionId: chat.currentSessionId,
-        chatId: input.chatId,
-        projectId: session.projectId,
-        prompt: text,
-        startedAt: notificationStartedAt,
-        outputStartIndex,
-        outputStartOffset,
-        notified: false,
-        candidateUpdateCount: 0,
-        submitRetryCount: 0,
-      });
+      const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt);
+      if (this.pendingTurns.has(chat.currentSessionId)) {
+        queuedTurn = true;
+        const queue = this.queuedTurns.get(chat.currentSessionId) ?? [];
+        queue.push(turn);
+        this.queuedTurns.set(chat.currentSessionId, queue);
+      } else {
+        await this.activatePendingTurn(turn);
+      }
     }
 
     const sendRequestedAt = new Date().toISOString();
@@ -461,11 +444,31 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
+    if (notificationEnabled && queuedTurn) {
+      await this.store.appendEvent({
+        type: 'session.input_queued',
+        at: sendRequestedAt,
+        data: {
+          sessionId: chat.currentSessionId,
+          chatId: input.chatId,
+          projectId: session.projectId,
+          textLength: text.length,
+          textPreview: previewText(text),
+          pendingTurnId: this.queuedTurns.get(chat.currentSessionId)?.at(-1)?.id,
+        },
+      }).catch((error) =>
+        this.recordBackgroundError('session.input_queued_persist_failed', error, {
+          sessionId: chat.currentSessionId,
+          chatId: input.chatId,
+          projectId: session.projectId,
+        }).catch(() => undefined),
+      );
+    }
 
     try {
       await this.runner.send(chat.currentSessionId, text);
     } catch (error) {
-      this.pendingTurns.delete(chat.currentSessionId);
+      this.removePendingTurn(chat.currentSessionId, text, queuedTurn);
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date().toISOString();
       await this.store.updateSession(chat.currentSessionId, (latest) => {
@@ -500,10 +503,10 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled) {
+    if (notificationEnabled && !queuedTurn) {
       this.scheduleSubmitConfirmation(chat.currentSessionId);
     }
-    if (notificationEnabled) {
+    if (notificationEnabled && !queuedTurn) {
       await this.store.appendEvent({
         type: 'notification.turn_started',
         at: notificationStartedAt,
@@ -515,6 +518,8 @@ export class SessionManager {
           projectId: session.projectId,
         }).catch(() => undefined),
       );
+    }
+    if (notificationEnabled) {
       return { reply: `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` };
     }
     await this.store.appendEvent({
@@ -874,6 +879,7 @@ export class SessionManager {
         clearTimeout(turn.submitRetryTimer);
       }
       this.pendingTurns.delete(sessionId);
+      await this.activateNextQueuedTurn(sessionId);
     }
   }
 
@@ -926,6 +932,72 @@ export class SessionManager {
     }
     const lines = await this.store.tailSessionLog(sessionId, 100000);
     return lines.slice(turn.outputStartIndex);
+  }
+
+  private createPendingTurn(sessionId: string, chatId: string, projectId: string, prompt: string, startedAt: string): PendingTurn {
+    return {
+      id: `${sessionId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      sessionId,
+      chatId,
+      projectId,
+      prompt,
+      startedAt,
+      notified: false,
+      candidateUpdateCount: 0,
+      submitRetryCount: 0,
+    };
+  }
+
+  private async activatePendingTurn(turn: PendingTurn): Promise<void> {
+    turn.outputStartIndex = (await this.store.tailSessionLog(turn.sessionId, 100000)).length;
+    turn.outputStartOffset = await this.store.sessionLogSize(turn.sessionId);
+    this.pendingTurns.set(turn.sessionId, turn);
+  }
+
+  private async activateNextQueuedTurn(sessionId: string): Promise<void> {
+    const queue = this.queuedTurns.get(sessionId);
+    const next = queue?.shift();
+    if (!next) {
+      this.queuedTurns.delete(sessionId);
+      return;
+    }
+    if (queue.length === 0) {
+      this.queuedTurns.delete(sessionId);
+    } else {
+      this.queuedTurns.set(sessionId, queue);
+    }
+    await this.activatePendingTurn(next);
+    await this.store.appendEvent({
+      type: 'notification.turn_started',
+      at: new Date().toISOString(),
+      data: { sessionId, chatId: next.chatId, projectId: next.projectId, pendingTurnId: next.id, source: 'queued' },
+    }).catch((error) =>
+      this.recordBackgroundError('notification.turn_started_persist_failed', error, {
+        sessionId,
+        chatId: next.chatId,
+        projectId: next.projectId,
+      }).catch(() => undefined),
+    );
+  }
+
+  private removePendingTurn(sessionId: string, prompt: string, queuedTurn: boolean): void {
+    if (queuedTurn) {
+      const queue = this.queuedTurns.get(sessionId);
+      if (!queue) {
+        return;
+      }
+      const index = queue.findIndex((turn) => turn.prompt === prompt);
+      if (index >= 0) {
+        queue.splice(index, 1);
+      }
+      if (queue.length === 0) {
+        this.queuedTurns.delete(sessionId);
+      } else {
+        this.queuedTurns.set(sessionId, queue);
+      }
+      return;
+    }
+    this.pendingTurns.delete(sessionId);
   }
 
   private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {
@@ -982,6 +1054,23 @@ function hashCandidate(text: string): string {
   return createHash('sha1').update(text).digest('hex').slice(0, 12);
 }
 
+function isStartupBlockingLine(line: string): boolean {
+  return (
+    line.startsWith('> You are in ') ||
+    line.startsWith('Do you trust the contents of this directory?') ||
+    line.includes('Working with untrusted contents') ||
+    line.startsWith('1. Yes, continue') ||
+    line.startsWith('2. No, quit') ||
+    line.startsWith('Press enter to continue') ||
+    line.includes('Update available!') ||
+    line.startsWith('Release notes:') ||
+    line.startsWith('Updating Codex via ') ||
+    /^changed \d+ packages? in \d+s$/i.test(line) ||
+    line.includes('Update ran successfully!') ||
+    line.includes('Please restart Codex')
+  );
+}
+
 function hasObservedTurnProgress(rawLines: string[], prompt: string): boolean {
   const promptComparable = prompt.replace(/\s+/g, '').trim();
   const sanitized = sanitizeTerminalOutput(rawLines);
@@ -992,6 +1081,9 @@ function hasObservedTurnProgress(rawLines: string[], prompt: string): boolean {
     }
     const comparable = trimmed.replace(/\s+/g, '');
     if (comparable === promptComparable || comparable === `›${promptComparable}`) {
+      continue;
+    }
+    if (isStartupBlockingLine(trimmed)) {
       continue;
     }
     if (

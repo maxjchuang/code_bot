@@ -55,6 +55,18 @@ export function formatCompletionNotification(input: {
 function isProcessLine(line: string): boolean {
   return (
     line.includes('OpenAI Codex') ||
+    line.startsWith('> You are in ') ||
+    line.startsWith('Do you trust the contents of this directory?') ||
+    line.includes('Working with untrusted contents') ||
+    line.startsWith('1. Yes, continue') ||
+    line.startsWith('2. No, quit') ||
+    line.startsWith('Press enter to continue') ||
+    line.includes('Update available!') ||
+    line.startsWith('Release notes:') ||
+    line.startsWith('Updating Codex via ') ||
+    /^changed \d+ packages? in \d+s$/i.test(line) ||
+    line.includes('Update ran successfully!') ||
+    line.includes('Please restart Codex.') ||
     line.startsWith('Tip:') ||
     line.startsWith('›') ||
     line.startsWith('Starting MCP servers') ||

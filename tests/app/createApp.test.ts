@@ -206,17 +206,19 @@ describe('createApp', () => {
         'Codex 已完成：repo\n\n• 当前分支是：\nfeat/codex-completion-notifications',
       );
     });
-    const events = (await readFile(join(root, '.code-bot/events/2026-06-01.jsonl'), 'utf8'))
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(events).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'notification.turn_completed',
-          data: expect.objectContaining({ sessionId, chatId: 'oc_1', projectId: 'repo' }),
-        }),
-      ]),
-    );
+    await waitForAssertion(async () => {
+      const events = (await readFile(join(root, '.code-bot/events/2026-06-01.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'notification.turn_completed',
+            data: expect.objectContaining({ sessionId, chatId: 'oc_1', projectId: 'repo' }),
+          }),
+        ]),
+      );
+    });
   });
 });
