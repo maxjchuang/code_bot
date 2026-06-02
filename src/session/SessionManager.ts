@@ -1040,7 +1040,11 @@ export class SessionManager {
 
   private async activateNextQueuedTurn(sessionId: string): Promise<void> {
     const queue = this.queuedTurns.get(sessionId);
-    const next = queue?.shift();
+    if (!queue || queue.length === 0) {
+      this.queuedTurns.delete(sessionId);
+      return;
+    }
+    const next = queue.shift();
     if (!next) {
       this.queuedTurns.delete(sessionId);
       return;
