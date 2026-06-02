@@ -2427,7 +2427,7 @@ describe('SessionManager', () => {
     expect(tail.reply).toBe('No readable output yet. Use /rawtail 80 for raw terminal logs.');
   });
 
-  it('prefers observation summaries for /tail when a structured snapshot is available', async () => {
+  it('uses sanitized PTY output for /tail even when a structured snapshot is available', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -2451,13 +2451,13 @@ describe('SessionManager', () => {
         },
       ],
     });
-    await runner.emitOutput(sessionId, 'raw terminal fallback should not be used\n');
+    await runner.emitOutput(sessionId, 'raw terminal output should be used\n');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
-    expect(tail.reply).toContain('Status: running');
-    expect(tail.reply).toContain('我先看当前 tail 逻辑，再切 observation。');
-    expect(tail.reply).not.toContain('raw terminal fallback should not be used');
+    expect(tail.reply).toContain('raw terminal output should be used');
+    expect(tail.reply).not.toContain('Status: running');
+    expect(tail.reply).not.toContain('我先看当前 tail 逻辑，再切 observation。');
   });
 
   it('falls back to sanitized PTY output when observation is unavailable', async () => {
@@ -2543,7 +2543,7 @@ describe('SessionManager', () => {
     expect(tail.reply).toContain('PTY fallback after observation failure');
   });
 
-  it('discovers a delayed codexSessionId for /tail and returns observation output first', async () => {
+  it('does not discover a delayed codexSessionId for /tail when PTY output is available', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -2563,6 +2563,7 @@ describe('SessionManager', () => {
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    registry.discoverForProject.mockClear();
     observationStore.snapshots.set(codexSessionId, {
       availability: { kind: 'ready' },
       codexSessionId,
@@ -2571,17 +2572,16 @@ describe('SessionManager', () => {
       latestCommentary: '我先看 observation，再决定是否回退。',
       recentToolEvents: [],
     });
-    await runner.emitOutput(sessionId, 'raw pty fallback text\n');
+    await runner.emitOutput(sessionId, 'raw pty text only\n');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 80' });
 
-    expect(tail.reply).toContain('结构化最终答案');
-    expect(tail.reply).toContain('我先看 observation，再决定是否回退。');
-    expect(registry.discoverForProject).toHaveBeenCalledTimes(2);
-    await expect(store.getSession(sessionId)).resolves.toMatchObject({ codexSessionId });
+    expect(tail.reply).toContain('raw pty text only');
+    expect(tail.reply).not.toContain('结构化最终答案');
+    expect(registry.discoverForProject).not.toHaveBeenCalled();
   });
 
-  it('surfaces formatter guidance for /tail when observation snapshot has a parse error', async () => {
+  it('ignores observation parse errors for /tail and still uses PTY output', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -2597,16 +2597,14 @@ describe('SessionManager', () => {
       status: 'unknown',
       recentToolEvents: [],
     });
-    await runner.emitOutput(sessionId, 'raw terminal fallback should not be used here\n');
+    await runner.emitOutput(sessionId, 'raw terminal output is still available here\n');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
-    expect(tail.reply).toBe(
-      'Structured Codex observation failed to parse. Reason: unexpected token at line 1. Use /rawtail 80 for raw terminal logs.',
-    );
+    expect(tail.reply).toContain('raw terminal output is still available here');
   });
 
-  it('uses observation summary for stale snapshots and warns that rawtail may be newer', async () => {
+  it('ignores stale observation snapshots for /tail and uses PTY output', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -2627,13 +2625,12 @@ describe('SessionManager', () => {
       ...latest,
       codexSessionId: '019e86b4-12ed-7731-9639-c128626a328f',
     }));
-    await runner.emitOutput(sessionId, 'raw PTY fallback should not appear here\n');
+    await runner.emitOutput(sessionId, 'raw PTY output appears here\n');
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail' });
 
-    expect(tail.reply).toContain('Observation 可能比 PTY 慢一点。');
-    expect(tail.reply).toContain('Observation may be stale. Use /rawtail for the latest raw terminal output.');
-    expect(tail.reply).not.toContain('raw PTY fallback should not appear here');
+    expect(tail.reply).toContain('raw PTY output appears here');
+    expect(tail.reply).not.toContain('Observation 可能比 PTY 慢一点。');
   });
 
   it('returns raw terminal output with /rawtail', async () => {

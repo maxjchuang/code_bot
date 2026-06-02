@@ -11,7 +11,6 @@ import {
   type FinalAnswerExtraction,
 } from '../notifications/FinalAnswerExtractor.js';
 import { FileCodexObservationStore, type CodexObservationStore } from '../observations/CodexObservationStore.js';
-import { formatObservationTail } from '../output/ObservationTailFormatter.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
@@ -578,23 +577,6 @@ export class SessionManager {
     }
     if (this.parseTailCount(requestedCount) === undefined) {
       return { reply: 'Invalid tail count.' };
-    }
-
-    const session = await this.store.getSession(chat.currentSessionId);
-    const codexSessionId = session?.codexSessionId ?? (session ? await this.discoverCodexSessionIdForSession(session) : undefined);
-    if (codexSessionId) {
-      try {
-        const snapshot = await this.codexObservationStore().readSnapshot({ codexSessionId });
-        if (
-          snapshot.availability.kind === 'ready' ||
-          snapshot.availability.kind === 'stale' ||
-          snapshot.availability.kind === 'parse_error'
-        ) {
-          return { reply: formatObservationTail(snapshot) };
-        }
-      } catch {
-        // Fall back to PTY-derived tail output if observation lookup fails.
-      }
     }
 
     const rawLines = await this.tailRawLines(chatId, requestedCount);
