@@ -875,6 +875,43 @@ describe('SessionManager', () => {
     }
   });
 
+  it('does not let a queued second turn notify with the first turn stale observation answer', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+    const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a328e';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first turn' });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second turn' });
+    const queuedAt = new Date().toISOString();
+
+    await runner.emitOutput(sessionId, '────────────────\n这是第一轮的 PTY 最终答案。\n');
+    await waitForAssertion(() =>
+      expect(notifier.sendText).toHaveBeenNthCalledWith(1, 'oc_1', 'Codex 已完成：repo\n\n这是第一轮的 PTY 最终答案。'),
+    );
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'stale' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '第一轮 observation 最终答案。',
+      completedAt: queuedAt,
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, '────────────────\n这是第二轮的 PTY 最终答案。\n');
+    await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(2));
+    expect(notifier.sendText).toHaveBeenNthCalledWith(2, 'oc_1', 'Codex 已完成：repo\n\n这是第二轮的 PTY 最终答案。');
+  });
+
   it('notifies on stable completion from a current-turn observation answer without a PTY final-answer candidate', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -2155,6 +2192,30 @@ describe('SessionManager', () => {
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
     expect(tail.reply).toContain('⚠ MCP startup incomplete (failed: figma)');
+  });
+
+  it('falls back to sanitized PTY output when observation is not yet flushed', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a3280' }));
+    observationStore.snapshots.set('019e86b4-12ed-7731-9639-c128626a3280', {
+      availability: { kind: 'not_yet_flushed' },
+      codexSessionId: '019e86b4-12ed-7731-9639-c128626a3280',
+      status: 'unknown',
+      recentToolEvents: [],
+    });
+    await runner.emitOutput(sessionId, 'PTY fallback while observation has only session_meta\n');
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
+
+    expect(tail.reply).toContain('PTY fallback while observation has only session_meta');
+    expect(tail.reply).not.toContain('Status: unknown');
   });
 
   it('keeps /tail count validation when observation is available', async () => {

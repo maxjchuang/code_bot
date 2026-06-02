@@ -58,16 +58,15 @@ export class FileCodexObservationStore implements CodexObservationStore {
     let latestCommentary: string | undefined;
     let finalAnswer: string | undefined;
     let completedAt: string | undefined;
-    let latestTimestamp: string | undefined;
+    let latestActivityTimestamp: string | undefined;
     let status: CodexObservationSnapshot['status'] = 'unknown';
 
     try {
       for (const line of lines) {
         const event = JSON.parse(line) as { timestamp?: string; type?: string; payload?: any };
-        if (typeof event.timestamp === 'string') {
-          latestTimestamp = event.timestamp;
-        }
+        const eventTimestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
         if (event.type === 'event_msg' && event.payload?.type === 'task_started') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           status = 'running';
           toolEvents.length = 0;
           latestCommentary = undefined;
@@ -75,18 +74,22 @@ export class FileCodexObservationStore implements CodexObservationStore {
           completedAt = undefined;
         }
         if (event.type === 'event_msg' && event.payload?.type === 'agent_message' && event.payload?.phase === 'commentary') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           latestCommentary = event.payload.message;
           status = 'running';
         }
         if (event.type === 'response_item' && event.payload?.type === 'message' && event.payload?.phase === 'final_answer') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           finalAnswer = extractOutputText(event.payload.content);
         }
         if (event.type === 'event_msg' && event.payload?.type === 'task_complete') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           status = 'completed';
           completedAt = normalizeCompletedAt(event.payload.completed_at) ?? event.timestamp;
           finalAnswer ??= event.payload.last_agent_message;
         }
         if (event.type === 'response_item' && event.payload?.type === 'function_call') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           toolEvents.push({
             kind: 'tool_call',
             toolName: event.payload.name,
@@ -99,7 +102,11 @@ export class FileCodexObservationStore implements CodexObservationStore {
       return parseErrorSnapshot(input.codexSessionId, error);
     }
 
-    const availability = classifyAvailability(latestTimestamp, this.deps.staleAfterMs ?? 15_000, this.deps.now ?? (() => new Date()));
+    const availability = classifyAvailability(
+      latestActivityTimestamp,
+      this.deps.staleAfterMs ?? 15_000,
+      this.deps.now ?? (() => new Date()),
+    );
     return {
       availability,
       codexSessionId: input.codexSessionId,

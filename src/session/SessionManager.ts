@@ -1045,6 +1045,7 @@ export class SessionManager {
   }
 
   private async activatePendingTurn(turn: PendingTurn): Promise<void> {
+    turn.startedAt = new Date().toISOString();
     turn.outputStartIndex = (await this.store.tailSessionLog(turn.sessionId, 100000)).length;
     turn.outputStartOffset = await this.store.sessionLogSize(turn.sessionId);
     this.pendingTurns.set(turn.sessionId, turn);

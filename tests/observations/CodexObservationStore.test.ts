@@ -130,6 +130,26 @@ describe('FileCodexObservationStore', () => {
     expect(snapshot.finalAnswer).toBeUndefined();
   });
 
+  it('treats a session_meta-only rollout as not yet flushed so PTY fallback can still be used', async () => {
+    const codexHome = await createCodexHome();
+    await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-01-35-019e86b4-12ed-7731-9639-c128626a3280.jsonl', [
+      JSON.stringify({
+        timestamp: '2026-06-02T08:01:35.000Z',
+        type: 'session_meta',
+        payload: { id: '019e86b4-12ed-7731-9639-c128626a3280', cwd: '/repo' },
+      }),
+    ]);
+
+    const store = new FileCodexObservationStore({ codexHome, now: () => new Date('2026-06-02T08:01:36.000Z') });
+    const snapshot = await store.readSnapshot({ codexSessionId: '019e86b4-12ed-7731-9639-c128626a3280' });
+
+    expect(snapshot.availability.kind).toBe('not_yet_flushed');
+    expect(snapshot.status).toBe('unknown');
+    expect(snapshot.latestCommentary).toBeUndefined();
+    expect(snapshot.finalAnswer).toBeUndefined();
+    expect(snapshot.recentToolEvents).toEqual([]);
+  });
+
   it('falls back to the event timestamp when task_complete.completed_at is absent', async () => {
     const codexHome = await createCodexHome();
     await writeRollout(codexHome, '2026/06/02/rollout-2026-06-02T15-01-45-019e86b4-12ed-7731-9639-c128626a3290.jsonl', [
