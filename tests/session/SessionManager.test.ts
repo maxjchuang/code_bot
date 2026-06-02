@@ -2168,6 +2168,33 @@ describe('SessionManager', () => {
     expect(tail.reply).toContain('PTY fallback after observation failure');
   });
 
+  it('uses observation summary for stale snapshots and warns that rawtail may be newer', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const observationStore = {
+      readSnapshot: vi.fn().mockResolvedValue({
+        availability: { kind: 'stale' },
+        codexSessionId: '019e86b4-12ed-7731-9639-c128626a328f',
+        status: 'running',
+        latestCommentary: 'Observation 可能比 PTY 慢一点。',
+        recentToolEvents: [],
+      }),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexObservationStore: observationStore as any });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({
+      ...latest,
+      codexSessionId: '019e86b4-12ed-7731-9639-c128626a328f',
+    }));
+
+    const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail' });
+
+    expect(tail.reply).toContain('Observation may be stale. Use /rawtail for the latest raw terminal output.');
+  });
+
   it('returns raw terminal output with /rawtail', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
