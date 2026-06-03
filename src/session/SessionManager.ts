@@ -17,7 +17,7 @@ import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
 import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
-import { formatCodexStatusSection } from '../status/CodexStatusFormatter.js';
+import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 
 export interface IncomingBotText {
@@ -662,17 +662,28 @@ export class SessionManager {
     const chat = await this.store.getChat(chatId);
     const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
     const pendingApprovals = await this.store.listPendingApprovalsByChat(chatId);
-    const codexStatusSection = await this.codexStatusSection(session);
+    const codexStatus = await this.codexStatusResult(session);
+    const message = formatStatusMessage({
+      session: {
+        projectId: chat?.currentProjectId,
+        sessionId: chat?.currentSessionId,
+        status: session?.status ?? 'none',
+        summary: session?.lastSummary,
+        pendingApprovals: pendingApprovals.map((approval) => approval.id),
+      },
+      codex: codexStatus,
+    });
+
     return {
-      reply: [
-        `Project: ${chat?.currentProjectId ?? 'none'}`,
-        `Session: ${chat?.currentSessionId ?? 'none'}`,
-        `Status: ${session?.status ?? 'none'}`,
-        `Summary: ${session?.lastSummary ?? 'none'}`,
-        `Pending approvals: ${pendingApprovals.length > 0 ? pendingApprovals.map((approval) => approval.id).join(', ') : 'none'}`,
-        '',
-        codexStatusSection,
-      ].join('\n'),
+      reply: message.fallbackText,
+      renderedReply: renderFeishuMessage(
+        {
+          kind: 'reply',
+          bodyMarkdown: message.bodyMarkdown,
+          fallbackText: message.fallbackText,
+        },
+        { verbosity: this.uiVerbosity() },
+      ),
     };
   }
 
@@ -957,9 +968,9 @@ export class SessionManager {
     await this.observePendingTurnOutput(sessionId);
   }
 
-  private async codexStatusSection(session: SessionRecord | undefined): Promise<string> {
+  private async codexStatusResult(session: SessionRecord | undefined): Promise<CodexStatusLookupResult> {
     if (!session) {
-      return formatCodexStatusSection({ kind: 'unavailable' });
+      return { kind: 'unavailable' };
     }
 
     if (session.status === 'running' || session.status === 'starting') {
@@ -975,20 +986,20 @@ export class SessionManager {
           updatedAt: new Date().toISOString(),
         }));
       }
-      return formatCodexStatusSection(this.cachedCodexStatusResult(result));
+      return this.cachedCodexStatusResult(result);
     }
 
     if (session.codexStatus) {
-      return formatCodexStatusSection({
+      return {
         kind: 'available',
         status: {
           ...session.codexStatus,
           source: 'cached',
         },
-      });
+      };
     }
 
-    return formatCodexStatusSection({ kind: 'unavailable' });
+    return { kind: 'unavailable' };
   }
 
   private cachedCodexStatusResult(result: CodexStatusLookupResult): CodexStatusLookupResult {
