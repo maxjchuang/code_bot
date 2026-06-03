@@ -89,7 +89,7 @@ With completion notifications enabled, plain text messages receive an immediate 
 Notes:
 
 - `/use <project>` selects a project without starting Codex.
-- `/new [project]` starts a new Codex session for the named project, or for the currently selected project. The bot will try to capture the Codex native session ID so the session can be resumed later.
+- `/new [project]` starts a new Codex session for the named project, or for the currently selected project. If the chat already has a running session, the bot stops it first and then starts the new one. The bot will try to capture the Codex native session ID so the session can be resumed later.
 - On bot restart, the last running session for each chat is marked interrupted and automatically resumed when a Codex native session ID was captured.
 - `/sessions` lists recent sessions. Session status is shown as `current`, `resumable`, or `not-resumable`.
 - `/resume <session> [project]` resumes a Codex session. Prefer the code_bot session ID shown by `/sessions`. Codex native session IDs are also supported, but you must specify `project` or already have a current project selected in the chat.

@@ -215,8 +215,20 @@ export class SessionManager {
     }
     const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
     if (previousSession && isActiveSession(previousSession)) {
+      const stopped = await this.executeApprovedStop(previousSession.id, input.userId);
+      if (!stopped.reply.startsWith('Stopped session ')) {
+        return stopped;
+      }
+
+      const created = await this.startCodexSession(input, project, {
+        mode: { kind: 'new' },
+        replyVerb: 'Created',
+        eventType: 'session.created',
+        discoverCodexSessionId: true,
+      });
       return {
-        reply: `Current session ${previousSession.id} is still running. Run /stop before starting a new session.`,
+        ...created,
+        reply: `${stopped.reply}\n${created.reply}`,
       };
     }
 
