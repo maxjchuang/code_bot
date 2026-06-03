@@ -22,25 +22,17 @@ function createGatewayHarness() {
 
   const gateway = new LarkLongConnectionGateway('app', 'secret', {
     client: {
+      request: async () => ({
+        bot: {
+          open_id: 'ou_bot',
+        },
+      }),
       im: {
         v1: {
           message: {
             create: async ({ data }) => {
               sent.push({ receive_id: data.receive_id, content: data.content });
             },
-          },
-        },
-      },
-      bot: {
-        v3: {
-          info: {
-            get: async () => ({
-              data: {
-                bot: {
-                  open_id: 'ou_bot',
-                },
-              },
-            }),
           },
         },
       },
@@ -105,8 +97,10 @@ describe('LarkLongConnectionGateway', () => {
 
     expect(onMessage).toHaveBeenCalledTimes(1);
     expect(onMessage).toHaveBeenCalledWith({
+      botOpenIdResolved: true,
       chatId: 'oc_1',
       chatType: 'private',
+      mentionsOpenIds: [],
       userId: 'ou_1',
       text: 'hello bot',
       wasMentioned: false,
@@ -166,19 +160,103 @@ describe('LarkLongConnectionGateway', () => {
     });
 
     expect(onMessage).toHaveBeenNthCalledWith(1, {
+      botOpenIdResolved: true,
       chatId: 'oc_1',
       chatType: 'group',
+      mentionsOpenIds: ['ou_other'],
       userId: 'ou_1',
       text: '@_user_1 hello',
       wasMentioned: false,
     });
     expect(onMessage).toHaveBeenNthCalledWith(2, {
+      botOpenIdResolved: true,
       chatId: 'oc_1',
       chatType: 'group',
+      mentionsOpenIds: ['ou_bot'],
       userId: 'ou_1',
       text: '@_user_1 hello',
       wasMentioned: true,
     });
+  });
+
+  it('records bot identity resolution success on startup', async () => {
+    const harness = createGatewayHarness();
+
+    await harness.gateway.start(async () => ({ text: '' }));
+
+    expect(harness.events).toContainEqual(
+      expect.objectContaining({
+        type: 'feishu.bot_identity_resolved',
+        data: {
+          botOpenId: 'ou_bot',
+        },
+      }),
+    );
+  });
+
+  it('records bot identity lookup failures on startup', async () => {
+    const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
+    const errors: unknown[][] = [];
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        request: async () => {
+          throw new Error('identity lookup failed');
+        },
+        im: { v1: { message: { create: async () => undefined } } },
+      },
+      wsClient: { start: async () => undefined },
+      createEventDispatcher: () => ({
+        register: (handlers) => handlers,
+      }),
+      logger: { error: (...args: unknown[]) => errors.push(args) },
+      recordEvent: async (event) => {
+        events.push(event);
+      },
+    });
+
+    await gateway.start(async () => ({ text: '' }));
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'feishu.bot_identity_failed',
+        data: expect.objectContaining({
+          reason: 'identity lookup failed',
+          stage: 'resolve_bot_open_id',
+        }),
+      }),
+    );
+    expect(errors).toContainEqual([expect.stringContaining('feishu.bot_identity_failed')]);
+  });
+
+  it('records missing bot open id as an identity failure on startup', async () => {
+    const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        request: async () => ({
+          bot: {},
+        }),
+        im: { v1: { message: { create: async () => undefined } } },
+      },
+      wsClient: { start: async () => undefined },
+      createEventDispatcher: () => ({
+        register: (handlers) => handlers,
+      }),
+      recordEvent: async (event) => {
+        events.push(event);
+      },
+    });
+
+    await gateway.start(async () => ({ text: '' }));
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'feishu.bot_identity_failed',
+        data: expect.objectContaining({
+          reason: 'empty_open_id',
+          stage: 'resolve_bot_open_id',
+        }),
+      }),
+    );
   });
 
   it('awaits ws startup failures and rejects start', async () => {

@@ -2115,6 +2115,34 @@ describe('SessionManager', () => {
     expect(await store.getChat('oc_1')).toBeUndefined();
   });
 
+  it('auto-selects the only configured project for /resume with a native Codex id', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const config = sampleConfig(root);
+    config.projects = [config.projects[0]!];
+    const manager = new SessionManager(config, store, runner);
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+
+    const resumed = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: `/resume ${codexSessionId}`,
+    });
+
+    expect(resumed.reply).toContain(`Resumed session`);
+    expect(resumed.reply).toContain(`project ${config.projects[0]!.id}`);
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0]).toMatchObject({
+      cwd: root,
+      mode: { kind: 'resume', target: codexSessionId },
+    });
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe(config.projects[0]!.id);
+    expect(chat?.currentSessionId).toBeTruthy();
+  });
+
   it('rejects malformed native Codex id resume without starting a runner', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -2704,6 +2732,28 @@ describe('SessionManager', () => {
 
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 10' });
     expect(tail.reply).toBe('ready');
+  });
+
+  it('auto-selects the only configured project for /new', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const config = sampleConfig(root);
+    config.projects = [config.projects[0]!];
+    const manager = new SessionManager(config, store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new' });
+
+    expect(created.reply).toContain(`Created session`);
+    expect(created.reply).toContain(`project ${config.projects[0]!.id}`);
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0]).toMatchObject({
+      cwd: root,
+      mode: { kind: 'new' },
+    });
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe(config.projects[0]!.id);
+    expect(chat?.currentSessionId).toBeTruthy();
   });
 
   it('supports commands prefixed by a group mention', async () => {

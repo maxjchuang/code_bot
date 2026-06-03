@@ -199,7 +199,7 @@ export class SessionManager {
 
   private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
     const previousChat = await this.store.getChat(input.chatId);
-    const selectedProjectId = projectId ?? previousChat?.currentProjectId;
+    const selectedProjectId = projectId ?? previousChat?.currentProjectId ?? this.singleConfiguredProject()?.id;
     if (!selectedProjectId) {
       return { reply: 'Choose a project with /projects and /new <project>.' };
     }
@@ -266,7 +266,7 @@ export class SessionManager {
       }
       selectedProjectId = sourceSession.projectId;
     } else {
-      selectedProjectId = projectId ?? previousChat?.currentProjectId;
+      selectedProjectId = projectId ?? previousChat?.currentProjectId ?? this.singleConfiguredProject()?.id;
       const storedSessions = await this.store.listSessions();
       const matchingNativeSessions = storedSessions.filter((session) => session.codexSessionId === target);
       if (matchingNativeSessions.length > 0) {

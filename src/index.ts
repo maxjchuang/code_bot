@@ -92,6 +92,9 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
         chatType: message.chatType,
         userId: message.userId,
         text: message.text,
+        wasMentioned: message.wasMentioned,
+        mentionsOpenIds: message.mentionsOpenIds,
+        botOpenIdResolved: message.botOpenIdResolved,
       },
     });
     const result = await app.sessionManager.handleText(message);

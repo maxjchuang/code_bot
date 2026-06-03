@@ -11,6 +11,8 @@ export interface FeishuIncomingMessage {
   userId: string;
   text: string;
   wasMentioned?: boolean;
+  mentionsOpenIds?: string[];
+  botOpenIdResolved?: boolean;
 }
 
 export interface FeishuGateway {
@@ -47,6 +49,7 @@ interface LarkReceiveMessageEvent {
 }
 
 interface LarkClientLike {
+  request?: (payload: { url: string; method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; [key: string]: unknown }) => Promise<unknown>;
   im: {
     v1: {
       message: {
@@ -54,13 +57,6 @@ interface LarkClientLike {
           params: { receive_id_type: 'chat_id' };
           data: { receive_id: string; msg_type: 'text' | 'interactive'; content: string };
         }) => Promise<unknown>;
-      };
-    };
-  };
-  bot?: {
-    v3?: {
-      info?: {
-        get: () => Promise<{ data?: { bot?: { open_id?: string } } }>;
       };
     };
   };
@@ -130,6 +126,8 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             userId: sender.open_id,
             text,
             wasMentioned: message.chat_type === 'group' ? this.isMentioningBot(message) : false,
+            mentionsOpenIds: message.mentions?.flatMap((mention) => (mention.id?.open_id ? [mention.id.open_id] : [])) ?? [],
+            botOpenIdResolved: Boolean(this.botOpenId),
           };
 
           let reply: FeishuOutgoingReply;
@@ -169,10 +167,45 @@ export class LarkLongConnectionGateway implements FeishuGateway {
 
   private async resolveBotOpenId(): Promise<string | undefined> {
     try {
-      return (await this.client.bot?.v3?.info?.get?.())?.data?.bot?.open_id;
+      const response = await this.client.request?.({
+        url: '/open-apis/bot/v3/info',
+        method: 'GET',
+      });
+      const botOpenId =
+        typeof response === 'object' && response !== null && 'bot' in response
+          ? ((response as { bot?: { open_id?: string } }).bot?.open_id ?? undefined)
+          : undefined;
+      if (!botOpenId) {
+        await this.recordEvent?.({
+          type: 'feishu.bot_identity_failed',
+          at: new Date().toISOString(),
+          data: {
+            stage: 'resolve_bot_open_id',
+            reason: 'empty_open_id',
+          },
+        });
+        return undefined;
+      }
+      await this.recordEvent?.({
+        type: 'feishu.bot_identity_resolved',
+        at: new Date().toISOString(),
+        data: {
+          botOpenId,
+        },
+      });
+      return botOpenId;
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await this.recordEvent?.({
+        type: 'feishu.bot_identity_failed',
+        at: new Date().toISOString(),
+        data: {
+          stage: 'resolve_bot_open_id',
+          reason,
+        },
+      });
       this.logger.error('feishu.bot_identity_failed', {
-        reason: error instanceof Error ? error.message : String(error),
+        reason,
       });
       return undefined;
     }
