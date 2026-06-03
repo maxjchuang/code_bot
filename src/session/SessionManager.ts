@@ -88,6 +88,10 @@ interface PendingTurn {
   submitRetryTimer?: ReturnType<typeof setTimeout>;
 }
 
+type CurrentTurnAnswer =
+  | { kind: 'answer'; text: string; source: 'observation' | 'pty' }
+  | { kind: 'empty' };
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
@@ -888,15 +892,8 @@ export class SessionManager {
       clearTimeout(turn.submitRetryTimer);
       turn.submitRetryTimer = undefined;
     }
-    const observationExtraction = await this.currentTurnObservationExtraction(sessionId, turn, { allowDiscovery: false });
-    const candidateInspection: { extraction: FinalAnswerExtraction; source?: 'observation' } = observationExtraction
-      ? {
-          extraction: observationExtraction,
-          source: 'observation' as const,
-        }
-      : { extraction: { kind: 'empty', reason: 'No structured final answer detected.' } };
-    const extraction = candidateInspection.extraction;
-    if (extraction.kind !== 'answer') {
+    const candidate = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: false });
+    if (candidate.kind !== 'answer') {
       if (turn.timer) {
         clearTimeout(turn.timer);
         turn.timer = undefined;
@@ -904,10 +901,10 @@ export class SessionManager {
       turn.lastCandidate = undefined;
       return;
     }
-    if (turn.lastCandidate === extraction.text) {
+    if (turn.lastCandidate === candidate.text) {
       return;
     }
-    turn.lastCandidate = extraction.text;
+    turn.lastCandidate = candidate.text;
     turn.candidateUpdateCount += 1;
     if (turn.timer) {
       clearTimeout(turn.timer);
@@ -918,9 +915,9 @@ export class SessionManager {
       data: {
         sessionId,
         chatId: turn.chatId,
-        candidatePreview: previewCandidate(extraction.text),
-        candidateHash: hashCandidate(extraction.text),
-        source: candidateInspection.source,
+        candidatePreview: previewCandidate(candidate.text),
+        candidateHash: hashCandidate(candidate.text),
+        source: candidate.source,
         requireCompletionMarker: true,
       },
     }).catch((error) =>
@@ -943,14 +940,9 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const observationExtraction = await this.currentTurnObservationExtraction(sessionId, turn, { allowDiscovery: true });
-      const inspection: { extraction: FinalAnswerExtraction; source?: 'observation' } = observationExtraction
-        ? {
-            extraction: observationExtraction,
-            source: 'observation' as const,
-          }
-        : { extraction: { kind: 'empty', reason: 'No structured final answer detected.' } };
-      const extraction = inspection.extraction;
+      const currentAnswer = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
+      const extraction: FinalAnswerExtraction =
+        currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
       if (extraction.kind === 'answer') {
         void this.store.appendEvent({
           type: 'notification.final_extract_selected',
@@ -962,7 +954,7 @@ export class SessionManager {
             candidatePreview: previewCandidate(extraction.text),
             candidateHash: hashCandidate(extraction.text),
             completionReason: reason,
-            source: inspection.source,
+            source: currentAnswer.source,
           },
         }).catch((error) =>
           this.recordBackgroundError('notification.final_extract_selected_persist_failed', error, {
@@ -1062,6 +1054,38 @@ export class SessionManager {
       requireCompletionMarker: false,
     });
     return extraction.kind === 'answer' ? extraction : undefined;
+  }
+
+  private async currentTurnAnswerExtraction(
+    sessionId: string,
+    turn: PendingTurn,
+    options: { allowDiscovery: boolean },
+  ): Promise<CurrentTurnAnswer> {
+    const observationAnswer = await this.currentTurnObservationExtraction(sessionId, turn, options);
+    if (observationAnswer) {
+      return { kind: 'answer', text: observationAnswer.text, source: 'observation' };
+    }
+
+    const session = await this.store.getSession(sessionId);
+    if (!session?.codexSessionId) {
+      const ptyAnswer = await this.currentTurnPtyExtraction(sessionId, turn);
+      if (ptyAnswer) {
+        return { kind: 'answer', text: ptyAnswer, source: 'pty' };
+      }
+    }
+
+    return { kind: 'empty' };
+  }
+
+  private async currentTurnPtyExtraction(sessionId: string, turn: PendingTurn): Promise<string | undefined> {
+    const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
+    const extraction = extractFinalAnswer({
+      rawLines: pendingLines,
+      prompt: turn.prompt,
+      maxChars: this.config.notifications.maxFinalChars,
+      requireCompletionMarker: false,
+    });
+    return extraction.kind === 'answer' ? extraction.text : undefined;
   }
 
   private isObservationCurrentTurn(completedAt: string | undefined, startedAt: string): boolean {
