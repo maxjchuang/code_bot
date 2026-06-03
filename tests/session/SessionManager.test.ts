@@ -2715,10 +2715,48 @@ describe('SessionManager', () => {
       chatType: 'group',
       userId: 'ou_1',
       text: '@_user_1 /projects',
+      wasMentioned: true,
     });
 
     expect(projects.reply).toContain('repo: Repo');
     expect(projects.reply).toContain('repo2: Repo 2');
+  });
+
+  it('silently ignores unmentioned group commands', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/projects',
+      wasMentioned: false,
+    });
+
+    expect(result).toEqual({ reply: '' });
+  });
+
+  it('silently ignores unmentioned group messages even when a session is active', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo', wasMentioned: true });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'hello',
+      wasMentioned: false,
+    });
+
+    expect(result).toEqual({ reply: '' });
+    expect(runner.sentMessages).toEqual([]);
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(sessionId);
   });
 
   it('returns no active session for /tail and /rawtail before a session exists', async () => {

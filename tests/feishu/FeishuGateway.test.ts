@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { LarkLongConnectionGateway } from '../../src/feishu/FeishuGateway.js';
 
 type ReceiveHandler = (data: {
-  message?: { chat_id?: string; chat_type?: string; message_type?: string; content?: string };
+  message?: {
+    chat_id?: string;
+    chat_type?: string;
+    message_type?: string;
+    content?: string;
+    mentions?: Array<{ id?: { open_id?: string } }>;
+  };
   sender?: { sender_id?: { open_id?: string } };
 }) => Promise<void>;
 
@@ -22,6 +28,19 @@ function createGatewayHarness() {
             create: async ({ data }) => {
               sent.push({ receive_id: data.receive_id, content: data.content });
             },
+          },
+        },
+      },
+      bot: {
+        v3: {
+          info: {
+            get: async () => ({
+              data: {
+                bot: {
+                  open_id: 'ou_bot',
+                },
+              },
+            }),
           },
         },
       },
@@ -90,6 +109,7 @@ describe('LarkLongConnectionGateway', () => {
       chatType: 'private',
       userId: 'ou_1',
       text: 'hello bot',
+      wasMentioned: false,
     });
     expect(harness.sent).toEqual([
       {
@@ -116,6 +136,49 @@ describe('LarkLongConnectionGateway', () => {
 
     expect(onMessage).not.toHaveBeenCalled();
     expect(harness.sent).toEqual([]);
+  });
+
+  it('marks group messages as mentioned only when they mention the bot identity', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => ({ text: '' }));
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: '@_user_1 hello' }),
+        mentions: [{ id: { open_id: 'ou_other' } }],
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: '@_user_1 hello' }),
+        mentions: [{ id: { open_id: 'ou_bot' } }],
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(onMessage).toHaveBeenNthCalledWith(1, {
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '@_user_1 hello',
+      wasMentioned: false,
+    });
+    expect(onMessage).toHaveBeenNthCalledWith(2, {
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '@_user_1 hello',
+      wasMentioned: true,
+    });
   });
 
   it('awaits ws startup failures and rejects start', async () => {

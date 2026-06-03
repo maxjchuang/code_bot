@@ -23,6 +23,7 @@ export interface IncomingBotText {
   chatType: ChatType;
   userId: string;
   text: string;
+  wasMentioned?: boolean;
 }
 
 export interface BotTextResult {
@@ -122,6 +123,9 @@ export class SessionManager {
     }
 
     const parsed = parseIncomingText(input.text);
+    if (input.chatType === 'group' && input.wasMentioned === false) {
+      return { reply: '' };
+    }
     if (parsed.kind === 'message') {
       return this.sendToCurrentSession(input, parsed.text);
     }
@@ -969,7 +973,7 @@ export class SessionManager {
       const currentAnswer = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
       const extraction: FinalAnswerExtraction =
         currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
-      if (extraction.kind === 'answer') {
+      if (extraction.kind === 'answer' && currentAnswer.kind === 'answer') {
         void this.store.appendEvent({
           type: 'notification.final_extract_selected',
           at: new Date().toISOString(),
@@ -990,15 +994,16 @@ export class SessionManager {
           }).catch(() => undefined),
         );
       } else {
+        const emptyExtraction = extraction.kind === 'empty' ? extraction : { kind: 'empty' as const, reason: 'No structured final answer detected.' };
         void this.store.appendEvent({
-          type: extraction.kind === 'failure' ? 'notification.final_extract_failed' : 'notification.final_extract_empty',
+          type: 'notification.final_extract_empty',
           at: new Date().toISOString(),
           data: {
             sessionId,
             chatId: turn.chatId,
             projectId: turn.projectId,
             completionReason: reason,
-            reason: extraction.reason,
+            reason: emptyExtraction.reason,
           },
         }).catch((error) =>
           this.recordBackgroundError('notification.final_extract_empty_persist_failed', error, {
