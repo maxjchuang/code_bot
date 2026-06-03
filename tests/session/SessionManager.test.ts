@@ -306,6 +306,25 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
+  it('ignores group plain-text messages that do not mention the bot', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(singleProjectConfig(root), store, runner);
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'https://code.byted.org/ee/bear-web/merge_requests/88188\n@_user_2 来一下',
+    });
+
+    expect(sent.reply).toBe('');
+    expect(runner.starts).toHaveLength(0);
+    expect(runner.sentMessages).toEqual([]);
+    await expect(store.getChat('oc_1')).resolves.toBeUndefined();
+  });
+
   it('logs session creation summaries for explicit /new commands', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -461,7 +480,7 @@ describe('SessionManager', () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('session.send_failed'));
   });
 
-  it('returns an unconfirmed reply and retries submit once when processing is not confirmed in time', async () => {
+  it('returns an unconfirmed reply without retrying submit when processing is not confirmed in time', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -484,7 +503,7 @@ describe('SessionManager', () => {
     const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
 
     expect(sent.reply).toBe('');
-    expect(runner.sentMessages).toEqual(['inspect status', '']);
+    expect(runner.sentMessages).toEqual(['inspect status']);
     expect(notifier.sendText).not.toHaveBeenCalled();
   });
 
@@ -633,7 +652,7 @@ describe('SessionManager', () => {
     const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
 
     expect(sent.reply).toBe('');
-    expect(runner.sentMessages).toEqual(['inspect status', '']);
+    expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
   it('sends follow-up messages to an active Codex task instead of queueing them', async () => {
@@ -657,7 +676,7 @@ describe('SessionManager', () => {
     const followUp = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '补充约束' });
 
     expect(followUp.reply).toBe('');
-    expect(runner.sentMessages).toEqual(['first task', '', '补充约束']);
+    expect(runner.sentMessages).toEqual(['first task', '补充约束']);
   });
 
   it('records send diagnostics before and after dispatching a normal task', async () => {
@@ -679,7 +698,7 @@ describe('SessionManager', () => {
     expect(content).toContain('"transportTerminator":"\\\\r"');
   });
 
-  it('retries submit once when output shows only prompt echo without turn progress', async () => {
+  it('does not retry submit when output shows only prompt echo without turn progress', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -693,7 +712,7 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？']);
 
     await delay(300);
-    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？', '']);
+    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？']);
   });
 
   it('acknowledges notified tasks when turn started event recording fails', async () => {
@@ -1178,7 +1197,7 @@ describe('SessionManager', () => {
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '1' });
       expect(second.reply).toBe('');
-      expect(runner.sentMessages).toEqual(['hello', '', '1']);
+      expect(runner.sentMessages).toEqual(['hello', '1']);
     } finally {
       vi.useRealTimers();
     }

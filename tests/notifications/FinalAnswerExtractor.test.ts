@@ -97,6 +97,16 @@ describe('FinalAnswerExtractor', () => {
     });
   });
 
+  it('does not treat standalone prompt substrings as final answers', () => {
+    const result = extractFinalAnswer({
+      rawLines: ['@_user_1 @_user_2 来一下'],
+      prompt: 'https://code.byted.org/ee/bear-web/merge_requests/88188\n@_user_1 @_user_2 来一下',
+      maxChars: 8000,
+    });
+
+    expect(result.kind).toBe('empty');
+  });
+
   it('scopes the final answer after the last divider before filtering divider text', () => {
     const result = extractFinalAnswer({
       rawLines: [

@@ -34,6 +34,10 @@ export function parseIncomingText(text: string): IncomingText {
   return { kind: 'command', name, args, raw: trimmed };
 }
 
+export function hasLeadingMention(text: string): boolean {
+  return /^(?:@\S+\s*)+/.test(text.trim());
+}
+
 function stripLeadingMentions(text: string): string {
   return text.replace(/^(?:@\S+\s+)*/, '');
 }

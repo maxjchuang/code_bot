@@ -31,6 +31,9 @@ export function inspectFinalAnswer(input: ExtractFinalAnswerInput): {
     if (answerLines.length === 0) {
       continue;
     }
+    if (candidate.source === 'standalone' && isPromptSubstringAnswer(answerLines, input.prompt)) {
+      continue;
+    }
     return {
       extraction: { kind: 'answer', text: truncateWithTailHint(answerLines.join('\n').trim(), input.maxChars) },
       source: candidate.source,
@@ -261,6 +264,16 @@ function normalizeComparable(value: string): string {
 
 function isLikelyCommentaryLine(line: string): boolean {
   return line.startsWith('• ') && COMMENTARY_PREFIXES.some((prefix) => line.slice(2).startsWith(prefix));
+}
+
+function isPromptSubstringAnswer(answerLines: string[], promptText?: string): boolean {
+  const prompt = normalizeComparable(promptText ?? '');
+  if (prompt.length === 0) {
+    return false;
+  }
+
+  const answer = normalizeComparable(answerLines.join(''));
+  return answer.length > 0 && prompt.includes(answer);
 }
 
 function truncateWithTailHint(text: string, maxChars: number): string {

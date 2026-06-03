@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
-import { parseIncomingText } from '../commands/CommandRouter.js';
+import { hasLeadingMention, parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { renderFeishuMessage, type BotMessage, type RenderedFeishuMessage } from '../feishu/FeishuMessageRenderer.js';
@@ -122,6 +122,12 @@ export class SessionManager {
     }
 
     const parsed = parseIncomingText(input.text);
+    if (input.chatType === 'group' && parsed.kind === 'message' && !hasLeadingMention(input.text)) {
+      const chat = await this.store.getChat(input.chatId);
+      if (!chat?.currentSessionId) {
+        return { reply: '' };
+      }
+    }
     if (parsed.kind === 'message') {
       return this.sendToCurrentSession(input, parsed.text);
     }
@@ -1155,33 +1161,7 @@ export class SessionManager {
     }
 
     const initialWaitMs = Math.max(0, this.deps.sendConfirmation?.initialWaitMs ?? DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS);
-    const retryWaitMs = Math.max(0, this.deps.sendConfirmation?.retryWaitMs ?? DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS);
-    if (await this.waitForTurnProcessingEvidence(sessionId, turn, initialWaitMs)) {
-      return true;
-    }
-    if (!(await this.retryTurnSubmission(sessionId, turn))) {
-      return false;
-    }
-    return this.waitForTurnProcessingEvidence(sessionId, turn, retryWaitMs);
-  }
-
-  private async retryTurnSubmission(sessionId: string, turn: PendingTurn): Promise<boolean> {
-    if (turn.submitRetryCount >= SEND_SUBMIT_RETRY_LIMIT) {
-      return false;
-    }
-    turn.submitRetryCount += 1;
-    await this.store.appendEvent({
-      type: 'session.send_submit_retry',
-      at: new Date().toISOString(),
-      data: {
-        sessionId,
-        chatId: turn.chatId,
-        projectId: turn.projectId,
-        retryCount: turn.submitRetryCount,
-      },
-    });
-    await this.runner.send(sessionId, '');
-    return true;
+    return this.waitForTurnProcessingEvidence(sessionId, turn, initialWaitMs);
   }
 
   private async waitForTurnProcessingEvidence(sessionId: string, turn: PendingTurn, timeoutMs: number): Promise<boolean> {
@@ -1260,22 +1240,6 @@ export class SessionManager {
     if (hasObservedTurnProgress(pendingLines, turn.prompt)) {
       return;
     }
-    if (turn.submitRetryCount >= SEND_SUBMIT_RETRY_LIMIT) {
-      return;
-    }
-    turn.submitRetryCount += 1;
-    await this.store.appendEvent({
-      type: 'session.send_submit_retry',
-      at: new Date().toISOString(),
-      data: {
-        sessionId,
-        chatId: turn.chatId,
-        projectId: turn.projectId,
-        retryCount: turn.submitRetryCount,
-      },
-    });
-    await this.runner.send(sessionId, '');
-    this.scheduleSubmitConfirmation(sessionId);
   }
 
   private async pendingTurnLogLines(sessionId: string, turn: PendingTurn): Promise<string[]> {
