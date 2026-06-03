@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { formatStatusMessage } from '../../src/status/StatusMessageFormatter.js';
 
 describe('formatStatusMessage', () => {
-  it('renders Session, Codex, and Raw sections for a fully populated status', () => {
+  it('renders Session and Codex sections for a fully populated status', () => {
     const message = formatStatusMessage({
       session: {
         projectId: 'repo',
@@ -44,7 +44,6 @@ describe('formatStatusMessage', () => {
 
     expect(message.bodyMarkdown).toContain('## Session');
     expect(message.bodyMarkdown).toContain('## Codex');
-    expect(message.bodyMarkdown).toContain('## Raw');
     expect(message.bodyMarkdown).toContain('- **Project**: `repo`');
     expect(message.bodyMarkdown).toContain('- **Status**: `running`');
     expect(message.bodyMarkdown).toContain('- **Source**: `live`');
@@ -62,12 +61,14 @@ describe('formatStatusMessage', () => {
     expect(message.bodyMarkdown).toContain('- **Weekly limit**: `90% left (resets 2026-06-10T10:30:00.000Z)`');
     expect(message.bodyMarkdown).toContain('- **Plan type**: `Pro Lite`');
     expect(message.bodyMarkdown).toContain('- **Working directory**: `/repo`');
-    expect(message.bodyMarkdown).toContain('```text');
+    expect(message.bodyMarkdown).not.toContain('## Raw');
+    expect(message.bodyMarkdown).not.toContain('```text');
     expect(message.fallbackText).toContain('Project: repo');
     expect(message.fallbackText).toContain('CLI version: 0.135.0');
     expect(message.fallbackText).toContain('Installed CLI version: 0.136.0');
     expect(message.fallbackText).toContain('5h limit: 86% left (resets 2026-06-03T10:30:00.000Z)');
     expect(message.fallbackText).toContain('Last token usage: last 220 | input 200 | cached 100 | output 20 | reasoning 5');
+    expect(message.fallbackText).not.toContain('Raw:');
   });
 
   it('omits empty optional local fields and shows Codex unavailable', () => {

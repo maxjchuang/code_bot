@@ -22,14 +22,8 @@ export type StatusMessage = {
 };
 
 export function formatStatusMessage(input: StatusMessageInput): StatusMessage {
-  const markdownSections = [formatSessionMarkdown(input.session), formatCodexMarkdown(input.codex, input.runtime)];
-  const rawMarkdown = formatRawMarkdown(input.codex);
-  if (rawMarkdown) {
-    markdownSections.push(rawMarkdown);
-  }
-
   return {
-    bodyMarkdown: markdownSections.join('\n\n'),
+    bodyMarkdown: [formatSessionMarkdown(input.session), formatCodexMarkdown(input.codex, input.runtime)].join('\n\n'),
     fallbackText: [formatSessionFallback(input.session), formatCodexFallback(input.codex, input.runtime)].join('\n\n'),
   };
 }
@@ -115,14 +109,6 @@ function formatCodexMarkdown(input: StatusMessageInput['codex'], runtime: Status
   return lines.join('\n');
 }
 
-function formatRawMarkdown(input: StatusMessageInput['codex']): string | undefined {
-  if (input.kind !== 'available' || !input.status.rawText) {
-    return undefined;
-  }
-
-  return ['## Raw', '```text', input.status.rawText, '```'].join('\n');
-}
-
 function formatSessionFallback(input: StatusMessageInput['session']): string {
   const lines = [
     'Session',
@@ -200,10 +186,6 @@ function formatCodexFallback(input: StatusMessageInput['codex'], runtime: Status
   if (status.summary.cwd) {
     lines.push(`Working directory: ${status.summary.cwd}`);
   }
-  if (status.rawText) {
-    lines.push('', 'Raw:', status.rawText);
-  }
-
   return lines.join('\n');
 }
 
