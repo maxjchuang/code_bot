@@ -428,7 +428,14 @@ export class SessionManager {
   }
 
   private async sendToCurrentSession(input: IncomingBotText, text: string): Promise<BotTextResult> {
-    const chat = await this.store.getChat(input.chatId);
+    let chat = await this.store.getChat(input.chatId);
+    if (!chat?.currentSessionId) {
+      const autoStarted = await this.autoStartSingleProjectSession(input);
+      if (autoStarted) {
+        return autoStarted;
+      }
+      chat = await this.store.getChat(input.chatId);
+    }
     if (!chat?.currentSessionId) {
       return { reply: 'No active session. Run /projects and /new <project> first.' };
     }
@@ -561,6 +568,26 @@ export class SessionManager {
       data: { sessionId: chat.currentSessionId },
     });
     return { reply: `Sent to Codex session ${chat.currentSessionId}.` };
+  }
+
+  private async autoStartSingleProjectSession(input: IncomingBotText): Promise<BotTextResult | undefined> {
+    const project = this.singleConfiguredProject();
+    if (!project) {
+      return undefined;
+    }
+
+    const result = await this.startCodexSession(input, project, {
+      mode: { kind: 'new' },
+      replyVerb: 'Created',
+      eventType: 'session.created',
+      discoverCodexSessionId: true,
+    });
+    const chat = await this.store.getChat(input.chatId);
+    return chat?.currentSessionId ? undefined : result;
+  }
+
+  private singleConfiguredProject(): NonNullable<ReturnType<typeof resolveProject>> | undefined {
+    return this.config.projects.length === 1 ? this.config.projects[0] : undefined;
   }
 
   private async status(chatId: string): Promise<BotTextResult> {
