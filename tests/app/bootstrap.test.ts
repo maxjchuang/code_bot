@@ -209,11 +209,14 @@ describe('bootstrap', () => {
         }) as never,
     });
 
-    await expect(onMessage?.({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
+    expect(onMessage).toBeDefined();
+    const dispatch = onMessage as (message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>;
+
+    await expect(dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
       text: 'tail output',
       rendered: undefined,
     });
-    await expect(onMessage?.({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
+    await expect(dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
       text: '',
       rendered: undefined,
     });
@@ -252,8 +255,11 @@ describe('bootstrap', () => {
         }) as never,
     });
 
-    await onMessage?.({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: 'same text' });
-    await onMessage?.({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: 'same text' });
+    expect(onMessage).toBeDefined();
+    const dispatch = onMessage as (message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>;
+
+    await dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: 'same text' });
+    await dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: 'same text' });
 
     expect(handleText).toHaveBeenCalledTimes(2);
   });
@@ -286,7 +292,10 @@ describe('bootstrap', () => {
       logger,
     });
 
-    await expect(onMessage?.({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: 'status' })).resolves.toEqual({
+    expect(onMessage).toBeDefined();
+    const dispatch = onMessage as (message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>;
+
+    await expect(dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: 'status' })).resolves.toEqual({
       text: '',
       rendered: undefined,
     });
