@@ -2565,7 +2565,7 @@ describe('SessionManager', () => {
     expect(chatAfterFailure?.currentSessionId).toBe(originalSessionId);
   });
 
-  it('rejects /new repo2 while the current session is running', async () => {
+  it('auto-stops the current session before /new repo2', async () => {
     class CountingRunner extends FakeCodexRunner {
       readonly starts: CodexRunOptions[] = [];
 
@@ -2595,15 +2595,21 @@ describe('SessionManager', () => {
       userId: 'ou_1',
       text: '/new repo2',
     });
-    expect(second.reply).toBe(`Current session ${originalSessionId} is still running. Run /stop before starting a new session.`);
+    expect(second.reply).toContain(`Stopped session ${originalSessionId}.`);
+    expect(second.reply).toContain('Created session');
 
     const chat = await store.getChat('oc_1');
-    expect(chat?.currentProjectId).toBe('repo');
-    expect(chat?.currentSessionId).toBe(originalSessionId);
-    expect(runner.starts).toHaveLength(1);
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBeDefined();
+    expect(chat?.currentSessionId).not.toBe(originalSessionId);
+    await expect(store.getSession(originalSessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
+    expect(runner.starts).toHaveLength(2);
   });
 
-  it('rejects /new repo while the current session is running', async () => {
+  it('auto-stops the current session before /new repo', async () => {
     class CountingRunner extends FakeCodexRunner {
       readonly starts: CodexRunOptions[] = [];
 
@@ -2633,12 +2639,18 @@ describe('SessionManager', () => {
       userId: 'ou_1',
       text: '/new repo',
     });
-    expect(second.reply).toBe(`Current session ${originalSessionId} is still running. Run /stop before starting a new session.`);
+    expect(second.reply).toContain(`Stopped session ${originalSessionId}.`);
+    expect(second.reply).toContain('Created session');
 
     const chat = await store.getChat('oc_1');
     expect(chat?.currentProjectId).toBe('repo');
-    expect(chat?.currentSessionId).toBe(originalSessionId);
-    expect(runner.starts).toHaveLength(1);
+    expect(chat?.currentSessionId).toBeDefined();
+    expect(chat?.currentSessionId).not.toBe(originalSessionId);
+    await expect(store.getSession(originalSessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
+    expect(runner.starts).toHaveLength(2);
   });
 
   it('serializes concurrent /new commands for the same chat', async () => {
@@ -2661,14 +2673,17 @@ describe('SessionManager', () => {
       manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' }),
     ]);
 
-    const created = [first, second].filter((result) => result.reply.includes('Created session'));
-    const rejected = [first, second].filter((result) => result.reply.includes('is still running'));
-    expect(created).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect(runner.starts).toHaveLength(1);
+    expect(first.reply).toContain('Created session');
+    expect(second.reply).toContain('Stopped session');
+    expect(second.reply).toContain('Created session');
+    expect(runner.starts).toHaveLength(2);
 
     const chat = await store.getChat('oc_1');
-    expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
+    expect(chat?.currentSessionId).toBe(runner.starts[1].sessionId);
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
   });
 
   it('handles runner send failure by marking interrupted and returning no-running-session', async () => {
