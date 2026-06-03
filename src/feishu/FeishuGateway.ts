@@ -3,6 +3,7 @@ import type { ChatType } from '../domain/types.js';
 import type { BotErrorLogEntry, BotEvent } from '../domain/types.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
 import { sanitizeFeishuText } from './FeishuTextSanitizer.js';
+import { createAppLogger, type AppLogger } from '../logging/AppLogger.js';
 
 export interface FeishuIncomingMessage {
   chatId: string;
@@ -61,6 +62,7 @@ interface EventDispatcherLike {
 }
 
 interface LoggerLike {
+  info?: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
 }
 
@@ -79,7 +81,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   private readonly client: LarkClientLike;
   private readonly wsClient: LarkWSClientLike;
   private readonly createEventDispatcher: () => EventDispatcherLike;
-  private readonly logger: LoggerLike;
+  private readonly logger: AppLogger;
   private readonly recordEvent?: (event: BotEvent) => Promise<void>;
   private readonly recordError?: (entry: BotErrorLogEntry) => Promise<void>;
 
@@ -87,7 +89,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     this.client = deps?.client ?? new lark.Client({ appId, appSecret });
     this.wsClient = deps?.wsClient ?? new lark.WSClient({ appId, appSecret });
     this.createEventDispatcher = deps?.createEventDispatcher ?? (() => new lark.EventDispatcher({}));
-    this.logger = deps?.logger ?? console;
+    this.logger = createAppLogger({ sink: deps?.logger ?? console });
     this.recordEvent = deps?.recordEvent;
     this.recordError = deps?.recordError;
   }
@@ -119,7 +121,11 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             reply = await onMessage(incomingMessage);
           } catch (error) {
             await this.recordProcessingFailure('handle_message', incomingMessage, undefined, error);
-            this.logger.error('Failed to process Feishu incoming message', error);
+            this.logger.error('feishu.handle_message_failed', {
+              chat: incomingMessage.chatId,
+              user: incomingMessage.userId,
+              reason: error instanceof Error ? error.message : String(error),
+            });
             return;
           }
 
@@ -131,13 +137,18 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             }
           } catch (error) {
             await this.recordProcessingFailure('send_reply', incomingMessage, reply.text, error);
-            this.logger.error('Failed to process Feishu incoming message', error);
+            this.logger.error('feishu.send_reply_failed', {
+              chat: incomingMessage.chatId,
+              user: incomingMessage.userId,
+              reason: error instanceof Error ? error.message : String(error),
+            });
           }
         },
       });
-    return await this.wsClient.start({
+    await this.wsClient.start({
       eventDispatcher: dispatcher,
     });
+    this.logger.info('gateway.started', {});
   }
 
   async sendText(chatId: string, text: string): Promise<void> {
@@ -160,7 +171,11 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   ): Promise<void> {
     try {
       await this.sendOne(chatId, message.preferred);
-    } catch {
+    } catch (error) {
+      this.logger.debug('feishu.render_fallback', {
+        chat: chatId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
       await this.sendOne(chatId, message.fallback);
     }
   }
