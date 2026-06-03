@@ -663,6 +663,7 @@ export class SessionManager {
     const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
     const pendingApprovals = await this.store.listPendingApprovalsByChat(chatId);
     const codexStatus = await this.codexStatusResult(session);
+    const installedCliVersion = await this.runner.getVersion?.().catch(() => undefined);
     const message = formatStatusMessage({
       session: {
         projectId: chat?.currentProjectId,
@@ -672,6 +673,9 @@ export class SessionManager {
         pendingApprovals: pendingApprovals.map((approval) => approval.id),
       },
       codex: codexStatus,
+      runtime: {
+        installedCliVersion,
+      },
     });
 
     return {

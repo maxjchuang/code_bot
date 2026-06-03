@@ -25,12 +25,17 @@ export class FakeCodexRunner implements CodexRunner {
   readonly sentMessages: string[] = [];
   readonly starts: CodexRunOptions[] = [];
   startError?: Error;
+  version?: string;
   private readonly sessions = new Set<string>();
   private readonly sessionOptions = new Map<string, CodexRunOptions>();
   private readonly queuedStatusResponses = new Map<string, string[]>();
 
   async healthCheck(): Promise<{ ok: true }> {
     return { ok: true };
+  }
+
+  async getVersion(): Promise<string | undefined> {
+    return this.version;
   }
 
   async start(options: CodexRunOptions): Promise<void> {

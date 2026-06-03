@@ -123,6 +123,13 @@ function enrichSummary(
   }
 
   const next = { ...summary };
+  next.cliVersion ??= observation.cliVersion;
+  next.reasoningEffort ??= observation.reasoningEffort;
+  next.summaryMode ??= observation.summaryMode;
+  next.permissions ??= observation.permissions;
+  next.collaborationMode ??= observation.collaborationMode;
+  next.model ??= observation.model;
+  next.cwd ??= observation.cwd;
   const totalTokens = observation.tokenCount?.total;
   if (totalTokens) {
     next.tokenUsage = formatTokenUsage('total', totalTokens);
@@ -134,14 +141,9 @@ function enrichSummary(
   if (observation.tokenCount?.modelContextWindow) {
     next.contextWindow = formatContextWindow(observation.tokenCount.modelContextWindow, totalTokens, lastTokens);
   }
-  const rateLimits = formatRateLimits(observation);
-  if (rateLimits) {
-    next.rateLimits = rateLimits;
-  }
-  const resetTimes = formatResetTimes(observation);
-  if (resetTimes) {
-    next.resetTimes = resetTimes;
-  }
+  next.primaryLimit ??= formatLimitWindow(observation.rateLimits?.primary);
+  next.weeklyLimit ??= formatLimitWindow(observation.rateLimits?.secondary);
+  next.planType ??= formatPlanType(observation.rateLimits?.planType);
   return next;
 }
 
@@ -174,34 +176,42 @@ function formatContextWindow(
   lastUsage: NonNullable<CodexObservationSnapshot['tokenCount']>['last'],
 ): string {
   const used = totalUsage?.totalTokens ?? lastUsage?.totalTokens;
-  const parts = [`${totalWindow} total`];
-  if (used !== undefined) {
-    parts.push(`${Math.max(totalWindow - used, 0)} remaining`);
+  if (used === undefined) {
+    return `${formatCompactCount(totalWindow)} total`;
   }
-  return parts.join(' | ');
+  const leftPercent = Math.max(0, Math.round(((totalWindow - used) / totalWindow) * 100));
+  return `${leftPercent}% left (${formatCompactCount(used)} used / ${formatCompactCount(totalWindow)})`;
 }
 
-function formatRateLimits(observation: CodexObservationSnapshot): string | undefined {
-  const parts: string[] = [];
-  if (observation.rateLimits?.primary?.usedPercent !== undefined) {
-    parts.push(`primary ${observation.rateLimits.primary.usedPercent}% / ${observation.rateLimits.primary.windowMinutes ?? '?'}m`);
+function formatLimitWindow(
+  window: NonNullable<CodexObservationSnapshot['rateLimits']>['primary'],
+): string | undefined {
+  if (!window || window.usedPercent === undefined) {
+    return undefined;
   }
-  if (observation.rateLimits?.secondary?.usedPercent !== undefined) {
-    parts.push(`secondary ${observation.rateLimits.secondary.usedPercent}% / ${observation.rateLimits.secondary.windowMinutes ?? '?'}m`);
+  const leftPercent = Math.max(0, Math.round(100 - window.usedPercent));
+  if (window.resetsAt) {
+    return `${leftPercent}% left (resets ${window.resetsAt})`;
   }
-  if (observation.rateLimits?.planType) {
-    parts.push(`plan ${observation.rateLimits.planType}`);
-  }
-  return parts.length > 0 ? parts.join(' | ') : undefined;
+  return `${leftPercent}% left`;
 }
 
-function formatResetTimes(observation: CodexObservationSnapshot): string | undefined {
-  const parts: string[] = [];
-  if (observation.rateLimits?.primary?.resetsAt) {
-    parts.push(`primary ${observation.rateLimits.primary.resetsAt}`);
+function formatPlanType(planType: string | undefined): string | undefined {
+  if (!planType) {
+    return undefined;
   }
-  if (observation.rateLimits?.secondary?.resetsAt) {
-    parts.push(`secondary ${observation.rateLimits.secondary.resetsAt}`);
+  return planType
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function formatCompactCount(value: number): string {
+  if (value >= 1000) {
+    const compact = value / 1000;
+    const rounded = compact >= 10 ? Math.round(compact) : Math.round(compact * 10) / 10;
+    return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}K`;
   }
-  return parts.length > 0 ? parts.join(' | ') : undefined;
+  return `${value}`;
 }

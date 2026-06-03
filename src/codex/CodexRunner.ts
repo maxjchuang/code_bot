@@ -1,6 +1,7 @@
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { delimiter, isAbsolute } from 'node:path';
+import { execFile } from 'node:child_process';
 import pty from 'node-pty';
 
 const SUBMIT_ENTER_DELAY_MS = 10;
@@ -20,6 +21,7 @@ export interface CodexRunOptions {
 
 export interface CodexRunner {
   healthCheck(): Promise<{ ok: true } | { ok: false; reason: string }>;
+  getVersion?(): Promise<string | undefined>;
   start(options: CodexRunOptions): Promise<void>;
   send(sessionId: string, text: string): Promise<void>;
   stop(sessionId: string): Promise<void>;
@@ -31,6 +33,7 @@ export function createCodexSessionId(seed: string = Math.random().toString(36).s
 
 export class PtyCodexRunner implements CodexRunner {
   private readonly processes = new Map<string, pty.IPty>();
+  private versionPromise?: Promise<string | undefined>;
 
   constructor(
     private readonly config: { command: string; defaultArgs: string[] },
@@ -40,6 +43,13 @@ export class PtyCodexRunner implements CodexRunner {
   async healthCheck(): Promise<{ ok: true } | { ok: false; reason: string }> {
     const found = await findExecutable(this.config.command);
     return found ? { ok: true } : { ok: false, reason: `Command not found: ${this.config.command}` };
+  }
+
+  async getVersion(): Promise<string | undefined> {
+    if (!this.versionPromise) {
+      this.versionPromise = readCodexVersion(this.config.command);
+    }
+    return this.versionPromise;
   }
 
   async start(options: CodexRunOptions): Promise<void> {
@@ -115,4 +125,17 @@ async function canExecute(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function readCodexVersion(command: string): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    execFile(command, ['--version'], { timeout: 2_000 }, (error, stdout) => {
+      if (error) {
+        resolve(undefined);
+        return;
+      }
+      const version = stdout.trim();
+      resolve(version.length > 0 ? version : undefined);
+    });
+  });
 }

@@ -30,6 +30,20 @@ describe('FileCodexObservationStore', () => {
         payload: { type: 'task_started', turn_id: 'turn-1', started_at: 1780387202 },
       }),
       JSON.stringify({
+        timestamp: '2026-06-02T08:00:02.100Z',
+        type: 'turn_context',
+        payload: {
+          turn_id: 'turn-1',
+          cwd: '/repo',
+          approval_policy: 'never',
+          sandbox_policy: { type: 'danger-full-access' },
+          model: 'gpt-5.5',
+          collaboration_mode: { mode: 'default' },
+          effort: 'medium',
+          summary: 'auto',
+        },
+      }),
+      JSON.stringify({
         timestamp: '2026-06-02T08:00:03.000Z',
         type: 'event_msg',
         payload: { type: 'agent_message', phase: 'commentary', message: '我先检查当前实现，再决定如何切 observation。' },
@@ -96,6 +110,13 @@ describe('FileCodexObservationStore', () => {
 
     expect(snapshot.availability.kind).toBe('ready');
     expect(snapshot.status).toBe('completed');
+    expect(snapshot.cwd).toBe('/repo');
+    expect(snapshot.cliVersion).toBe('0.135.0');
+    expect(snapshot.model).toBe('gpt-5.5');
+    expect(snapshot.reasoningEffort).toBe('medium');
+    expect(snapshot.summaryMode).toBe('auto');
+    expect(snapshot.permissions).toBe('Full Access');
+    expect(snapshot.collaborationMode).toBe('default');
     expect(snapshot.latestCommentary).toBe('我先检查当前实现，再决定如何切 observation。');
     expect(snapshot.finalAnswer).toBe('最终建议：保留 PTY 控制面，新增 observation 主路径。');
     expect(snapshot.completedAt).toBe('2026-06-02T08:00:05.000Z');

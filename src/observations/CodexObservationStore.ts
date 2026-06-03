@@ -12,6 +12,13 @@ export type CodexObservationSnapshot = {
   availability: ObservationAvailability;
   codexSessionId: string;
   status: 'running' | 'completed' | 'idle' | 'unknown';
+  cwd?: string;
+  cliVersion?: string;
+  model?: string;
+  reasoningEffort?: string;
+  summaryMode?: string;
+  permissions?: string;
+  collaborationMode?: string;
   latestActivityAt?: string;
   latestCommentary?: string;
   finalAnswer?: string;
@@ -85,6 +92,13 @@ export class FileCodexObservationStore implements CodexObservationStore {
     let completedAt: string | undefined;
     let latestActivityTimestamp: string | undefined;
     let status: CodexObservationSnapshot['status'] = 'unknown';
+    let cwd: string | undefined;
+    let cliVersion: string | undefined;
+    let model: string | undefined;
+    let reasoningEffort: string | undefined;
+    let summaryMode: string | undefined;
+    let permissions: string | undefined;
+    let collaborationMode: string | undefined;
     let tokenCount: CodexObservationSnapshot['tokenCount'];
     let rateLimits: CodexObservationSnapshot['rateLimits'];
 
@@ -92,6 +106,24 @@ export class FileCodexObservationStore implements CodexObservationStore {
       for (const line of lines) {
         const event = JSON.parse(line) as { timestamp?: string; type?: string; payload?: any };
         const eventTimestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
+        if (event.type === 'session_meta') {
+          cwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : cwd;
+          cliVersion = typeof event.payload?.cli_version === 'string' ? event.payload.cli_version : cliVersion;
+        }
+        if (event.type === 'turn_context') {
+          cwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : cwd;
+          model = typeof event.payload?.model === 'string' ? event.payload.model : model;
+          reasoningEffort =
+            typeof event.payload?.reasoning_effort === 'string'
+              ? event.payload.reasoning_effort
+              : typeof event.payload?.effort === 'string'
+                ? event.payload.effort
+                : reasoningEffort;
+          summaryMode = typeof event.payload?.summary === 'string' ? event.payload.summary : summaryMode;
+          permissions = formatPermissions(event.payload?.approval_policy, event.payload?.sandbox_policy);
+          collaborationMode =
+            typeof event.payload?.collaboration_mode?.mode === 'string' ? event.payload.collaboration_mode.mode : collaborationMode;
+        }
         if (event.type === 'event_msg' && event.payload?.type === 'task_started') {
           latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           status = 'running';
@@ -154,6 +186,13 @@ export class FileCodexObservationStore implements CodexObservationStore {
       availability,
       codexSessionId: input.codexSessionId,
       status,
+      cwd,
+      cliVersion,
+      model,
+      reasoningEffort,
+      summaryMode,
+      permissions,
+      collaborationMode,
       latestActivityAt: latestActivityTimestamp,
       latestCommentary,
       finalAnswer,
@@ -203,6 +242,20 @@ function normalizeResetTimestamp(value: unknown): string | undefined {
   }
   if (typeof value === 'number' && Number.isFinite(value)) {
     return new Date(value * 1000).toISOString();
+  }
+  return undefined;
+}
+
+function formatPermissions(approvalPolicy: unknown, sandboxPolicy: unknown): string | undefined {
+  if (approvalPolicy === 'never' && sandboxPolicy && typeof sandboxPolicy === 'object' && (sandboxPolicy as { type?: unknown }).type === 'danger-full-access') {
+    return 'Full Access';
+  }
+  if (typeof approvalPolicy === 'string' || (sandboxPolicy && typeof sandboxPolicy === 'object' && typeof (sandboxPolicy as { type?: unknown }).type === 'string')) {
+    const approval = typeof approvalPolicy === 'string' ? approvalPolicy : 'unknown';
+    const sandbox = sandboxPolicy && typeof sandboxPolicy === 'object' && typeof (sandboxPolicy as { type?: unknown }).type === 'string'
+      ? (sandboxPolicy as { type: string }).type
+      : 'unknown';
+    return `${approval} / ${sandbox}`;
   }
   return undefined;
 }
