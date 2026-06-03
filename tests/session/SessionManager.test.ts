@@ -1328,6 +1328,40 @@ describe('SessionManager', () => {
     }
   });
 
+  it('falls back to PTY final-answer extraction when codexSessionId cannot be discovered', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const registry = {
+        discoverForProject: vi.fn().mockResolvedValue({ ok: false, reason: 'not-found' }),
+      };
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 1 } };
+      const manager = new SessionManager(config, store, runner, {
+        notifier,
+        codexSessionRegistry: registry as any,
+        codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+      });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '解释当前实现' });
+      await runner.emitOutput(sessionId, '这是缺少 codexSessionId 时的 PTY 最终答案。\n');
+      await vi.advanceTimersByTimeAsync(1);
+      vi.useRealTimers();
+
+      await waitForAssertion(() =>
+        expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '这是缺少 codexSessionId 时的 PTY 最终答案。'),
+      );
+      expect(registry.discoverForProject).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not let a follow-up message trigger a second notification from stale observation state', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

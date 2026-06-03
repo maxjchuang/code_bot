@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { join, normalize, sep } from 'node:path';
 
 export interface CodexIndexEntry {
@@ -47,7 +47,7 @@ export class CodexSessionRegistry {
 
     const files = await this.listSessionFiles(join(this.codexHome, 'sessions'));
     const candidates: string[] = [];
-    const projectPath = normalizePath(request.projectPath);
+    const projectPath = await normalizePathForComparison(request.projectPath);
 
     for (const filePath of files) {
       const id = this.extractId(filePath);
@@ -66,7 +66,7 @@ export class CodexSessionRegistry {
         continue;
       }
 
-      if (meta?.cwd && normalizePath(meta.cwd) === projectPath) {
+      if (meta?.cwd && (await normalizePathForComparison(meta.cwd)) === projectPath) {
         candidates.push(id);
       }
     }
@@ -131,4 +131,12 @@ function normalizePath(filePath: string): string {
     return normalized.slice(0, -1);
   }
   return normalized;
+}
+
+async function normalizePathForComparison(filePath: string): Promise<string> {
+  try {
+    return normalizePath(await realpath(filePath));
+  } catch {
+    return normalizePath(filePath);
+  }
 }

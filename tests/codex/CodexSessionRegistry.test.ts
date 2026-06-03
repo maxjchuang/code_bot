@@ -78,6 +78,34 @@ describe('CodexSessionRegistry', () => {
     ).resolves.toEqual({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
   });
 
+  it('matches the same project when config and session cwd use different absolute path aliases', async () => {
+    const root = await createTmpDir();
+    const sessionDir = join(root, 'sessions/2026/06/01');
+    const projectDir = join(root, 'project');
+    const aliasedProjectDir = join(root, 'project-alias');
+    await mkdir(sessionDir, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(root, 'session_index.jsonl'), '', 'utf8');
+    await expect(import('node:fs/promises').then(({ symlink }) => symlink(projectDir, aliasedProjectDir))).resolves.toBeUndefined();
+
+    const sessionFile = join(sessionDir, 'rollout-2026-06-01T10-00-02-019e7f20-a667-7632-a808-c9595d77116e.jsonl');
+    await writeFile(
+      sessionFile,
+      `{"type":"session_meta","payload":{"cwd":"${projectDir}"}}\n`,
+      'utf8',
+    );
+    await utimes(sessionFile, new Date('2026-06-01T10:00:02.000Z'), new Date('2026-06-01T10:00:02.000Z'));
+
+    const registry = new CodexSessionRegistry(root);
+
+    await expect(
+      registry.discoverForProject({
+        projectPath: aliasedProjectDir,
+        startedAt: '2026-06-01T10:00:00.000Z',
+      }),
+    ).resolves.toEqual({ ok: true, codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e' });
+  });
+
   it('does not match project path substrings', async () => {
     const root = await createTmpDir();
     const sessionDir = join(root, 'sessions/2026/06/01');
