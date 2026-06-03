@@ -23,6 +23,7 @@ export function createApp(deps: AppDependencies): {
   recoverStartupState: () => Promise<void>;
 } {
   const sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, {
+    logLevel: deps.config.logLevel,
     notifier: deps.notifier,
     codexSessionRegistry: deps.codexSessionRegistry,
     codexSessionDiscovery: deps.codexSessionDiscovery,

@@ -1,3 +1,5 @@
+import type { LogLevel } from '../logging/AppLogger.js';
+
 export type ChatType = 'private' | 'group';
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'interrupted' | 'unknown';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
@@ -34,6 +36,7 @@ export interface BotConfig {
     command: string;
     defaultArgs: string[];
   };
+  logLevel: LogLevel;
   ui: {
     verbosity: 'normal' | 'debug';
   };

@@ -163,13 +163,33 @@ describe('loadConfig', () => {
       projects: [{ id: 'repo', name: 'Repo', path: '.', codexArgs: [] }],
       output: { directMaxChars: 1800, chunkSize: 1500 },
       codex: { command: 'codex', defaultArgs: [] },
+      logLevel: 'debug',
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
       ui: { verbosity: 'debug' },
     });
 
     await expect(loadConfig(root)).resolves.toMatchObject({
+      logLevel: 'debug',
       ui: { verbosity: 'debug' },
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
+    });
+  });
+
+  it('defaults log level to info when omitted', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig());
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      logLevel: 'info',
+    });
+  });
+
+  it('loads log level from config', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ logLevel: 'error' }));
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      logLevel: 'error',
     });
   });
 
@@ -199,5 +219,12 @@ describe('loadConfig', () => {
     await writeConfig(root, validConfig({ restrictUsers: 'yes' }));
 
     await expect(loadConfig(root)).rejects.toThrow('Invalid config field: restrictUsers');
+  });
+
+  it('rejects malformed logLevel field', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ logLevel: 'verbose' }));
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config field: logLevel');
   });
 });

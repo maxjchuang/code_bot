@@ -1,7 +1,21 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAppLogger, parseLogLevel } from '../../src/logging/AppLogger.js';
 
 describe('AppLogger', () => {
+  const originalLevel = process.env.LOG_LEVEL;
+
+  beforeEach(() => {
+    delete process.env.LOG_LEVEL;
+  });
+
+  afterAll(() => {
+    if (originalLevel === undefined) {
+      delete process.env.LOG_LEVEL;
+      return;
+    }
+    process.env.LOG_LEVEL = originalLevel;
+  });
+
   it('defaults to info for missing or invalid log levels', () => {
     expect(parseLogLevel(undefined)).toBe('info');
     expect(parseLogLevel('')).toBe('info');
@@ -81,6 +95,26 @@ describe('AppLogger', () => {
 
     expect(sink.info).toHaveBeenCalledWith(
       '[2026-06-03 12:34:56] INFO  inbound.received chat=oc_1 text="inspect cur…" count=3',
+    );
+  });
+
+  it('prefers LOG_LEVEL over the configured level', () => {
+    process.env.LOG_LEVEL = 'debug';
+    const sink = {
+      info: vi.fn(),
+      error: vi.fn(),
+    };
+    const logger = createAppLogger({
+      level: 'error',
+      sink,
+      clock: () => new Date('2026-06-03T12:34:56.000Z'),
+    });
+
+    logger.debug('gateway.fallback', { chat: 'oc_1' });
+
+    expect(logger.level).toBe('debug');
+    expect(sink.info).toHaveBeenCalledWith(
+      '[2026-06-03 12:34:56] DEBUG gateway.fallback chat=oc_1',
     );
   });
 });

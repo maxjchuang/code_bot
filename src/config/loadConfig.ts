@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { BotConfig, ProjectConfig } from '../domain/types.js';
+import { parseLogLevel } from '../logging/AppLogger.js';
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -45,6 +46,20 @@ function optionalPositiveNumber(value: unknown, defaultValue: number, field: str
     return defaultValue;
   }
   return requirePositiveNumber(value, field);
+}
+
+function optionalLogLevel(value: unknown, defaultValue: BotConfig['logLevel'], field: string): BotConfig['logLevel'] {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid config field: ${field}`);
+  }
+  const parsed = parseLogLevel(value);
+  if (parsed !== value.trim().toLowerCase()) {
+    throw new Error(`Invalid config field: ${field}`);
+  }
+  return parsed;
 }
 
 function optionalRecord(value: unknown, field: string): Record<string, unknown> {
@@ -112,6 +127,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
       command: requireString(codex.command, 'codex.command'),
       defaultArgs: codex.defaultArgs === undefined ? [] : requireStringArray(codex.defaultArgs, 'codex.defaultArgs'),
     },
+    logLevel: optionalLogLevel(record.logLevel, 'info', 'logLevel'),
     ui: {
       verbosity: ui.verbosity === undefined ? 'normal' : requireUiVerbosity(ui.verbosity, 'ui.verbosity'),
     },

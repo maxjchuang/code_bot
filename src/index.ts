@@ -31,6 +31,7 @@ export interface BootstrapDeps {
     appId: string,
     appSecret: string,
     observability?: {
+      logLevel?: BotConfig['logLevel'];
       recordEvent: (event: import('./domain/types.js').BotEvent) => Promise<void>;
       recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void>;
     },
@@ -46,14 +47,15 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const createAppFn = deps.createApp ?? createApp;
   const createGatewayFn =
     deps.createGateway ??
-    ((appId: string, appSecret: string, observability?: { recordEvent: (event: import('./domain/types.js').BotEvent) => Promise<void>; recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void> }) =>
+    ((appId: string, appSecret: string, observability?: { logLevel?: BotConfig['logLevel']; recordEvent: (event: import('./domain/types.js').BotEvent) => Promise<void>; recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void> }) =>
       new LarkLongConnectionGateway(appId, appSecret, observability));
-  const logger = createAppLogger({ sink: deps.logger ?? console });
 
   const config = await loadConfigFn(projectRoot);
+  const logger = createAppLogger({ level: config.logLevel, sink: deps.logger ?? console });
   const store = createStoreFn(projectRoot);
   const codexRunner = createCodexRunnerFn(config.codex);
   const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret, {
+    logLevel: config.logLevel,
     recordEvent: (event) => store.appendEvent(event),
     recordError: (entry) => store.appendErrorLog(entry),
   });

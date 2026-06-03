@@ -17,6 +17,7 @@ const config: BotConfig = {
   projects: [],
   output: { directMaxChars: 1000, chunkSize: 500 },
   codex: { command: 'codex', defaultArgs: [] },
+  logLevel: 'info',
   ui: { verbosity: 'normal' },
   notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
 };
@@ -222,5 +223,81 @@ describe('bootstrap', () => {
     expect(content).toContain('"wasMentioned":false');
     expect(content).toContain('"mentionsOpenIds":["ou_other"]');
     expect(content).toContain('"botOpenIdResolved":false');
+  });
+
+  it('uses config log level for startup logger when env is unset', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const gatewayStart = vi.fn(async () => undefined);
+    const originalLevel = process.env.LOG_LEVEL;
+    delete process.env.LOG_LEVEL;
+
+    try {
+      await bootstrap({
+        projectRoot: root,
+        loadConfig: async () => ({ ...sampleConfig('/tmp/code-bot'), logLevel: 'error' }),
+        createStore: () => store,
+        createCodexRunner: vi.fn().mockReturnValue(new FakeCodexRunner()),
+        createGateway: vi.fn().mockReturnValue({
+          start: gatewayStart,
+          sendText: async () => undefined,
+          sendRenderedMessage: async () => undefined,
+        }),
+        createApp: () =>
+          ({
+            sessionManager: { handleText: async () => ({ reply: 'ok' }) },
+            healthCheck: async () => ({ ok: true }),
+          }) as never,
+        logger,
+      } as any);
+    } finally {
+      if (originalLevel === undefined) {
+        delete process.env.LOG_LEVEL;
+      } else {
+        process.env.LOG_LEVEL = originalLevel;
+      }
+    }
+
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('startup.ready'));
+    expect(gatewayStart).toHaveBeenCalledOnce();
+  });
+
+  it('prefers LOG_LEVEL over config log level', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const gatewayStart = vi.fn(async () => undefined);
+    const originalLevel = process.env.LOG_LEVEL;
+    process.env.LOG_LEVEL = 'debug';
+
+    try {
+      await bootstrap({
+        projectRoot: root,
+        loadConfig: async () => ({ ...sampleConfig('/tmp/code-bot'), logLevel: 'error' }),
+        createStore: () => store,
+        createCodexRunner: vi.fn().mockReturnValue(new FakeCodexRunner()),
+        createGateway: vi.fn().mockReturnValue({
+          start: gatewayStart,
+          sendText: async () => undefined,
+          sendRenderedMessage: async () => undefined,
+        }),
+        createApp: () =>
+          ({
+            sessionManager: { handleText: async () => ({ reply: 'ok' }) },
+            healthCheck: async () => ({ ok: true }),
+          }) as never,
+        logger,
+      } as any);
+    } finally {
+      if (originalLevel === undefined) {
+        delete process.env.LOG_LEVEL;
+      } else {
+        process.env.LOG_LEVEL = originalLevel;
+      }
+    }
+
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('startup.ready'));
+    expect(gatewayStart).toHaveBeenCalledOnce();
   });
 });
