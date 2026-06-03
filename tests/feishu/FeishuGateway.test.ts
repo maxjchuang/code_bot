@@ -3,6 +3,7 @@ import { LarkLongConnectionGateway } from '../../src/feishu/FeishuGateway.js';
 
 type ReceiveHandler = (data: {
   message?: {
+    message_id?: string;
     chat_id?: string;
     chat_type?: string;
     message_type?: string;
@@ -87,6 +88,7 @@ describe('LarkLongConnectionGateway', () => {
 
     await harness.getHandler()({
       message: {
+        message_id: 'om_123',
         chat_id: 'oc_1',
         chat_type: 'p2p',
         message_type: 'text',
@@ -100,6 +102,7 @@ describe('LarkLongConnectionGateway', () => {
       botOpenIdResolved: true,
       chatId: 'oc_1',
       chatType: 'private',
+      messageId: 'om_123',
       mentionsOpenIds: [],
       userId: 'ou_1',
       text: 'hello bot',
