@@ -11,6 +11,12 @@ export interface ProjectConfig {
   codexArgs: string[];
 }
 
+export interface SavedModelSelection {
+  model: string;
+  reasoningEffort?: string;
+  updatedAt: string;
+}
+
 export interface NotificationConfig {
   enabled: boolean;
   idleMs: number;
@@ -48,7 +54,33 @@ export interface ChatContext {
   chatType: ChatType;
   currentProjectId?: string;
   currentSessionId?: string;
+  modelSelectionsByProject?: Record<string, SavedModelSelection>;
 }
+
+export interface InboundMessageReceipt {
+  messageId: string;
+  chatId: string;
+  chatType: ChatType;
+  userId: string;
+  textPreview: string;
+  firstReceivedAt: string;
+  lastDuplicateAt?: string;
+  duplicateCount: number;
+  status: 'claimed';
+}
+
+export interface ClaimInboundMessageInput {
+  messageId: string;
+  chatId: string;
+  chatType: ChatType;
+  userId: string;
+  text: string;
+}
+
+export type ClaimInboundMessageResult =
+  | { claimed: true; reason: 'missing_message_id'; receipt?: never }
+  | { claimed: true; receipt: InboundMessageReceipt; reason?: never }
+  | { claimed: false; receipt: InboundMessageReceipt; reason?: never };
 
 export interface CachedCodexStatusSummary {
   statusLine?: string;
