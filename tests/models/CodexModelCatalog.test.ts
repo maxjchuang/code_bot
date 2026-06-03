@@ -122,6 +122,69 @@ describe('readCodexModelCatalog', () => {
     });
   });
 
+  it('tolerates missing optional model fields and non-string cache metadata', async () => {
+    const codexHome = await createTmpDir();
+    await writeCache(codexHome, {
+      fetched_at: 123,
+      client_version: false,
+      models: [
+        {
+          slug: 'gpt-minimal',
+          visibility: 'list',
+        },
+      ],
+    });
+
+    await expect(readCodexModelCatalog({ codexHome })).resolves.toEqual({
+      kind: 'available',
+      models: [
+        {
+          slug: 'gpt-minimal',
+          displayName: 'gpt-minimal',
+          priority: Number.MAX_SAFE_INTEGER,
+          supportedReasoningLevels: [],
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ['missing reasoning array', undefined, []],
+    ['non-array reasoning field', 'low', []],
+    [
+      'mixed valid and invalid reasoning entries',
+      [{ effort: 'low' }, { effort: 1 }, null, { effort: 'high' }, 'medium'],
+      ['low', 'high'],
+    ],
+  ])('tolerates %s', async (_name, supportedReasoningLevels, expectedReasoningLevels) => {
+    const codexHome = await createTmpDir();
+    await writeCache(codexHome, {
+      models: [
+        {
+          slug: 'gpt-reasoning',
+          display_name: 1,
+          description: false,
+          default_reasoning_level: {},
+          supported_reasoning_levels: supportedReasoningLevels,
+          visibility: 'list',
+          priority: Number.POSITIVE_INFINITY,
+        },
+      ],
+    });
+
+    await expect(readCodexModelCatalog({ codexHome })).resolves.toEqual({
+      kind: 'available',
+      models: [
+        {
+          slug: 'gpt-reasoning',
+          displayName: 'gpt-reasoning',
+          priority: Number.MAX_SAFE_INTEGER,
+          supportedReasoningLevels: expectedReasoningLevels,
+        },
+      ],
+    });
+  });
+
   it('returns empty-cache result when no visible models exist', async () => {
     const codexHome = await createTmpDir();
     await writeCache(codexHome, {

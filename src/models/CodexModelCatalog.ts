@@ -5,9 +5,9 @@ import { join } from 'node:path';
 export interface CodexModelInfo {
   slug: string;
   displayName: string;
-  description: string;
+  description?: string;
   priority: number;
-  defaultReasoningLevel: string;
+  defaultReasoningLevel?: string;
   supportedReasoningLevels: string[];
 }
 
@@ -115,19 +115,13 @@ function parseCache(value: unknown): ParsedCache | undefined {
     return undefined;
   }
 
-  const fetchedAt = optionalString(value.fetched_at);
-  const clientVersion = optionalString(value.client_version);
-  if (fetchedAt === false || clientVersion === false) {
-    return undefined;
-  }
-
   if (!value.models.every(isRecord)) {
     return undefined;
   }
 
   return {
-    fetchedAt,
-    clientVersion,
+    fetchedAt: stringOrUndefined(value.fetched_at),
+    clientVersion: stringOrUndefined(value.client_version),
     models: value.models,
   };
 }
@@ -137,41 +131,35 @@ function normalizeModel(model: RawModel): CodexModelInfo | undefined {
     return undefined;
   }
 
-  if (
-    typeof model.slug !== 'string'
-    || typeof model.display_name !== 'string'
-    || typeof model.description !== 'string'
-    || typeof model.default_reasoning_level !== 'string'
-    || typeof model.priority !== 'number'
-    || !Number.isFinite(model.priority)
-    || !Array.isArray(model.supported_reasoning_levels)
-  ) {
+  if (typeof model.slug !== 'string') {
     return undefined;
   }
 
   const supportedReasoningLevels: string[] = [];
-  for (const level of model.supported_reasoning_levels) {
-    if (!isRecord(level) || typeof level.effort !== 'string') {
-      return undefined;
+  if (Array.isArray(model.supported_reasoning_levels)) {
+    for (const level of model.supported_reasoning_levels) {
+      if (isRecord(level) && typeof level.effort === 'string') {
+        supportedReasoningLevels.push(level.effort);
+      }
     }
-    supportedReasoningLevels.push(level.effort);
   }
 
   return {
     slug: model.slug,
-    displayName: model.display_name,
-    description: model.description,
-    priority: model.priority,
-    defaultReasoningLevel: model.default_reasoning_level,
+    displayName: stringOrUndefined(model.display_name) ?? model.slug,
+    description: stringOrUndefined(model.description),
+    priority: finiteNumberOrDefault(model.priority),
+    defaultReasoningLevel: stringOrUndefined(model.default_reasoning_level),
     supportedReasoningLevels,
   };
 }
 
-function optionalString(value: unknown): string | undefined | false {
-  if (value === undefined) {
-    return undefined;
-  }
-  return typeof value === 'string' ? value : false;
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function finiteNumberOrDefault(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
