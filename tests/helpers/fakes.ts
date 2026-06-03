@@ -27,6 +27,7 @@ export class FakeCodexRunner implements CodexRunner {
   startError?: Error;
   private readonly sessions = new Set<string>();
   private readonly sessionOptions = new Map<string, CodexRunOptions>();
+  private readonly queuedStatusResponses = new Map<string, string[]>();
 
   async healthCheck(): Promise<{ ok: true }> {
     return { ok: true };
@@ -48,6 +49,14 @@ export class FakeCodexRunner implements CodexRunner {
       throw new Error(`Unknown fake session: ${sessionId}`);
     }
     this.sentMessages.push(text);
+    if (text === 'status') {
+      const nextResponse = this.queuedStatusResponses.get(sessionId)?.shift();
+      if (nextResponse !== undefined) {
+        queueMicrotask(() => {
+          void this.emitOutput(sessionId, nextResponse);
+        });
+      }
+    }
   }
 
   async stop(sessionId: string): Promise<void> {
@@ -75,6 +84,12 @@ export class FakeCodexRunner implements CodexRunner {
 
   dropSession(sessionId: string): void {
     this.sessions.delete(sessionId);
+  }
+
+  queueStatusResponse(sessionId: string, text: string): void {
+    const queue = this.queuedStatusResponses.get(sessionId) ?? [];
+    queue.push(text);
+    this.queuedStatusResponses.set(sessionId, queue);
   }
 }
 

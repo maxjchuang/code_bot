@@ -1267,7 +1267,7 @@ describe('SessionManager', () => {
 
       const second = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '1' });
       expect(second.reply).toBe('');
-      expect(runner.sentMessages).toEqual(['hello', '', '1']);
+      expect(runner.sentMessages).toEqual(['hello', '1']);
     } finally {
       vi.useRealTimers();
     }
@@ -2981,6 +2981,94 @@ describe('SessionManager', () => {
     expect(status.reply).toContain('Summary: recent work summary');
     expect(status.reply).toContain('Pending approvals: ap_1');
     expect(status.reply).not.toContain('ap_2');
+  });
+
+  it('includes live Codex status details in /status for a running session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexStatus: { liveFetchTimeoutMs: 100, quietMs: 0 },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    runner.queueStatusResponse(sessionId, 'status\r\nStatus: running\r\nTask: Implement status integration\r\nModel: gpt-5-codex\r\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
+
+    expect(result.reply).toContain('Project: repo');
+    expect(result.reply).toContain('Codex');
+    expect(result.reply).toContain('Source: live');
+    expect(result.reply).toContain('Status line: running');
+    expect(result.reply).toContain('Task: Implement status integration');
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      codexStatus: {
+        source: 'live',
+        summary: {
+          statusLine: 'running',
+          currentTask: 'Implement status integration',
+          model: 'gpt-5-codex',
+        },
+      },
+    });
+  });
+
+  it('returns a custom rendered markdown reply for /status', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      codexStatus: { liveFetchTimeoutMs: 100, quietMs: 0 },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    runner.queueStatusResponse(sessionId, 'status\r\nStatus: running\r\nTask: Implement status integration\r\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
+
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    if (result.renderedReply?.preferred.kind !== 'card') {
+      throw new Error('expected a card payload');
+    }
+    const payload = JSON.stringify(result.renderedReply.preferred.payload);
+    expect(payload).toContain('## Session');
+    expect(payload).toContain('## Codex');
+    expect(payload).toContain('## Raw');
+    expect(payload).toContain('- **Status**: `running`');
+    expect(payload).toContain('- **Source**: `live`');
+    expect(result.reply).toContain('Project: repo');
+    expect(result.reply).toContain('Task: Implement status integration');
+  });
+
+  it('uses cached Codex status for an exited session without sending a new request', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const session = (await store.getSession(sessionId))!;
+    await store.saveSession({
+      ...session,
+      status: 'exited',
+      codexStatus: {
+        source: 'live',
+        fetchedAt: '2026-06-03T08:00:00.000Z',
+        rawText: 'Status: completed',
+        summary: { statusLine: 'completed' },
+      },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
+
+    expect(result.reply).not.toContain('Summary:');
+    expect(result.reply).not.toContain('Pending approvals:');
+    expect(result.reply).toContain('Source: cached');
+    expect(result.reply).toContain('Status line: completed');
+    expect(runner.sentMessages).not.toContain('status');
   });
 
   it('keeps running session current and stoppable when /use targets another project', async () => {

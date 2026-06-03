@@ -50,6 +50,23 @@ export interface ChatContext {
   currentSessionId?: string;
 }
 
+export interface CachedCodexStatusSummary {
+  statusLine?: string;
+  currentTask?: string;
+  progressHint?: string;
+  contextWindow?: string;
+  tokenUsage?: string;
+  model?: string;
+  cwd?: string;
+}
+
+export interface CachedCodexStatus {
+  source: 'live' | 'cached' | 'observation_fallback';
+  fetchedAt: string;
+  rawText: string;
+  summary: CachedCodexStatusSummary;
+}
+
 export interface SessionRecord {
   id: string;
   chatId: string;
@@ -66,6 +83,7 @@ export interface SessionRecord {
   codexSessionId?: string;
   resumedFromSessionId?: string;
   resumeSource?: 'code_bot' | 'codex';
+  codexStatus?: CachedCodexStatus;
 }
 
 export interface ApprovalRecord {

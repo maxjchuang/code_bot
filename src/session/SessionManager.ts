@@ -17,6 +17,8 @@ import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
 import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
+import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
+import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -63,6 +65,10 @@ export interface SessionManagerDeps {
     sleep?: (ms: number) => Promise<void>;
   };
   codexObservationStore?: CodexObservationStore;
+  codexStatus?: {
+    liveFetchTimeoutMs?: number;
+    quietMs?: number;
+  };
 }
 
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
@@ -73,6 +79,8 @@ const SEND_SUBMIT_RETRY_LIMIT = 1;
 const DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS = 3_000;
 const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
 const DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS = 100;
+const DEFAULT_CODEX_STATUS_LIVE_FETCH_TIMEOUT_MS = 2_000;
+const DEFAULT_CODEX_STATUS_QUIET_MS = 75;
 
 interface PendingTurn {
   id: string;
@@ -100,13 +108,24 @@ type SendConfirmationResult = {
   retryUsed: boolean;
 };
 
+interface LiveStatusWaiter {
+  chunks: string[];
+  resolve: (text: string) => void;
+  reject: (reason: unknown) => void;
+  quietTimer?: ReturnType<typeof setTimeout>;
+  abortHandler: () => void;
+}
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly logger: AppLogger;
+  private readonly observationStore: CodexObservationStore;
+  private readonly codexStatusService: ReturnType<typeof createCodexStatusService>;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly queuedTurns = new Map<string, PendingTurn[]>();
   private readonly ptyDebugBuffers = new Map<string, string>();
+  private readonly liveStatusWaiters = new Map<string, Set<LiveStatusWaiter>>();
 
   constructor(
     private readonly config: BotConfig,
@@ -116,6 +135,16 @@ export class SessionManager {
   ) {
     this.approvalManager = new ApprovalManager(store);
     this.logger = createAppLogger({ level: deps.logLevel, sink: deps.logger ?? console });
+    this.observationStore =
+      deps.codexObservationStore ??
+      new FileCodexObservationStore({
+        codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
+      });
+    this.codexStatusService = createCodexStatusService({
+      fetchLiveStatusText: ({ sessionId, signal }) => this.fetchLiveCodexStatusText(sessionId, signal),
+      observationStore: this.observationStore,
+      timeoutMs: deps.codexStatus?.liveFetchTimeoutMs ?? DEFAULT_CODEX_STATUS_LIVE_FETCH_TIMEOUT_MS,
+    });
   }
 
   async handleText(input: IncomingBotText): Promise<BotTextResult> {
@@ -633,14 +662,28 @@ export class SessionManager {
     const chat = await this.store.getChat(chatId);
     const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
     const pendingApprovals = await this.store.listPendingApprovalsByChat(chatId);
+    const codexStatus = await this.codexStatusResult(session);
+    const message = formatStatusMessage({
+      session: {
+        projectId: chat?.currentProjectId,
+        sessionId: chat?.currentSessionId,
+        status: session?.status ?? 'none',
+        summary: session?.lastSummary,
+        pendingApprovals: pendingApprovals.map((approval) => approval.id),
+      },
+      codex: codexStatus,
+    });
+
     return {
-      reply: [
-        `Project: ${chat?.currentProjectId ?? 'none'}`,
-        `Session: ${chat?.currentSessionId ?? 'none'}`,
-        `Status: ${session?.status ?? 'none'}`,
-        `Summary: ${session?.lastSummary ?? 'none'}`,
-        `Pending approvals: ${pendingApprovals.length > 0 ? pendingApprovals.map((approval) => approval.id).join(', ') : 'none'}`,
-      ].join('\n'),
+      reply: message.fallbackText,
+      renderedReply: renderFeishuMessage(
+        {
+          kind: 'reply',
+          bodyMarkdown: message.bodyMarkdown,
+          fallbackText: message.fallbackText,
+        },
+        { verbosity: this.uiVerbosity() },
+      ),
     };
   }
 
@@ -754,12 +797,7 @@ export class SessionManager {
   }
 
   private codexObservationStore(): CodexObservationStore {
-    return (
-      this.deps.codexObservationStore ??
-      new FileCodexObservationStore({
-        codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
-      })
-    );
+    return this.observationStore;
   }
 
   private async stopCurrentSession(input: IncomingBotText): Promise<BotTextResult> {
@@ -926,7 +964,126 @@ export class SessionManager {
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
     await this.store.appendSessionLog(sessionId, text);
     await this.logPtyDebugOutput(sessionId, text);
+    this.notifyLiveStatusWaiters(sessionId, text);
     await this.observePendingTurnOutput(sessionId);
+  }
+
+  private async codexStatusResult(session: SessionRecord | undefined): Promise<CodexStatusLookupResult> {
+    if (!session) {
+      return { kind: 'unavailable' };
+    }
+
+    if (session.status === 'running' || session.status === 'starting') {
+      const result = await this.codexStatusService.fetchForRunningSession({
+        sessionId: session.id,
+        codexSessionId: session.codexSessionId,
+        cached: session.codexStatus,
+      });
+      if (result.kind === 'available' && result.status.source === 'live') {
+        await this.store.updateSession(session.id, (current) => ({
+          ...current,
+          codexStatus: result.status,
+          updatedAt: new Date().toISOString(),
+        }));
+      }
+      return this.cachedCodexStatusResult(result);
+    }
+
+    if (session.codexStatus) {
+      return {
+        kind: 'available',
+        status: {
+          ...session.codexStatus,
+          source: 'cached',
+        },
+      };
+    }
+
+    return { kind: 'unavailable' };
+  }
+
+  private cachedCodexStatusResult(result: CodexStatusLookupResult): CodexStatusLookupResult {
+    if (result.kind !== 'available' || result.status.source !== 'live') {
+      return result;
+    }
+    return result;
+  }
+
+  private async fetchLiveCodexStatusText(sessionId: string, signal: AbortSignal): Promise<string | undefined> {
+    if (signal.aborted) {
+      throw new Error('Codex status fetch aborted');
+    }
+
+    return new Promise<string | undefined>(async (resolve, reject) => {
+      const waiters = this.liveStatusWaiters.get(sessionId) ?? new Set<LiveStatusWaiter>();
+      this.liveStatusWaiters.set(sessionId, waiters);
+
+      const cleanup = (waiter: LiveStatusWaiter): void => {
+        if (waiter.quietTimer) {
+          clearTimeout(waiter.quietTimer);
+        }
+        signal.removeEventListener('abort', waiter.abortHandler);
+        waiters.delete(waiter);
+        if (waiters.size === 0) {
+          this.liveStatusWaiters.delete(sessionId);
+        }
+      };
+
+      const waiter: LiveStatusWaiter = {
+        chunks: [],
+        resolve: (text) => {
+          cleanup(waiter);
+          resolve(text);
+        },
+        reject: (reason) => {
+          cleanup(waiter);
+          reject(reason);
+        },
+        abortHandler: () => {
+          cleanup(waiter);
+          reject(new Error('Codex status fetch aborted'));
+        },
+      };
+
+      waiters.add(waiter);
+      signal.addEventListener('abort', waiter.abortHandler, { once: true });
+
+      try {
+        await this.runner.send(sessionId, 'status');
+      } catch (error) {
+        waiter.reject(error);
+      }
+    });
+  }
+
+  private notifyLiveStatusWaiters(sessionId: string, text: string): void {
+    const waiters = this.liveStatusWaiters.get(sessionId);
+    if (!waiters || waiters.size === 0) {
+      return;
+    }
+
+    for (const waiter of waiters) {
+      waiter.chunks.push(text);
+      if (waiter.quietTimer) {
+        clearTimeout(waiter.quietTimer);
+      }
+      waiter.quietTimer = setTimeout(() => {
+        const formatted = this.formatLiveStatusChunks(waiter.chunks);
+        if (!formatted) {
+          return;
+        }
+        waiter.resolve(formatted);
+      }, this.deps.codexStatus?.quietMs ?? DEFAULT_CODEX_STATUS_QUIET_MS);
+    }
+  }
+
+  private formatLiveStatusChunks(chunks: string[]): string | undefined {
+    const sanitized = sanitizeTerminalOutput(chunks);
+    const readableLines = sanitized.readableLines
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && line.toLowerCase() !== 'status');
+    const text = readableLines.join('\n').trim();
+    return text || undefined;
   }
 
   private async logPtyDebugOutput(sessionId: string, text: string): Promise<void> {
