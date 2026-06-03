@@ -148,7 +148,7 @@ describe('bootstrap', () => {
     const store = new FileStateStore(root);
     const logger = { info: vi.fn(), error: vi.fn() };
     const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<{ text: string }>) => {
-      await expect(onMessage({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: '/tail 20' })).resolves.toEqual({
+      await expect(onMessage({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
         text: 'tail output',
         rendered: undefined,
       });
@@ -175,6 +175,7 @@ describe('bootstrap', () => {
     const day = new Date().toISOString().slice(0, 10);
     const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
     expect(content).toContain('"type":"command.received"');
+    expect(content).toContain('"messageId":"om_123"');
     expect(content).toContain('"text":"/tail 20"');
     expect(content).toContain('"type":"command.replied"');
     expect(content).toContain('"replyPreview":"tail output"');

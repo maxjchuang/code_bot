@@ -9,6 +9,7 @@ export interface FeishuIncomingMessage {
   chatId: string;
   chatType: ChatType;
   userId: string;
+  messageId?: string;
   text: string;
   wasMentioned?: boolean;
   mentionsOpenIds?: string[];
@@ -31,6 +32,7 @@ export interface FeishuOutgoingReply {
 
 interface LarkReceiveMessageEvent {
   message?: {
+    message_id?: string;
     chat_id?: string;
     chat_type?: string;
     message_type?: string;
@@ -125,6 +127,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             chatId: message.chat_id,
             chatType: message.chat_type === 'group' ? 'group' : 'private',
             userId: sender.open_id,
+            messageId: message.message_id,
             text,
             wasMentioned: message.chat_type === 'group' ? this.isMentioningBot(message) : false,
             mentionsOpenIds: message.mentions?.flatMap((mention) => (mention.id?.open_id ? [mention.id.open_id] : [])) ?? [],
@@ -277,6 +280,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
       chatId: message.chatId,
       chatType: message.chatType,
       userId: message.userId,
+      messageId: message.messageId,
       text: message.text,
       ...details,
     };

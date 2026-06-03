@@ -83,6 +83,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     logger.info('inbound.received', {
       chat: message.chatId,
       type: message.chatType,
+      messageId: message.messageId,
       text: message.text,
     });
     const receivedAt = new Date().toISOString();
@@ -93,6 +94,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
         chatId: message.chatId,
         chatType: message.chatType,
         userId: message.userId,
+        messageId: message.messageId,
         text: message.text,
         wasMentioned: message.wasMentioned,
         mentionsOpenIds: message.mentionsOpenIds,
@@ -103,6 +105,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     logger.info('outbound.replied', {
       chat: message.chatId,
       type: message.chatType,
+      messageId: message.messageId,
       reply: result.reply,
     });
     await store.appendEvent({
@@ -112,6 +115,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
         chatId: message.chatId,
         chatType: message.chatType,
         userId: message.userId,
+        messageId: message.messageId,
         text: message.text,
         replyPreview: result.reply.length <= 200 ? result.reply : `${result.reply.slice(0, 197)}...`,
       },
