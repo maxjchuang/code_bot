@@ -181,4 +181,46 @@ describe('bootstrap', () => {
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('inbound.received'));
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('outbound.replied'));
   });
+
+  it('records mention diagnostics on inbound command events', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    let onMessage: ((message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>) | undefined;
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => sampleConfig(root),
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway: () => ({
+        start: async (handler) => {
+          onMessage = handler;
+        },
+        sendText: async () => undefined,
+        sendRenderedMessage: async () => undefined,
+      }),
+      createApp: () =>
+        ({
+          sessionManager: { handleText: async () => ({ reply: '' }) },
+          healthCheck: async () => ({ ok: true }),
+        }) as never,
+    });
+
+    await onMessage?.({
+      chatId: 'oc_group',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '@_user_1 hello',
+      wasMentioned: false,
+      mentionsOpenIds: ['ou_other'],
+      botOpenIdResolved: false,
+    });
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"command.received"');
+    expect(content).toContain('"wasMentioned":false');
+    expect(content).toContain('"mentionsOpenIds":["ou_other"]');
+    expect(content).toContain('"botOpenIdResolved":false');
+  });
 });
