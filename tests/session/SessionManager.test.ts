@@ -39,6 +39,11 @@ async function waitForAssertion(assertion: () => Promise<void> | void, timeoutMs
 }
 
 describe('SessionManager', () => {
+  const singleProjectConfig = (root: string): BotConfig => {
+    const config = sampleConfig(root);
+    return { ...config, projects: [config.projects[0]] };
+  };
+
   it('records discovered Codex session id after /new', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -299,6 +304,107 @@ describe('SessionManager', () => {
     });
     expect(sent.reply).toContain('Sent to Codex');
     expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
+  it('auto-starts the only configured project for a first normal message with no active session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(singleProjectConfig(root), store, runner);
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0]).toMatchObject({
+      cwd: root,
+      mode: { kind: 'new' },
+    });
+    expect(runner.sentMessages).toEqual(['inspect status']);
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+    });
+    expect(sent.reply).toContain(`Sent to Codex session ${runner.starts[0].sessionId}.`);
+  });
+
+  it('keeps requiring explicit project selection for a first normal message when multiple projects exist', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+
+    expect(sent.reply).toBe('No active session. Run /projects and /new <project> first.');
+    expect(runner.starts).toHaveLength(0);
+    expect(runner.sentMessages).toEqual([]);
+    await expect(store.getChat('oc_1')).resolves.toBeUndefined();
+  });
+
+  it('returns the existing start failure reply when single-project auto-start cannot create a session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    runner.startError = new Error('boot failed');
+    const manager = new SessionManager(singleProjectConfig(root), store, runner);
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+
+    expect(sent.reply).toBe('Failed to start Codex for project repo: boot failed');
+    expect(runner.sentMessages).toEqual([]);
+    expect(runner.starts).toHaveLength(1);
+    const [failedStart] = runner.starts;
+    await expect(store.getChat('oc_1')).resolves.toBeUndefined();
+    await expect(store.getSession(failedStart.sessionId)).resolves.toMatchObject({
+      projectId: 'repo',
+      status: 'exited',
+      lastSummary: 'Failed to start Codex: boot failed',
+    });
+  });
+
+  it('preserves send failure handling after single-project auto-start succeeds', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    runner.send = vi.fn(async () => {
+      throw new Error('transport down');
+    });
+    const manager = new SessionManager(singleProjectConfig(root), store, runner);
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.send).toHaveBeenCalledWith(runner.starts[0].sessionId, 'inspect status');
+    expect(sent.reply).toBe('No running session. Run /new <project> first.');
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      lastSummary: 'Failed to send to Codex: transport down',
+    });
   });
 
   it('returns an unconfirmed reply and retries submit once when processing is not confirmed in time', async () => {
