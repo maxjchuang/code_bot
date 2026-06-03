@@ -66,10 +66,9 @@ export async function readCodexModelCatalog(options: ReadCodexModelCatalogOption
   const models: CodexModelInfo[] = [];
   for (const model of visibleModels) {
     const normalized = normalizeModel(model);
-    if (!normalized) {
-      return unavailable('invalid');
+    if (normalized) {
+      models.push(normalized);
     }
-    models.push(normalized);
   }
 
   models.sort((a, b) => a.priority - b.priority || a.slug.localeCompare(b.slug));
@@ -115,14 +114,10 @@ function parseCache(value: unknown): ParsedCache | undefined {
     return undefined;
   }
 
-  if (!value.models.every(isRecord)) {
-    return undefined;
-  }
-
   return {
     fetchedAt: stringOrUndefined(value.fetched_at),
     clientVersion: stringOrUndefined(value.client_version),
-    models: value.models,
+    models: value.models.filter(isRecord),
   };
 }
 

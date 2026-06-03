@@ -110,7 +110,6 @@ describe('readCodexModelCatalog', () => {
   it.each([
     ['missing models array', {}],
     ['non-array models field', { models: {} }],
-    ['non-object model entry', { models: ['gpt-5'] }],
   ])('returns invalid-cache result for invalid cache shape: %s', async (_name, cache) => {
     const codexHome = await createTmpDir();
     await writeCache(codexHome, cache);
@@ -119,6 +118,45 @@ describe('readCodexModelCatalog', () => {
       kind: 'unavailable',
       reason: 'invalid',
       message: 'Codex model cache is unreadable.',
+    });
+  });
+
+  it('skips malformed model entries when valid visible models remain', async () => {
+    const codexHome = await createTmpDir();
+    await writeCache(codexHome, {
+      models: [
+        'gpt-5',
+        null,
+        {
+          slug: 1,
+          display_name: 'Missing Slug',
+          visibility: 'list',
+          priority: 1,
+        },
+        {
+          slug: 'gpt-visible',
+          display_name: 'GPT Visible',
+          description: 'Selectable model',
+          default_reasoning_level: 'medium',
+          supported_reasoning_levels: [{ effort: 'medium' }],
+          visibility: 'list',
+          priority: 2,
+        },
+      ],
+    });
+
+    await expect(readCodexModelCatalog({ codexHome })).resolves.toEqual({
+      kind: 'available',
+      models: [
+        {
+          slug: 'gpt-visible',
+          displayName: 'GPT Visible',
+          description: 'Selectable model',
+          defaultReasoningLevel: 'medium',
+          priority: 2,
+          supportedReasoningLevels: ['medium'],
+        },
+      ],
     });
   });
 
