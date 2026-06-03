@@ -371,6 +371,48 @@ describe('SessionManager', () => {
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('session.auto_started_single_project'));
   });
 
+  it('logs sanitized PTY output to the console in debug mode', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { logger, logLevel: 'debug' });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.emitOutput(sessionId, '\u001b[32mhello from pty\u001b[0m\n');
+
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('session.pty'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('hello from pty'));
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('\u001b[32m'));
+  });
+
+  it('does not log PTY output to the console outside debug mode', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { logger, logLevel: 'info' });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await runner.emitOutput(sessionId, 'hello from pty\n');
+
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining('session.pty'));
+  });
+
   it('keeps requiring explicit project selection for a first normal message when multiple projects exist', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

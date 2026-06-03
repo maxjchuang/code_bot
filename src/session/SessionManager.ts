@@ -16,7 +16,7 @@ import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js'
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
-import { createAppLogger, type AppLogger } from '../logging/AppLogger.js';
+import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -48,6 +48,7 @@ export interface Notifier {
 
 export interface SessionManagerDeps {
   logger?: Pick<typeof console, 'info' | 'error'>;
+  logLevel?: LogLevel | string;
   notifier?: Notifier;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: {
@@ -101,6 +102,7 @@ export class SessionManager {
   private readonly chatQueues = new Map<string, Promise<unknown>>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly queuedTurns = new Map<string, PendingTurn[]>();
+  private readonly ptyDebugBuffers = new Map<string, string>();
 
   constructor(
     private readonly config: BotConfig,
@@ -109,7 +111,7 @@ export class SessionManager {
     private readonly deps: SessionManagerDeps = {},
   ) {
     this.approvalManager = new ApprovalManager(store);
-    this.logger = createAppLogger({ sink: deps.logger ?? console });
+    this.logger = createAppLogger({ level: deps.logLevel, sink: deps.logger ?? console });
   }
 
   async handleText(input: IncomingBotText): Promise<BotTextResult> {
@@ -874,6 +876,7 @@ export class SessionManager {
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
+    await this.flushPendingPtyDebugOutput(sessionId);
     const exitedAt = new Date().toISOString();
     const updated = await this.store.updateSession(sessionId, (latest) => {
       const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
@@ -909,7 +912,51 @@ export class SessionManager {
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
     await this.store.appendSessionLog(sessionId, text);
+    await this.logPtyDebugOutput(sessionId, text);
     await this.observePendingTurnOutput(sessionId);
+  }
+
+  private async logPtyDebugOutput(sessionId: string, text: string): Promise<void> {
+    if (this.logger.level !== 'debug' || text.length === 0) {
+      return;
+    }
+    const buffered = `${this.ptyDebugBuffers.get(sessionId) ?? ''}${text}`;
+    const segments = buffered.split(/\r?\n/);
+    const remainder = segments.pop() ?? '';
+    this.ptyDebugBuffers.set(sessionId, remainder);
+    for (const segment of segments) {
+      await this.emitPtyDebugSegment(sessionId, segment);
+    }
+  }
+
+  private async flushPendingPtyDebugOutput(sessionId: string): Promise<void> {
+    if (this.logger.level !== 'debug') {
+      this.ptyDebugBuffers.delete(sessionId);
+      return;
+    }
+    const remainder = this.ptyDebugBuffers.get(sessionId);
+    this.ptyDebugBuffers.delete(sessionId);
+    if (!remainder) {
+      return;
+    }
+    await this.emitPtyDebugSegment(sessionId, remainder);
+  }
+
+  private async emitPtyDebugSegment(sessionId: string, segment: string): Promise<void> {
+    const sanitized = sanitizeTerminalOutput([segment]);
+    const readableLines = sanitized.readableLines.map((line) => line.trim()).filter((line) => line.length > 0);
+    if (readableLines.length === 0) {
+      return;
+    }
+    const session = await this.store.getSession(sessionId);
+    for (const line of readableLines) {
+      this.logger.debug('session.pty', {
+        session: sessionId,
+        chat: session?.chatId ?? 'unknown',
+        project: session?.projectId ?? 'unknown',
+        text: line,
+      });
+    }
   }
 
   private async observePendingTurnOutput(sessionId: string): Promise<void> {
