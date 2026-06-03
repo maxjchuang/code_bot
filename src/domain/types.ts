@@ -56,6 +56,9 @@ export interface CachedCodexStatusSummary {
   progressHint?: string;
   contextWindow?: string;
   tokenUsage?: string;
+  lastTokenUsage?: string;
+  rateLimits?: string;
+  resetTimes?: string;
   model?: string;
   cwd?: string;
 }

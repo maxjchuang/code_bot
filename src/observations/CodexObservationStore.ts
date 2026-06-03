@@ -16,12 +16,36 @@ export type CodexObservationSnapshot = {
   latestCommentary?: string;
   finalAnswer?: string;
   completedAt?: string;
+  tokenCount?: {
+    total?: TokenUsageBreakdown;
+    last?: TokenUsageBreakdown;
+    modelContextWindow?: number;
+  };
+  rateLimits?: {
+    primary?: ObservationRateLimitWindow;
+    secondary?: ObservationRateLimitWindow;
+    planType?: string;
+  };
   recentToolEvents: Array<{
     kind: 'tool_call' | 'tool_output';
     toolName?: string;
     summary: string;
     at: string;
   }>;
+};
+
+type TokenUsageBreakdown = {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+};
+
+type ObservationRateLimitWindow = {
+  usedPercent?: number;
+  windowMinutes?: number;
+  resetsAt?: string;
 };
 
 export interface CodexObservationStore {
@@ -61,6 +85,8 @@ export class FileCodexObservationStore implements CodexObservationStore {
     let completedAt: string | undefined;
     let latestActivityTimestamp: string | undefined;
     let status: CodexObservationSnapshot['status'] = 'unknown';
+    let tokenCount: CodexObservationSnapshot['tokenCount'];
+    let rateLimits: CodexObservationSnapshot['rateLimits'];
 
     try {
       for (const line of lines) {
@@ -98,6 +124,22 @@ export class FileCodexObservationStore implements CodexObservationStore {
             at: event.timestamp ?? '',
           });
         }
+        if (event.type === 'event_msg' && event.payload?.type === 'token_count') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          tokenCount = {
+            total: normalizeTokenUsage(event.payload.info?.total_token_usage),
+            last: normalizeTokenUsage(event.payload.info?.last_token_usage),
+            modelContextWindow:
+              typeof event.payload.info?.model_context_window === 'number' && Number.isFinite(event.payload.info.model_context_window)
+                ? event.payload.info.model_context_window
+                : undefined,
+          };
+          rateLimits = {
+            primary: normalizeRateLimitWindow(event.payload.rate_limits?.primary),
+            secondary: normalizeRateLimitWindow(event.payload.rate_limits?.secondary),
+            planType: typeof event.payload.rate_limits?.plan_type === 'string' ? event.payload.rate_limits.plan_type : undefined,
+          };
+        }
       }
     } catch (error) {
       return parseErrorSnapshot(input.codexSessionId, error);
@@ -116,9 +158,53 @@ export class FileCodexObservationStore implements CodexObservationStore {
       latestCommentary,
       finalAnswer,
       completedAt,
+      tokenCount,
+      rateLimits,
       recentToolEvents: toolEvents.slice(-5),
     };
   }
+}
+
+function normalizeTokenUsage(value: unknown): TokenUsageBreakdown | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const normalized: TokenUsageBreakdown = {
+    inputTokens: finiteNumber(record.input_tokens),
+    cachedInputTokens: finiteNumber(record.cached_input_tokens),
+    outputTokens: finiteNumber(record.output_tokens),
+    reasoningOutputTokens: finiteNumber(record.reasoning_output_tokens),
+    totalTokens: finiteNumber(record.total_tokens),
+  };
+  return Object.values(normalized).some((field) => field !== undefined) ? normalized : undefined;
+}
+
+function normalizeRateLimitWindow(value: unknown): ObservationRateLimitWindow | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const normalized: ObservationRateLimitWindow = {
+    usedPercent: finiteNumber(record.used_percent),
+    windowMinutes: finiteNumber(record.window_minutes),
+    resetsAt: normalizeResetTimestamp(record.resets_at),
+  };
+  return Object.values(normalized).some((field) => field !== undefined) ? normalized : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeResetTimestamp(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return undefined;
 }
 
 function extractOutputText(content: unknown): string | undefined {

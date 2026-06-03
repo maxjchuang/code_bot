@@ -21,6 +21,11 @@ describe('formatStatusMessage', () => {
           summary: {
             statusLine: 'running',
             currentTask: 'Implement status integration',
+            tokenUsage: 'total 1320 | input 1200 | cached 800 | output 120 | reasoning 30',
+            lastTokenUsage: 'last 220 | input 200 | cached 100 | output 20 | reasoning 5',
+            contextWindow: '4096 total | 2776 remaining',
+            rateLimits: 'primary 14% / 300m | secondary 10% / 10080m | plan prolite',
+            resetTimes: 'primary 2026-06-03T10:30:00.000Z | secondary 2026-06-10T10:30:00.000Z',
             model: 'gpt-5-codex',
           },
         },
@@ -34,8 +39,14 @@ describe('formatStatusMessage', () => {
     expect(message.bodyMarkdown).toContain('- **Status**: `running`');
     expect(message.bodyMarkdown).toContain('- **Source**: `live`');
     expect(message.bodyMarkdown).toContain('- **Task**: Implement status integration');
+    expect(message.bodyMarkdown).toContain('- **Token usage**: `total 1320 | input 1200 | cached 800 | output 120 | reasoning 30`');
+    expect(message.bodyMarkdown).toContain('- **Last turn tokens**: `last 220 | input 200 | cached 100 | output 20 | reasoning 5`');
+    expect(message.bodyMarkdown).toContain('- **Context window**: `4096 total | 2776 remaining`');
+    expect(message.bodyMarkdown).toContain('- **Rate limits**: `primary 14% / 300m | secondary 10% / 10080m | plan prolite`');
+    expect(message.bodyMarkdown).toContain('- **Resets**: `primary 2026-06-03T10:30:00.000Z | secondary 2026-06-10T10:30:00.000Z`');
     expect(message.bodyMarkdown).toContain('```text');
     expect(message.fallbackText).toContain('Project: repo');
+    expect(message.fallbackText).toContain('Last token usage: last 220 | input 200 | cached 100 | output 20 | reasoning 5');
   });
 
   it('omits empty optional local fields and shows Codex unavailable', () => {

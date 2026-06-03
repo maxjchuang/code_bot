@@ -72,6 +72,15 @@ function formatCodexMarkdown(input: StatusMessageInput['codex']): string {
   if (status.summary.tokenUsage) {
     lines.push(`- **Token usage**: \`${status.summary.tokenUsage}\``);
   }
+  if (status.summary.lastTokenUsage) {
+    lines.push(`- **Last turn tokens**: \`${status.summary.lastTokenUsage}\``);
+  }
+  if (status.summary.rateLimits) {
+    lines.push(`- **Rate limits**: \`${status.summary.rateLimits}\``);
+  }
+  if (status.summary.resetTimes) {
+    lines.push(`- **Resets**: \`${status.summary.resetTimes}\``);
+  }
   if (status.summary.model) {
     lines.push(`- **Model**: \`${status.summary.model}\``);
   }
@@ -130,6 +139,15 @@ function formatCodexFallback(input: StatusMessageInput['codex']): string {
   }
   if (status.summary.tokenUsage) {
     lines.push(`Token usage: ${status.summary.tokenUsage}`);
+  }
+  if (status.summary.lastTokenUsage) {
+    lines.push(`Last token usage: ${status.summary.lastTokenUsage}`);
+  }
+  if (status.summary.rateLimits) {
+    lines.push(`Rate limits: ${status.summary.rateLimits}`);
+  }
+  if (status.summary.resetTimes) {
+    lines.push(`Resets: ${status.summary.resetTimes}`);
   }
   if (status.summary.model) {
     lines.push(`Model: ${status.summary.model}`);
