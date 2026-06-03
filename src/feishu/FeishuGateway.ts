@@ -10,6 +10,7 @@ export interface FeishuIncomingMessage {
   chatType: ChatType;
   userId: string;
   text: string;
+  wasMentioned?: boolean;
 }
 
 export interface FeishuGateway {
@@ -32,6 +33,11 @@ interface LarkReceiveMessageEvent {
     chat_type?: string;
     message_type?: string;
     content?: string;
+    mentions?: Array<{
+      id?: {
+        open_id?: string;
+      };
+    }>;
   };
   sender?: {
     sender_id?: {
@@ -48,6 +54,13 @@ interface LarkClientLike {
           params: { receive_id_type: 'chat_id' };
           data: { receive_id: string; msg_type: 'text' | 'interactive'; content: string };
         }) => Promise<unknown>;
+      };
+    };
+  };
+  bot?: {
+    v3?: {
+      info?: {
+        get: () => Promise<{ data?: { bot?: { open_id?: string } } }>;
       };
     };
   };
@@ -84,6 +97,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   private readonly logger: AppLogger;
   private readonly recordEvent?: (event: BotEvent) => Promise<void>;
   private readonly recordError?: (entry: BotErrorLogEntry) => Promise<void>;
+  private botOpenId?: string;
 
   constructor(appId: string, appSecret: string, deps?: LarkGatewayDeps) {
     this.client = deps?.client ?? new lark.Client({ appId, appSecret });
@@ -95,6 +109,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   }
 
   async start(onMessage: (message: FeishuIncomingMessage) => Promise<FeishuOutgoingReply>): Promise<void> {
+    this.botOpenId = await this.resolveBotOpenId();
     const dispatcher = this.createEventDispatcher();
     dispatcher.register({
         'im.message.receive_v1': async (data: LarkReceiveMessageEvent) => {
@@ -114,6 +129,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             chatType: message.chat_type === 'group' ? 'group' : 'private',
             userId: sender.open_id,
             text,
+            wasMentioned: message.chat_type === 'group' ? this.isMentioningBot(message) : false,
           };
 
           let reply: FeishuOutgoingReply;
@@ -149,6 +165,24 @@ export class LarkLongConnectionGateway implements FeishuGateway {
       eventDispatcher: dispatcher,
     });
     this.logger.info('gateway.started', {});
+  }
+
+  private async resolveBotOpenId(): Promise<string | undefined> {
+    try {
+      return (await this.client.bot?.v3?.info?.get?.())?.data?.bot?.open_id;
+    } catch (error) {
+      this.logger.error('feishu.bot_identity_failed', {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  private isMentioningBot(message: NonNullable<LarkReceiveMessageEvent['message']>): boolean {
+    if (!this.botOpenId) {
+      return false;
+    }
+    return message.mentions?.some((mention) => mention.id?.open_id === this.botOpenId) ?? false;
   }
 
   async sendText(chatId: string, text: string): Promise<void> {
