@@ -107,6 +107,21 @@ describe('readCodexModelCatalog', () => {
     });
   });
 
+  it.each([
+    ['missing models array', {}],
+    ['non-array models field', { models: {} }],
+    ['non-object model entry', { models: ['gpt-5'] }],
+  ])('returns invalid-cache result for invalid cache shape: %s', async (_name, cache) => {
+    const codexHome = await createTmpDir();
+    await writeCache(codexHome, cache);
+
+    await expect(readCodexModelCatalog({ codexHome })).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'invalid',
+      message: 'Codex model cache is unreadable.',
+    });
+  });
+
   it('returns empty-cache result when no visible models exist', async () => {
     const codexHome = await createTmpDir();
     await writeCache(codexHome, {
