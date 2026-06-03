@@ -85,8 +85,37 @@ describe('createCodexStatusService', () => {
       availability: { kind: 'ready' },
       codexSessionId: 'codex_1',
       status: 'running',
+      cwd: '/repo',
+      cliVersion: '0.135.0',
+      model: 'gpt-5.5',
+      reasoningEffort: 'medium',
+      summaryMode: 'auto',
+      permissions: 'Full Access',
+      collaborationMode: 'default',
       latestActivityAt: '2026-06-03T08:00:00.000Z',
       latestCommentary: 'Implementing tests',
+      tokenCount: {
+        total: {
+          inputTokens: 1400,
+          cachedInputTokens: 900,
+          outputTokens: 140,
+          reasoningOutputTokens: 20,
+          totalTokens: 1540,
+        },
+        last: {
+          inputTokens: 220,
+          cachedInputTokens: 120,
+          outputTokens: 18,
+          reasoningOutputTokens: 4,
+          totalTokens: 238,
+        },
+        modelContextWindow: 4096,
+      },
+      rateLimits: {
+        primary: { usedPercent: 14, windowMinutes: 300, resetsAt: '2026-06-03T08:30:00.000Z' },
+        secondary: { usedPercent: 10, windowMinutes: 10080, resetsAt: '2026-06-10T08:30:00.000Z' },
+        planType: 'prolite',
+      },
       recentToolEvents: [],
     });
 
@@ -108,6 +137,88 @@ describe('createCodexStatusService', () => {
       expect(result.status.source).toBe('observation_fallback');
       expect(result.status.summary.statusLine).toBe('running');
       expect(result.status.summary.progressHint).toBe('Implementing tests');
+      expect(result.status.summary.model).toBe('gpt-5.5');
+      expect(result.status.summary.cwd).toBe('/repo');
+      expect(result.status.summary.cliVersion).toBe('0.135.0');
+      expect(result.status.summary.reasoningEffort).toBe('medium');
+      expect(result.status.summary.summaryMode).toBe('auto');
+      expect(result.status.summary.permissions).toBe('Full Access');
+      expect(result.status.summary.collaborationMode).toBe('default');
+      expect(result.status.summary.tokenUsage).toContain('total 1540');
+      expect(result.status.summary.lastTokenUsage).toContain('last 238');
+      expect(result.status.summary.contextWindow).toBe('62% left (1.5K used / 4.1K)');
+      expect(result.status.summary.primaryLimit).toBe('86% left (resets 2026-06-03T08:30:00.000Z)');
+      expect(result.status.summary.weeklyLimit).toBe('90% left (resets 2026-06-10T08:30:00.000Z)');
+      expect(result.status.summary.planType).toBe('Prolite');
+    }
+  });
+
+  it('enriches live status with observation token and rate-limit data', async () => {
+    const observationStore = new FakeCodexObservationStore();
+    observationStore.snapshots.set('codex_1', {
+      availability: { kind: 'ready' },
+      codexSessionId: 'codex_1',
+      status: 'running',
+      latestActivityAt: '2026-06-03T08:00:00.000Z',
+      cwd: '/repo',
+      cliVersion: '0.135.0',
+      model: 'gpt-5.5',
+      reasoningEffort: 'medium',
+      summaryMode: 'auto',
+      permissions: 'Full Access',
+      collaborationMode: 'default',
+      tokenCount: {
+        total: {
+          inputTokens: 2100,
+          cachedInputTokens: 1100,
+          outputTokens: 210,
+          reasoningOutputTokens: 40,
+          totalTokens: 2310,
+        },
+        last: {
+          inputTokens: 320,
+          cachedInputTokens: 160,
+          outputTokens: 22,
+          reasoningOutputTokens: 6,
+          totalTokens: 342,
+        },
+        modelContextWindow: 4096,
+      },
+      rateLimits: {
+        primary: { usedPercent: 18, windowMinutes: 300, resetsAt: '2026-06-03T08:45:00.000Z' },
+        planType: 'pro',
+      },
+      recentToolEvents: [],
+    });
+
+    const service = createCodexStatusService({
+      fetchLiveStatusText: vi.fn().mockResolvedValue('Status: running\nTask: Implement status integration'),
+      observationStore,
+      now: () => new Date('2026-06-03T08:00:00.000Z'),
+      timeoutMs: 100,
+    });
+
+    const result = await service.fetchForRunningSession({
+      sessionId: 'sess_1',
+      codexSessionId: 'codex_1',
+      cached: undefined,
+    });
+
+    expect(result.kind).toBe('available');
+    if (result.kind === 'available') {
+      expect(result.status.source).toBe('live');
+      expect(result.status.summary.currentTask).toBe('Implement status integration');
+      expect(result.status.summary.model).toBe('gpt-5.5');
+      expect(result.status.summary.cwd).toBe('/repo');
+      expect(result.status.summary.cliVersion).toBe('0.135.0');
+      expect(result.status.summary.reasoningEffort).toBe('medium');
+      expect(result.status.summary.summaryMode).toBe('auto');
+      expect(result.status.summary.permissions).toBe('Full Access');
+      expect(result.status.summary.collaborationMode).toBe('default');
+      expect(result.status.summary.tokenUsage).toContain('total 2310');
+      expect(result.status.summary.contextWindow).toBe('44% left (2.3K used / 4.1K)');
+      expect(result.status.summary.primaryLimit).toBe('82% left (resets 2026-06-03T08:45:00.000Z)');
+      expect(result.status.summary.planType).toBe('Pro');
     }
   });
 });

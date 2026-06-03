@@ -12,16 +12,47 @@ export type CodexObservationSnapshot = {
   availability: ObservationAvailability;
   codexSessionId: string;
   status: 'running' | 'completed' | 'idle' | 'unknown';
+  cwd?: string;
+  cliVersion?: string;
+  model?: string;
+  reasoningEffort?: string;
+  summaryMode?: string;
+  permissions?: string;
+  collaborationMode?: string;
   latestActivityAt?: string;
   latestCommentary?: string;
   finalAnswer?: string;
   completedAt?: string;
+  tokenCount?: {
+    total?: TokenUsageBreakdown;
+    last?: TokenUsageBreakdown;
+    modelContextWindow?: number;
+  };
+  rateLimits?: {
+    primary?: ObservationRateLimitWindow;
+    secondary?: ObservationRateLimitWindow;
+    planType?: string;
+  };
   recentToolEvents: Array<{
     kind: 'tool_call' | 'tool_output';
     toolName?: string;
     summary: string;
     at: string;
   }>;
+};
+
+type TokenUsageBreakdown = {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+};
+
+type ObservationRateLimitWindow = {
+  usedPercent?: number;
+  windowMinutes?: number;
+  resetsAt?: string;
 };
 
 export interface CodexObservationStore {
@@ -61,11 +92,38 @@ export class FileCodexObservationStore implements CodexObservationStore {
     let completedAt: string | undefined;
     let latestActivityTimestamp: string | undefined;
     let status: CodexObservationSnapshot['status'] = 'unknown';
+    let cwd: string | undefined;
+    let cliVersion: string | undefined;
+    let model: string | undefined;
+    let reasoningEffort: string | undefined;
+    let summaryMode: string | undefined;
+    let permissions: string | undefined;
+    let collaborationMode: string | undefined;
+    let tokenCount: CodexObservationSnapshot['tokenCount'];
+    let rateLimits: CodexObservationSnapshot['rateLimits'];
 
     try {
       for (const line of lines) {
         const event = JSON.parse(line) as { timestamp?: string; type?: string; payload?: any };
         const eventTimestamp = typeof event.timestamp === 'string' ? event.timestamp : undefined;
+        if (event.type === 'session_meta') {
+          cwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : cwd;
+          cliVersion = typeof event.payload?.cli_version === 'string' ? event.payload.cli_version : cliVersion;
+        }
+        if (event.type === 'turn_context') {
+          cwd = typeof event.payload?.cwd === 'string' ? event.payload.cwd : cwd;
+          model = typeof event.payload?.model === 'string' ? event.payload.model : model;
+          reasoningEffort =
+            typeof event.payload?.reasoning_effort === 'string'
+              ? event.payload.reasoning_effort
+              : typeof event.payload?.effort === 'string'
+                ? event.payload.effort
+                : reasoningEffort;
+          summaryMode = typeof event.payload?.summary === 'string' ? event.payload.summary : summaryMode;
+          permissions = formatPermissions(event.payload?.approval_policy, event.payload?.sandbox_policy);
+          collaborationMode =
+            typeof event.payload?.collaboration_mode?.mode === 'string' ? event.payload.collaboration_mode.mode : collaborationMode;
+        }
         if (event.type === 'event_msg' && event.payload?.type === 'task_started') {
           latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
           status = 'running';
@@ -98,6 +156,22 @@ export class FileCodexObservationStore implements CodexObservationStore {
             at: event.timestamp ?? '',
           });
         }
+        if (event.type === 'event_msg' && event.payload?.type === 'token_count') {
+          latestActivityTimestamp = eventTimestamp ?? latestActivityTimestamp;
+          tokenCount = {
+            total: normalizeTokenUsage(event.payload.info?.total_token_usage),
+            last: normalizeTokenUsage(event.payload.info?.last_token_usage),
+            modelContextWindow:
+              typeof event.payload.info?.model_context_window === 'number' && Number.isFinite(event.payload.info.model_context_window)
+                ? event.payload.info.model_context_window
+                : undefined,
+          };
+          rateLimits = {
+            primary: normalizeRateLimitWindow(event.payload.rate_limits?.primary),
+            secondary: normalizeRateLimitWindow(event.payload.rate_limits?.secondary),
+            planType: typeof event.payload.rate_limits?.plan_type === 'string' ? event.payload.rate_limits.plan_type : undefined,
+          };
+        }
       }
     } catch (error) {
       return parseErrorSnapshot(input.codexSessionId, error);
@@ -112,13 +186,78 @@ export class FileCodexObservationStore implements CodexObservationStore {
       availability,
       codexSessionId: input.codexSessionId,
       status,
+      cwd,
+      cliVersion,
+      model,
+      reasoningEffort,
+      summaryMode,
+      permissions,
+      collaborationMode,
       latestActivityAt: latestActivityTimestamp,
       latestCommentary,
       finalAnswer,
       completedAt,
+      tokenCount,
+      rateLimits,
       recentToolEvents: toolEvents.slice(-5),
     };
   }
+}
+
+function normalizeTokenUsage(value: unknown): TokenUsageBreakdown | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const normalized: TokenUsageBreakdown = {
+    inputTokens: finiteNumber(record.input_tokens),
+    cachedInputTokens: finiteNumber(record.cached_input_tokens),
+    outputTokens: finiteNumber(record.output_tokens),
+    reasoningOutputTokens: finiteNumber(record.reasoning_output_tokens),
+    totalTokens: finiteNumber(record.total_tokens),
+  };
+  return Object.values(normalized).some((field) => field !== undefined) ? normalized : undefined;
+}
+
+function normalizeRateLimitWindow(value: unknown): ObservationRateLimitWindow | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const normalized: ObservationRateLimitWindow = {
+    usedPercent: finiteNumber(record.used_percent),
+    windowMinutes: finiteNumber(record.window_minutes),
+    resetsAt: normalizeResetTimestamp(record.resets_at),
+  };
+  return Object.values(normalized).some((field) => field !== undefined) ? normalized : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeResetTimestamp(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return undefined;
+}
+
+function formatPermissions(approvalPolicy: unknown, sandboxPolicy: unknown): string | undefined {
+  if (approvalPolicy === 'never' && sandboxPolicy && typeof sandboxPolicy === 'object' && (sandboxPolicy as { type?: unknown }).type === 'danger-full-access') {
+    return 'Full Access';
+  }
+  if (typeof approvalPolicy === 'string' || (sandboxPolicy && typeof sandboxPolicy === 'object' && typeof (sandboxPolicy as { type?: unknown }).type === 'string')) {
+    const approval = typeof approvalPolicy === 'string' ? approvalPolicy : 'unknown';
+    const sandbox = sandboxPolicy && typeof sandboxPolicy === 'object' && typeof (sandboxPolicy as { type?: unknown }).type === 'string'
+      ? (sandboxPolicy as { type: string }).type
+      : 'unknown';
+    return `${approval} / ${sandbox}`;
+  }
+  return undefined;
 }
 
 function extractOutputText(content: unknown): string | undefined {

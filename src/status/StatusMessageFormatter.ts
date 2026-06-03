@@ -11,6 +11,9 @@ export type StatusMessageInput = {
   codex:
     | { kind: 'available'; status: CachedCodexStatus }
     | { kind: 'unavailable' };
+  runtime?: {
+    installedCliVersion?: string;
+  };
 };
 
 export type StatusMessage = {
@@ -19,7 +22,7 @@ export type StatusMessage = {
 };
 
 export function formatStatusMessage(input: StatusMessageInput): StatusMessage {
-  const markdownSections = [formatSessionMarkdown(input.session), formatCodexMarkdown(input.codex)];
+  const markdownSections = [formatSessionMarkdown(input.session), formatCodexMarkdown(input.codex, input.runtime)];
   const rawMarkdown = formatRawMarkdown(input.codex);
   if (rawMarkdown) {
     markdownSections.push(rawMarkdown);
@@ -27,7 +30,7 @@ export function formatStatusMessage(input: StatusMessageInput): StatusMessage {
 
   return {
     bodyMarkdown: markdownSections.join('\n\n'),
-    fallbackText: [formatSessionFallback(input.session), formatCodexFallback(input.codex)].join('\n\n'),
+    fallbackText: [formatSessionFallback(input.session), formatCodexFallback(input.codex, input.runtime)].join('\n\n'),
   };
 }
 
@@ -49,7 +52,7 @@ function formatSessionMarkdown(input: StatusMessageInput['session']): string {
   return lines.join('\n');
 }
 
-function formatCodexMarkdown(input: StatusMessageInput['codex']): string {
+function formatCodexMarkdown(input: StatusMessageInput['codex'], runtime: StatusMessageInput['runtime']): string {
   if (input.kind === 'unavailable') {
     return '## Codex\nUnavailable';
   }
@@ -66,11 +69,41 @@ function formatCodexMarkdown(input: StatusMessageInput['codex']): string {
   if (status.summary.progressHint) {
     lines.push(`- **Progress**: ${status.summary.progressHint}`);
   }
+  if (status.summary.cliVersion) {
+    lines.push(`- **CLI version**: \`${status.summary.cliVersion}\``);
+  }
+  if (runtime?.installedCliVersion) {
+    lines.push(`- **Installed CLI version**: \`${runtime.installedCliVersion}\``);
+  }
+  if (status.summary.reasoningEffort) {
+    lines.push(`- **Reasoning**: \`${status.summary.reasoningEffort}\``);
+  }
+  if (status.summary.summaryMode) {
+    lines.push(`- **Summaries**: \`${status.summary.summaryMode}\``);
+  }
+  if (status.summary.permissions) {
+    lines.push(`- **Permissions**: \`${status.summary.permissions}\``);
+  }
+  if (status.summary.collaborationMode) {
+    lines.push(`- **Collaboration mode**: \`${status.summary.collaborationMode}\``);
+  }
   if (status.summary.contextWindow) {
     lines.push(`- **Context window**: \`${status.summary.contextWindow}\``);
   }
   if (status.summary.tokenUsage) {
     lines.push(`- **Token usage**: \`${status.summary.tokenUsage}\``);
+  }
+  if (status.summary.lastTokenUsage) {
+    lines.push(`- **Last turn tokens**: \`${status.summary.lastTokenUsage}\``);
+  }
+  if (status.summary.primaryLimit) {
+    lines.push(`- **5h limit**: \`${status.summary.primaryLimit}\``);
+  }
+  if (status.summary.weeklyLimit) {
+    lines.push(`- **Weekly limit**: \`${status.summary.weeklyLimit}\``);
+  }
+  if (status.summary.planType) {
+    lines.push(`- **Plan type**: \`${status.summary.planType}\``);
   }
   if (status.summary.model) {
     lines.push(`- **Model**: \`${status.summary.model}\``);
@@ -108,7 +141,7 @@ function formatSessionFallback(input: StatusMessageInput['session']): string {
   return lines.join('\n');
 }
 
-function formatCodexFallback(input: StatusMessageInput['codex']): string {
+function formatCodexFallback(input: StatusMessageInput['codex'], runtime: StatusMessageInput['runtime']): string {
   if (input.kind === 'unavailable') {
     return 'Codex\nUnavailable';
   }
@@ -125,11 +158,41 @@ function formatCodexFallback(input: StatusMessageInput['codex']): string {
   if (status.summary.progressHint) {
     lines.push(`Progress hint: ${status.summary.progressHint}`);
   }
+  if (status.summary.cliVersion) {
+    lines.push(`CLI version: ${status.summary.cliVersion}`);
+  }
+  if (runtime?.installedCliVersion) {
+    lines.push(`Installed CLI version: ${runtime.installedCliVersion}`);
+  }
+  if (status.summary.reasoningEffort) {
+    lines.push(`Reasoning: ${status.summary.reasoningEffort}`);
+  }
+  if (status.summary.summaryMode) {
+    lines.push(`Summaries: ${status.summary.summaryMode}`);
+  }
+  if (status.summary.permissions) {
+    lines.push(`Permissions: ${status.summary.permissions}`);
+  }
+  if (status.summary.collaborationMode) {
+    lines.push(`Collaboration mode: ${status.summary.collaborationMode}`);
+  }
   if (status.summary.contextWindow) {
     lines.push(`Context window: ${status.summary.contextWindow}`);
   }
   if (status.summary.tokenUsage) {
     lines.push(`Token usage: ${status.summary.tokenUsage}`);
+  }
+  if (status.summary.lastTokenUsage) {
+    lines.push(`Last token usage: ${status.summary.lastTokenUsage}`);
+  }
+  if (status.summary.primaryLimit) {
+    lines.push(`5h limit: ${status.summary.primaryLimit}`);
+  }
+  if (status.summary.weeklyLimit) {
+    lines.push(`Weekly limit: ${status.summary.weeklyLimit}`);
+  }
+  if (status.summary.planType) {
+    lines.push(`Plan type: ${status.summary.planType}`);
   }
   if (status.summary.model) {
     lines.push(`Model: ${status.summary.model}`);

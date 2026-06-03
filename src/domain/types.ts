@@ -54,8 +54,17 @@ export interface CachedCodexStatusSummary {
   statusLine?: string;
   currentTask?: string;
   progressHint?: string;
+  cliVersion?: string;
+  reasoningEffort?: string;
+  summaryMode?: string;
+  permissions?: string;
+  collaborationMode?: string;
   contextWindow?: string;
   tokenUsage?: string;
+  lastTokenUsage?: string;
+  primaryLimit?: string;
+  weeklyLimit?: string;
+  planType?: string;
   model?: string;
   cwd?: string;
 }

@@ -2987,12 +2987,41 @@ describe('SessionManager', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
+    runner.version = '0.136.0';
+    const observationStore = new FakeCodexObservationStore();
     const manager = new SessionManager(sampleConfig(root), store, runner, {
       codexStatus: { liveFetchTimeoutMs: 100, quietMs: 0 },
+      codexObservationStore: observationStore,
     });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const session = (await store.getSession(sessionId))!;
+    await store.saveSession({ ...session, codexSessionId: 'codex_1' });
+    observationStore.snapshots.set('codex_1', {
+      availability: { kind: 'ready' },
+      codexSessionId: 'codex_1',
+      status: 'running',
+      cwd: root,
+      cliVersion: '0.135.0',
+      model: 'gpt-5.5',
+      reasoningEffort: 'medium',
+      summaryMode: 'auto',
+      permissions: 'Full Access',
+      collaborationMode: 'default',
+      latestActivityAt: '2026-06-03T08:00:00.000Z',
+      tokenCount: {
+        total: { inputTokens: 1000, cachedInputTokens: 700, outputTokens: 100, reasoningOutputTokens: 20, totalTokens: 1100 },
+        last: { inputTokens: 200, cachedInputTokens: 100, outputTokens: 20, reasoningOutputTokens: 5, totalTokens: 220 },
+        modelContextWindow: 4096,
+      },
+      rateLimits: {
+        primary: { usedPercent: 14, windowMinutes: 300, resetsAt: '2026-06-03T08:30:00.000Z' },
+        secondary: { usedPercent: 10, windowMinutes: 10080, resetsAt: '2026-06-10T08:30:00.000Z' },
+        planType: 'prolite',
+      },
+      recentToolEvents: [],
+    });
     runner.queueStatusResponse(sessionId, 'status\r\nStatus: running\r\nTask: Implement status integration\r\nModel: gpt-5-codex\r\n');
 
     const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
@@ -3002,6 +3031,15 @@ describe('SessionManager', () => {
     expect(result.reply).toContain('Source: live');
     expect(result.reply).toContain('Status line: running');
     expect(result.reply).toContain('Task: Implement status integration');
+    expect(result.reply).toContain('CLI version: 0.135.0');
+    expect(result.reply).toContain('Installed CLI version: 0.136.0');
+    expect(result.reply).toContain('Reasoning: medium');
+    expect(result.reply).toContain('Summaries: auto');
+    expect(result.reply).toContain('Permissions: Full Access');
+    expect(result.reply).toContain('Collaboration mode: default');
+    expect(result.reply).toContain('5h limit: 86% left');
+    expect(result.reply).toContain('Weekly limit: 90% left');
+    expect(result.reply).toContain('Plan type: Prolite');
     await expect(store.getSession(sessionId)).resolves.toMatchObject({
       codexStatus: {
         source: 'live',

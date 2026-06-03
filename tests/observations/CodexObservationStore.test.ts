@@ -30,6 +30,20 @@ describe('FileCodexObservationStore', () => {
         payload: { type: 'task_started', turn_id: 'turn-1', started_at: 1780387202 },
       }),
       JSON.stringify({
+        timestamp: '2026-06-02T08:00:02.100Z',
+        type: 'turn_context',
+        payload: {
+          turn_id: 'turn-1',
+          cwd: '/repo',
+          approval_policy: 'never',
+          sandbox_policy: { type: 'danger-full-access' },
+          model: 'gpt-5.5',
+          collaboration_mode: { mode: 'default' },
+          effort: 'medium',
+          summary: 'auto',
+        },
+      }),
+      JSON.stringify({
         timestamp: '2026-06-02T08:00:03.000Z',
         type: 'event_msg',
         payload: { type: 'agent_message', phase: 'commentary', message: '我先检查当前实现，再决定如何切 observation。' },
@@ -38,6 +52,35 @@ describe('FileCodexObservationStore', () => {
         timestamp: '2026-06-02T08:00:04.000Z',
         type: 'response_item',
         payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"rg -n \\"tail\\" src"}' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-06-02T08:00:04.500Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: 1200,
+              cached_input_tokens: 800,
+              output_tokens: 120,
+              reasoning_output_tokens: 30,
+              total_tokens: 1320,
+            },
+            last_token_usage: {
+              input_tokens: 200,
+              cached_input_tokens: 100,
+              output_tokens: 20,
+              reasoning_output_tokens: 5,
+              total_tokens: 220,
+            },
+            model_context_window: 4096,
+          },
+          rate_limits: {
+            primary: { used_percent: 14, window_minutes: 300, resets_at: 1780389000 },
+            secondary: { used_percent: 10, window_minutes: 10080, resets_at: 1780993800 },
+            plan_type: 'prolite',
+          },
+        },
       }),
       JSON.stringify({
         timestamp: '2026-06-02T08:00:05.000Z',
@@ -67,9 +110,38 @@ describe('FileCodexObservationStore', () => {
 
     expect(snapshot.availability.kind).toBe('ready');
     expect(snapshot.status).toBe('completed');
+    expect(snapshot.cwd).toBe('/repo');
+    expect(snapshot.cliVersion).toBe('0.135.0');
+    expect(snapshot.model).toBe('gpt-5.5');
+    expect(snapshot.reasoningEffort).toBe('medium');
+    expect(snapshot.summaryMode).toBe('auto');
+    expect(snapshot.permissions).toBe('Full Access');
+    expect(snapshot.collaborationMode).toBe('default');
     expect(snapshot.latestCommentary).toBe('我先检查当前实现，再决定如何切 observation。');
     expect(snapshot.finalAnswer).toBe('最终建议：保留 PTY 控制面，新增 observation 主路径。');
     expect(snapshot.completedAt).toBe('2026-06-02T08:00:05.000Z');
+    expect(snapshot.tokenCount).toEqual({
+      total: {
+        inputTokens: 1200,
+        cachedInputTokens: 800,
+        outputTokens: 120,
+        reasoningOutputTokens: 30,
+        totalTokens: 1320,
+      },
+      last: {
+        inputTokens: 200,
+        cachedInputTokens: 100,
+        outputTokens: 20,
+        reasoningOutputTokens: 5,
+        totalTokens: 220,
+      },
+      modelContextWindow: 4096,
+    });
+    expect(snapshot.rateLimits).toEqual({
+      primary: { usedPercent: 14, windowMinutes: 300, resetsAt: '2026-06-02T08:30:00.000Z' },
+      secondary: { usedPercent: 10, windowMinutes: 10080, resetsAt: '2026-06-09T08:30:00.000Z' },
+      planType: 'prolite',
+    });
     expect(snapshot.recentToolEvents).toEqual([
       {
         kind: 'tool_call',
