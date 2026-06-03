@@ -16,6 +16,7 @@ import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js'
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
+import { createAppLogger, type AppLogger } from '../logging/AppLogger.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -45,6 +46,7 @@ export interface Notifier {
 }
 
 export interface SessionManagerDeps {
+  logger?: Pick<typeof console, 'info' | 'error'>;
   notifier?: Notifier;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: {
@@ -94,6 +96,7 @@ type CurrentTurnAnswer =
 
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
+  private readonly logger: AppLogger;
   private readonly chatQueues = new Map<string, Promise<unknown>>();
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly queuedTurns = new Map<string, PendingTurn[]>();
@@ -105,6 +108,7 @@ export class SessionManager {
     private readonly deps: SessionManagerDeps = {},
   ) {
     this.approvalManager = new ApprovalManager(store);
+    this.logger = createAppLogger({ sink: deps.logger ?? console });
   }
 
   async handleText(input: IncomingBotText): Promise<BotTextResult> {
@@ -298,6 +302,7 @@ export class SessionManager {
       mode: { kind: 'new' } | { kind: 'resume'; target: string };
       replyVerb: 'Created' | 'Resumed';
       eventType: 'session.created' | 'session.resumed';
+      logEventType?: 'session.created' | 'session.resumed' | 'session.auto_started_single_project';
       sessionFields?: Partial<SessionRecord>;
       discoverCodexSessionId?: boolean;
     },
@@ -366,6 +371,11 @@ export class SessionManager {
       currentSessionId: sessionId,
     };
     await this.store.saveChat(chat);
+    this.logger.info(options.logEventType ?? options.eventType, {
+      chat: input.chatId,
+      project: project.id,
+      session: sessionId,
+    });
     if (options.discoverCodexSessionId) {
       void this.discoverAndStoreCodexSessionId(sessionId, project.path, startedAt).catch((error) =>
         this.recordBackgroundError('session.codex_id_discovery_failed', error, { sessionId, projectPath: project.path }).catch(() => undefined),
@@ -522,6 +532,11 @@ export class SessionManager {
         at: failedAt,
         data: { sessionId: chat.currentSessionId, chatId: input.chatId, reason: message },
       });
+      this.logger.error('session.send_failed', {
+        chat: input.chatId,
+        session: chat.currentSessionId,
+        reason: message,
+      });
       return { reply: 'No running session. Run /new <project> first.' };
     }
     await this.store.appendEvent({
@@ -584,6 +599,7 @@ export class SessionManager {
       mode: { kind: 'new' },
       replyVerb: 'Created',
       eventType: 'session.created',
+      logEventType: 'session.auto_started_single_project',
       discoverCodexSessionId: true,
     });
     const chat = await this.store.getChat(input.chatId);
@@ -835,6 +851,11 @@ export class SessionManager {
       at: stoppedAt,
       data: { sessionId, chatId: initialSession.chatId, userId },
     });
+    this.logger.info('session.stopped', {
+      chat: initialSession.chatId,
+      session: sessionId,
+      user: userId,
+    });
 
     const chat = await this.store.getChat(initialSession.chatId);
     if (chat?.currentSessionId === sessionId) {
@@ -866,6 +887,11 @@ export class SessionManager {
         data: { sessionId, exitCode },
       });
     }
+    this.logger.info('session.exited', {
+      session: sessionId,
+      exitCode: exitCode ?? 'none',
+      status: updated?.status ?? 'missing',
+    });
     if (this.pendingTurns.has(sessionId)) {
       await this.completePendingTurn(sessionId, 'exit').catch((error) =>
         this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
@@ -992,6 +1018,12 @@ export class SessionManager {
           rendered.fallback.kind === 'text' ? rendered.fallback.text : message.fallbackText,
         );
       }
+      this.logger.info('notification.sent', {
+        chat: turn.chatId,
+        session: sessionId,
+        project: turn.projectId,
+        reason,
+      });
       await this.store.appendEvent({
         type: reason === 'exit' ? 'notification.turn_exit_fallback' : 'notification.turn_completed',
         at: new Date().toISOString(),
@@ -1010,6 +1042,14 @@ export class SessionManager {
           projectId: turn.projectId,
         }).catch(() => undefined),
       );
+    } catch (error) {
+      this.logger.error('notification.failed', {
+        chat: turn.chatId,
+        session: sessionId,
+        project: turn.projectId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     } finally {
       if (turn.timer) {
         clearTimeout(turn.timer);

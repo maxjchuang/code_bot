@@ -10,6 +10,7 @@ function createGatewayHarness() {
   let handler: ReceiveHandler | undefined;
   const sent: Array<{ receive_id: string; content: string }> = [];
   const errors: unknown[][] = [];
+  const infos: unknown[][] = [];
   const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
   const errorLogs: Array<{ at: string; source: string; message: string; data: Record<string, unknown> }> = [];
 
@@ -35,6 +36,9 @@ function createGatewayHarness() {
       },
     }),
     logger: {
+      info: (...args: unknown[]) => {
+        infos.push(args);
+      },
       error: (...args: unknown[]) => {
         errors.push(args);
       },
@@ -51,6 +55,7 @@ function createGatewayHarness() {
     gateway,
     sent,
     errors,
+    infos,
     events,
     errorLogs,
     getHandler: () => {
@@ -67,6 +72,7 @@ describe('LarkLongConnectionGateway', () => {
     const harness = createGatewayHarness();
     const onMessage = vi.fn(async () => ({ text: 'bot reply' }));
     await harness.gateway.start(onMessage);
+    expect(harness.infos).toContainEqual([expect.stringContaining('gateway.started')]);
 
     await harness.getHandler()({
       message: {
@@ -381,7 +387,10 @@ describe('LarkLongConnectionGateway', () => {
 
   it('falls back to text when card sending fails', async () => {
     const sent: Array<{ msg_type: string; content: string }> = [];
+    const infos: unknown[][] = [];
     let calls = 0;
+    const originalLevel = process.env.LOG_LEVEL;
+    process.env.LOG_LEVEL = 'debug';
     const gateway = new LarkLongConnectionGateway('app', 'secret', {
       client: {
         im: {
@@ -399,14 +408,29 @@ describe('LarkLongConnectionGateway', () => {
           },
         },
       },
+      logger: {
+        info: (...args: unknown[]) => {
+          infos.push(args);
+        },
+        error: () => undefined,
+      },
     } as any);
 
-    await gateway.sendRenderedMessage('oc_1', {
-      preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [] } } },
-      fallback: { kind: 'text', text: 'fallback text' },
-    });
+    try {
+      await gateway.sendRenderedMessage('oc_1', {
+        preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [] } } },
+        fallback: { kind: 'text', text: 'fallback text' },
+      });
+    } finally {
+      if (originalLevel === undefined) {
+        delete process.env.LOG_LEVEL;
+      } else {
+        process.env.LOG_LEVEL = originalLevel;
+      }
+    }
 
     expect(sent).toEqual([{ msg_type: 'text', content: JSON.stringify({ text: 'fallback text' }) }]);
+    expect(infos).toContainEqual([expect.stringContaining('DEBUG feishu.render_fallback')]);
   });
 
   it('sends rendered replies from the incoming message handler as cards', async () => {

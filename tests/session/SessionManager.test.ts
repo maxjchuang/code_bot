@@ -306,6 +306,23 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
+  it('logs session creation summaries for explicit /new commands', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { logger });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('session.created'));
+  });
+
   it('auto-starts the only configured project for a first normal message with no active session', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -335,6 +352,23 @@ describe('SessionManager', () => {
       createdBy: 'ou_1',
     });
     expect(sent.reply).toContain(`Sent to Codex session ${runner.starts[0].sessionId}.`);
+  });
+
+  it('logs single-project auto-start summaries for first normal messages', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(singleProjectConfig(root), store, runner, { logger });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('session.auto_started_single_project'));
   });
 
   it('keeps requiring explicit project selection for a first normal message when multiple projects exist', async () => {
@@ -405,6 +439,26 @@ describe('SessionManager', () => {
       status: 'interrupted',
       lastSummary: 'Failed to send to Codex: transport down',
     });
+  });
+
+  it('logs send failures to the console summary logger', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    runner.send = vi.fn(async () => {
+      throw new Error('transport down');
+    });
+    const manager = new SessionManager(singleProjectConfig(root), store, runner, { logger });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      text: 'inspect status',
+    });
+
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('session.send_failed'));
   });
 
   it('returns an unconfirmed reply and retries submit once when processing is not confirmed in time', async () => {
@@ -750,6 +804,82 @@ describe('SessionManager', () => {
       vi.useRealTimers();
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
       expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '当前分支：develop');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs notification delivery summaries after a completion is sent', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 20 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const logger = { info: vi.fn(), error: vi.fn() };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(config, store, runner, { notifier, logger, codexObservationStore: observationStore });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3491';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: '当前分支：develop',
+        completedAt: '2099-06-02T08:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await runner.emitOutput(sessionId, '• Working\n');
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => {
+        expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('notification.sent'));
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs notification delivery failures when notifier sending fails', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 20 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockRejectedValue(new Error('notify failed')) };
+      const logger = { info: vi.fn(), error: vi.fn() };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(config, store, runner, { notifier, logger, codexObservationStore: observationStore });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3492';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: '当前分支：develop',
+        completedAt: '2099-06-02T08:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await runner.emitOutput(sessionId, '• Working\n');
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => {
+        expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('notification.failed'));
+      });
     } finally {
       vi.useRealTimers();
     }

@@ -25,7 +25,7 @@ describe('bootstrap', () => {
   it('records health check failure and still starts gateway', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
-    const logger = { error: vi.fn() };
+    const logger = { info: vi.fn(), error: vi.fn() };
     const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<{ text: string }>) => {
       await expect(onMessage({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' })).resolves.toEqual({ text: 'ok', rendered: undefined });
     });
@@ -49,7 +49,9 @@ describe('bootstrap', () => {
       logger,
     });
 
-    expect(logger.error).toHaveBeenCalledWith('Codex health check failed: bad health');
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('startup.health_check_failed'),
+    );
     expect(createGateway).toHaveBeenCalledWith(
       'app',
       'secret',
@@ -143,6 +145,7 @@ describe('bootstrap', () => {
   it('records inbound message and reply events around gateway dispatch', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
+    const logger = { info: vi.fn(), error: vi.fn() };
     const gatewayStart = vi.fn(async (onMessage: (message: FeishuIncomingMessage) => Promise<{ text: string }>) => {
       await expect(onMessage({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: '/tail 20' })).resolves.toEqual({
         text: 'tail output',
@@ -160,6 +163,7 @@ describe('bootstrap', () => {
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
       }),
+      logger,
       createApp: () =>
         ({
           sessionManager: { handleText: async () => ({ reply: 'tail output' }) },
@@ -173,5 +177,8 @@ describe('bootstrap', () => {
     expect(content).toContain('"text":"/tail 20"');
     expect(content).toContain('"type":"command.replied"');
     expect(content).toContain('"replyPreview":"tail output"');
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('startup.ready'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('inbound.received'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('outbound.replied'));
   });
 });

@@ -9,6 +9,7 @@ import type { BotConfig } from './domain/types.js';
 import type { FileStateStore as FileStateStoreType } from './state/FileStateStore.js';
 import type { CodexRunner } from './codex/CodexRunner.js';
 import type { SessionManager } from './session/SessionManager.js';
+import { createAppLogger } from './logging/AppLogger.js';
 
 export interface BootstrapDeps {
   projectRoot?: string;
@@ -34,7 +35,7 @@ export interface BootstrapDeps {
       recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void>;
     },
   ) => FeishuGateway;
-  logger?: Pick<typeof console, 'error'>;
+  logger?: Pick<typeof console, 'info' | 'error'>;
 }
 
 export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
@@ -47,7 +48,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     deps.createGateway ??
     ((appId: string, appSecret: string, observability?: { recordEvent: (event: import('./domain/types.js').BotEvent) => Promise<void>; recordError: (entry: import('./domain/types.js').BotErrorLogEntry) => Promise<void> }) =>
       new LarkLongConnectionGateway(appId, appSecret, observability));
-  const logger = deps.logger ?? console;
+  const logger = createAppLogger({ sink: deps.logger ?? console });
 
   const config = await loadConfigFn(projectRoot);
   const store = createStoreFn(projectRoot);
@@ -59,7 +60,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const app = createAppFn({ projectRoot, config, store, codexRunner, notifier: gateway });
   const health = await app.healthCheck();
   if (!health.ok) {
-    logger.error(`Codex health check failed: ${health.reason}`);
+    logger.error('startup.health_check_failed', { reason: health.reason });
     try {
       await store.appendEvent({
         type: 'codex.health_check_failed',
@@ -68,11 +69,20 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error(`Failed to record Codex health check failure: ${message}`);
+      logger.error('startup.health_check_record_failed', { reason: message });
     }
   }
   await (app.recoverStartupState?.() ?? recoverStartupState(store));
+  logger.info('startup.ready', {
+    projects: config.projects.length,
+    verbosity: config.ui.verbosity,
+  });
   await gateway.start(async (message) => {
+    logger.info('inbound.received', {
+      chat: message.chatId,
+      type: message.chatType,
+      text: message.text,
+    });
     const receivedAt = new Date().toISOString();
     await store.appendEvent({
       type: 'command.received',
@@ -85,6 +95,11 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
       },
     });
     const result = await app.sessionManager.handleText(message);
+    logger.info('outbound.replied', {
+      chat: message.chatId,
+      type: message.chatType,
+      reply: result.reply,
+    });
     await store.appendEvent({
       type: 'command.replied',
       at: new Date().toISOString(),
