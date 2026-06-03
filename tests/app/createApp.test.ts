@@ -27,6 +27,11 @@ async function waitForAssertion(assertion: () => Promise<void> | void, timeoutMs
 }
 
 describe('createApp', () => {
+  const singleProjectConfig = (root: string) => {
+    const config = sampleConfig(root);
+    return { ...config, projects: [config.projects[0]] };
+  };
+
   it('wires dependencies and exposes health', async () => {
     const root = await createTmpDir();
     const app = createApp({
@@ -229,5 +234,109 @@ describe('createApp', () => {
         ]),
       );
     });
+  });
+
+  it('silently starts a new session for the only configured project when auto-resume fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const originalStart = runner.start.bind(runner);
+    const codexSessionId = '019e8271-ddb8-7540-9baa-77ce58da1f26';
+    const registry = {
+      discoverForProject: vi.fn().mockResolvedValue({ ok: true, codexSessionId }),
+    };
+    let attempts = 0;
+    runner.start = vi.fn(async (options) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error('resume failed');
+      }
+      await originalStart(options);
+    });
+    await store.saveSession({
+      id: 'sess_last',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T09:09:20.569Z',
+      updatedAt: '2026-06-01T09:19:01.493Z',
+      logPath: store.sessionLogPath('sess_last'),
+      codexSessionId,
+    });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      currentSessionId: 'sess_last',
+    });
+    const app = createApp({
+      projectRoot: root,
+      config: singleProjectConfig(root),
+      store,
+      codexRunner: runner,
+      codexSessionRegistry: registry as any,
+    } as any);
+
+    await app.recoverStartupState();
+
+    expect(runner.start).toHaveBeenCalledTimes(2);
+    expect((runner.start as any).mock.calls[0][0]).toMatchObject({
+      cwd: root,
+      mode: { kind: 'resume', target: codexSessionId },
+    });
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0]).toMatchObject({
+      cwd: root,
+      mode: { kind: 'new' },
+    });
+    const chat = await store.getChat('oc_1');
+    expect(chat).toMatchObject({
+      currentProjectId: 'repo',
+      currentSessionId: runner.starts[0].sessionId,
+    });
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+    });
+  });
+
+  it('does not silently start a new session when more than one project is configured', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    runner.startError = new Error('resume failed');
+    await store.saveSession({
+      id: 'sess_last',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T09:09:20.569Z',
+      updatedAt: '2026-06-01T09:19:01.493Z',
+      logPath: store.sessionLogPath('sess_last'),
+      codexSessionId: '019e8271-ddb8-7540-9baa-77ce58da1f26',
+    });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      currentSessionId: 'sess_last',
+    });
+    const app = createApp({
+      projectRoot: root,
+      config: sampleConfig(root),
+      store,
+      codexRunner: runner,
+    });
+
+    await app.recoverStartupState();
+
+    expect(runner.starts).toHaveLength(1);
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import type { BotConfig, SessionRecord } from '../domain/types.js';
+import type { BotConfig, ProjectConfig, SessionRecord } from '../domain/types.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
@@ -103,11 +103,17 @@ export async function recoverStartupState(
       const recoveredSession = recoveredSessions.get(chat.currentSessionId)!;
       const resumedSessionId =
         config && codexRunner ? await autoResumeRecoveredSession(store, config, codexRunner, recoveredSession, hooks).catch(() => undefined) : undefined;
+      const fallbackProject = config ? singleConfiguredProject(config) : undefined;
+      const replacementSessionId =
+        resumedSessionId ||
+        (fallbackProject && codexRunner
+          ? await autoStartSingleProjectSession(store, codexRunner, recoveredSession, fallbackProject, hooks).catch(() => undefined)
+          : undefined);
       await store.saveChat({
         chatId: chat.chatId,
         chatType: chat.chatType,
-        currentProjectId: chat.currentProjectId,
-        currentSessionId: resumedSessionId,
+        currentProjectId: replacementSessionId && fallbackProject ? fallbackProject.id : chat.currentProjectId,
+        currentSessionId: replacementSessionId,
       });
     }
   }
@@ -190,6 +196,71 @@ async function autoResumeRecoveredSession(
   return sessionId;
 }
 
+async function autoStartSingleProjectSession(
+  store: FileStateStore,
+  codexRunner: CodexRunner,
+  sourceSession: SessionRecord,
+  project: ProjectConfig,
+  hooks: StartupRecoveryHooks,
+): Promise<string | undefined> {
+  const now = new Date().toISOString();
+  const sessionId = createCodexSessionId();
+  const session: SessionRecord = {
+    id: sessionId,
+    chatId: sourceSession.chatId,
+    projectId: project.id,
+    status: 'running',
+    createdBy: sourceSession.createdBy,
+    createdAt: now,
+    updatedAt: now,
+    logPath: store.sessionLogPath(sessionId),
+    lastSummary: `Auto-started fresh session for the only configured project ${project.id} after restart recovery.`,
+  };
+  await store.saveSession(session);
+
+  try {
+    await codexRunner.start({
+      sessionId,
+      cwd: project.path,
+      args: project.codexArgs,
+      mode: { kind: 'new' },
+      onOutput: (text) => {
+        const persistOutput = hooks.onOutput ? hooks.onOutput(sessionId, text) : store.appendSessionLog(sessionId, text);
+        void persistOutput.catch((error) =>
+          recordAutoResumeBackgroundError(store, 'session.output_persist_failed', error, { sessionId }).catch(() => undefined),
+        );
+      },
+      onExit: (exitCode) => {
+        void markAutoResumedExited(store, sessionId, exitCode).catch((error) =>
+          recordAutoResumeBackgroundError(store, 'session.exit_persist_failed', error, { sessionId, exitCode }).catch(() => undefined),
+        );
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedAt = new Date().toISOString();
+    await store.saveSession({
+      ...session,
+      status: 'exited',
+      updatedAt: failedAt,
+      lastSummary: `Failed to auto-start single-project fallback session for ${project.id}: ${message}`,
+    });
+    await store.appendEvent({
+      type: 'session.auto_start_single_project_failed',
+      at: failedAt,
+      data: { sessionId, sourceSessionId: sourceSession.id, projectId: project.id, chatId: sourceSession.chatId, reason: message },
+    });
+    return undefined;
+  }
+
+  await store.appendEvent({
+    type: 'session.auto_started_single_project',
+    at: now,
+    data: { sessionId, sourceSessionId: sourceSession.id, projectId: project.id, chatId: sourceSession.chatId },
+  });
+  return sessionId;
+}
+
 async function discoverRecoveredCodexSessionId(
   store: FileStateStore,
   config: BotConfig,
@@ -247,6 +318,10 @@ async function discoverRecoveredCodexSessionId(
 
 function codexSessionRegistry(hooks: StartupRecoveryHooks): CodexSessionDiscovery {
   return hooks.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+}
+
+function singleConfiguredProject(config: BotConfig): ProjectConfig | undefined {
+  return config.projects.length === 1 ? config.projects[0] : undefined;
 }
 
 async function startupCodexSessionDiscoverySleep(hooks: StartupRecoveryHooks, ms: number): Promise<void> {
