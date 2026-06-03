@@ -702,6 +702,47 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['first task', '', '补充约束']);
   });
 
+  it('does not retry follow-up messages when observation stays silent', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(sampleConfig(root), store, runner, {
+        notifier,
+        codexObservationStore: observationStore,
+        sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, pollIntervalMs: 1 },
+      } as any);
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3514';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+
+      const firstReply = manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first task' });
+      await vi.advanceTimersByTimeAsync(1);
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'running',
+        latestCommentary: '我先处理 first task。',
+        latestActivityAt: '2099-01-01T00:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(firstReply).resolves.toEqual({ reply: '' });
+
+      const followUp = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '补充约束' });
+
+      expect(followUp.reply).toBe('');
+      expect(runner.sentMessages).toEqual(['first task', '补充约束']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('records send diagnostics before and after dispatching a normal task', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -721,20 +762,26 @@ describe('SessionManager', () => {
     expect(content).toContain('"transportTerminator":"\\\\r"');
   });
 
-  it('retries submit once when output shows only prompt echo without turn progress', async () => {
+  it('does not treat PTY prompt echo as processing confirmation', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier: { sendText: vi.fn() } });
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    } as any);
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
-    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '最近的一个 commit 做了什么事情？' });
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3515';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '最近的一个 commit 做了什么事情？' });
 
     await runner.emitOutput(sessionId, '›最近的一个commit做了什么事情？\n');
-    expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？']);
-
-    await delay(300);
+    expect(sent.reply).toBe('');
     expect(runner.sentMessages).toEqual(['最近的一个 commit 做了什么事情？', '']);
   });
 

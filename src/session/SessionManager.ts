@@ -69,7 +69,6 @@ const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
 const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
 const SEND_TEXT_PREVIEW_LIMIT = 120;
 const PTY_SEND_TERMINATOR = '\r';
-const SEND_SUBMIT_CONFIRM_DELAY_MS = 250;
 const SEND_SUBMIT_RETRY_LIMIT = 1;
 const DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS = 3_000;
 const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
@@ -89,12 +88,17 @@ interface PendingTurn {
   candidateUpdateCount: number;
   timer?: ReturnType<typeof setTimeout>;
   submitRetryCount: number;
-  submitRetryTimer?: ReturnType<typeof setTimeout>;
+  processingState: 'pending_confirmation' | 'confirmed_processing' | 'submit_retry_sent' | 'unconfirmed_failed';
 }
 
 type CurrentTurnAnswer =
   | { kind: 'answer'; text: string; source: 'observation' | 'pty' }
   | { kind: 'empty' };
+
+type SendConfirmationResult = {
+  confirmed: boolean;
+  retryUsed: boolean;
+};
 
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
@@ -559,9 +563,6 @@ export class SessionManager {
         transportTerminator: JSON.stringify(PTY_SEND_TERMINATOR).slice(1, -1),
       },
     });
-    if (notificationEnabled && createdPendingTurn && !this.deps.sendConfirmation) {
-      this.scheduleSubmitConfirmation(chat.currentSessionId);
-    }
     if (notificationEnabled && createdPendingTurn) {
       await this.store.appendEvent({
         type: 'notification.turn_started',
@@ -580,8 +581,8 @@ export class SessionManager {
         return { reply: this.isDebugUi() ? `补充消息已发送给 Codex。\nsession: ${chat.currentSessionId}` : '' };
       }
       if (createdPendingTurn && this.deps.sendConfirmation) {
-        const confirmed = await this.confirmCodexStartedProcessing(chat.currentSessionId);
-        if (!confirmed) {
+        const confirmation = await this.confirmCodexStartedProcessing(chat.currentSessionId);
+        if (!confirmation.confirmed) {
           return { reply: this.isDebugUi() ? `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` : '' };
         }
       }
@@ -965,10 +966,6 @@ export class SessionManager {
       return;
     }
     const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
-    if (hasObservedTurnProgress(pendingLines, turn.prompt) && turn.submitRetryTimer) {
-      clearTimeout(turn.submitRetryTimer);
-      turn.submitRetryTimer = undefined;
-    }
     const candidate = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: false });
     if (candidate.kind !== 'answer') {
       if (turn.timer) {
@@ -1106,9 +1103,6 @@ export class SessionManager {
       if (turn.timer) {
         clearTimeout(turn.timer);
       }
-      if (turn.submitRetryTimer) {
-        clearTimeout(turn.submitRetryTimer);
-      }
       this.pendingTurns.delete(sessionId);
       await this.activateNextQueuedTurn(sessionId);
     }
@@ -1200,21 +1194,33 @@ export class SessionManager {
     return this.discoverAndStoreCodexSessionId(session.id, project.path, session.createdAt);
   }
 
-  private async confirmCodexStartedProcessing(sessionId: string): Promise<boolean> {
+  private async confirmCodexStartedProcessing(sessionId: string): Promise<SendConfirmationResult> {
     const turn = this.pendingTurns.get(sessionId);
     if (!turn || turn.notified) {
-      return false;
+      return { confirmed: false, retryUsed: false };
     }
 
     const initialWaitMs = Math.max(0, this.deps.sendConfirmation?.initialWaitMs ?? DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS);
     const retryWaitMs = Math.max(0, this.deps.sendConfirmation?.retryWaitMs ?? DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS);
     if (await this.waitForTurnProcessingEvidence(sessionId, turn, initialWaitMs)) {
-      return true;
+      turn.processingState = 'confirmed_processing';
+      await this.recordProcessingConfirmationEvent('session.processing_confirmed', turn, sessionId, false);
+      return { confirmed: true, retryUsed: false };
     }
     if (!(await this.retryTurnSubmission(sessionId, turn))) {
-      return false;
+      turn.processingState = 'unconfirmed_failed';
+      await this.recordProcessingConfirmationEvent('session.processing_unconfirmed', turn, sessionId, false);
+      return { confirmed: false, retryUsed: false };
     }
-    return this.waitForTurnProcessingEvidence(sessionId, turn, retryWaitMs);
+    if (await this.waitForTurnProcessingEvidence(sessionId, turn, retryWaitMs)) {
+      turn.processingState = 'confirmed_processing';
+      await this.recordProcessingConfirmationEvent('session.processing_confirmed', turn, sessionId, true);
+      return { confirmed: true, retryUsed: true };
+    }
+
+    turn.processingState = 'unconfirmed_failed';
+    await this.recordProcessingConfirmationEvent('session.processing_unconfirmed', turn, sessionId, true);
+    return { confirmed: false, retryUsed: true };
   }
 
   private async retryTurnSubmission(sessionId: string, turn: PendingTurn): Promise<boolean> {
@@ -1222,6 +1228,7 @@ export class SessionManager {
       return false;
     }
     turn.submitRetryCount += 1;
+    turn.processingState = 'submit_retry_sent';
     await this.store.appendEvent({
       type: 'session.send_submit_retry',
       at: new Date().toISOString(),
@@ -1232,8 +1239,36 @@ export class SessionManager {
         retryCount: turn.submitRetryCount,
       },
     });
-    await this.runner.send(sessionId, '');
-    return true;
+    try {
+      await this.runner.send(sessionId, '');
+      return true;
+    } catch (error) {
+      await this.recordBackgroundError('session.send_submit_retry_failed', error, {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+      });
+      return false;
+    }
+  }
+
+  private async recordProcessingConfirmationEvent(
+    type: 'session.processing_confirmed' | 'session.processing_unconfirmed',
+    turn: PendingTurn,
+    sessionId: string,
+    retryUsed: boolean,
+  ): Promise<void> {
+    await this.store.appendEvent({
+      type,
+      at: new Date().toISOString(),
+      data: { sessionId, chatId: turn.chatId, projectId: turn.projectId, retryUsed },
+    }).catch((error) =>
+      this.recordBackgroundError(`${type}_persist_failed`, error, {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+      }).catch(() => undefined),
+    );
   }
 
   private async waitForTurnProcessingEvidence(sessionId: string, turn: PendingTurn, timeoutMs: number): Promise<boolean> {
@@ -1287,49 +1322,6 @@ export class SessionManager {
     return Boolean(snapshot.latestCommentary?.trim() || snapshot.finalAnswer?.trim() || snapshot.recentToolEvents.length > 0);
   }
 
-  private scheduleSubmitConfirmation(sessionId: string): void {
-    const turn = this.pendingTurns.get(sessionId);
-    if (!turn || turn.notified) {
-      return;
-    }
-    if (turn.submitRetryTimer) {
-      clearTimeout(turn.submitRetryTimer);
-    }
-    turn.submitRetryTimer = setTimeout(() => {
-      return this.confirmTurnSubmission(sessionId).catch((error) =>
-        this.recordBackgroundError('session.send_submit_retry_failed', error, { sessionId }).catch(() => undefined),
-      );
-    }, SEND_SUBMIT_CONFIRM_DELAY_MS);
-  }
-
-  private async confirmTurnSubmission(sessionId: string): Promise<void> {
-    const turn = this.pendingTurns.get(sessionId);
-    if (!turn || turn.notified) {
-      return;
-    }
-    turn.submitRetryTimer = undefined;
-    const pendingLines = await this.pendingTurnLogLines(sessionId, turn);
-    if (hasObservedTurnProgress(pendingLines, turn.prompt)) {
-      return;
-    }
-    if (turn.submitRetryCount >= SEND_SUBMIT_RETRY_LIMIT) {
-      return;
-    }
-    turn.submitRetryCount += 1;
-    await this.store.appendEvent({
-      type: 'session.send_submit_retry',
-      at: new Date().toISOString(),
-      data: {
-        sessionId,
-        chatId: turn.chatId,
-        projectId: turn.projectId,
-        retryCount: turn.submitRetryCount,
-      },
-    });
-    await this.runner.send(sessionId, '');
-    this.scheduleSubmitConfirmation(sessionId);
-  }
-
   private async pendingTurnLogLines(sessionId: string, turn: PendingTurn): Promise<string[]> {
     if (turn.outputStartOffset !== undefined) {
       return this.store.sessionLogLinesFrom(sessionId, turn.outputStartOffset);
@@ -1349,6 +1341,7 @@ export class SessionManager {
       notified: false,
       candidateUpdateCount: 0,
       submitRetryCount: 0,
+      processingState: 'pending_confirmation',
     };
   }
 
@@ -1461,52 +1454,4 @@ function previewCandidate(text: string): string {
 
 function hashCandidate(text: string): string {
   return createHash('sha1').update(text).digest('hex').slice(0, 12);
-}
-
-function isStartupBlockingLine(line: string): boolean {
-  return (
-    line.startsWith('> You are in ') ||
-    line.startsWith('Do you trust the contents of this directory?') ||
-    line.includes('Working with untrusted contents') ||
-    line.startsWith('1. Yes, continue') ||
-    line.startsWith('2. No, quit') ||
-    line.startsWith('Press enter to continue') ||
-    line.includes('Update available!') ||
-    line.startsWith('Release notes:') ||
-    line.startsWith('Updating Codex via ') ||
-    /^changed \d+ packages? in \d+s$/i.test(line) ||
-    line.includes('Update ran successfully!') ||
-    line.includes('Please restart Codex')
-  );
-}
-
-function hasObservedTurnProgress(rawLines: string[], prompt: string): boolean {
-  const promptComparable = prompt.replace(/\s+/g, '').trim();
-  const sanitized = sanitizeTerminalOutput(rawLines);
-  for (const line of sanitized.readableLines.flatMap((readableLine) => readableLine.split('\n'))) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    const comparable = trimmed.replace(/\s+/g, '');
-    if (comparable === promptComparable || comparable === `›${promptComparable}`) {
-      continue;
-    }
-    if (isStartupBlockingLine(trimmed)) {
-      continue;
-    }
-    if (
-      trimmed.startsWith('• Ran ') ||
-      trimmed.startsWith('└ ') ||
-      trimmed.includes('Working') ||
-      /^W*o*r*k*i*n*g*\d*$/.test(trimmed.replace(/[•\s]/g, '')) ||
-      /─{16,}/.test(trimmed)
-    ) {
-      return true;
-    }
-    if (!trimmed.startsWith('›')) {
-      return true;
-    }
-  }
-  return false;
 }
