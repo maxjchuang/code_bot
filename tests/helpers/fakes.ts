@@ -1,6 +1,7 @@
 import type { BotConfig } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 import type { CodexObservationSnapshot, CodexObservationStore } from '../../src/observations/CodexObservationStore.js';
+import type { CodexModelCatalog } from '../../src/models/CodexModelCatalog.js';
 
 export function sampleConfig(projectPath: string): BotConfig {
   return {
@@ -20,6 +21,30 @@ export function sampleConfig(projectPath: string): BotConfig {
     notifications: { enabled: true, idleMs: 10, maxFinalChars: 8000, failureTailChars: 2000 },
   };
 }
+
+export const sampleModelCatalog: CodexModelCatalog = {
+  kind: 'available',
+  fetchedAt: '2026-06-03T13:43:32.128077Z',
+  clientVersion: '0.136.0',
+  models: [
+    {
+      slug: 'gpt-5.5',
+      displayName: 'GPT 5.5',
+      description: 'Most capable model',
+      priority: 10,
+      defaultReasoningLevel: 'medium',
+      supportedReasoningLevels: ['low', 'medium', 'high'],
+    },
+    {
+      slug: 'gpt-5.5-mini',
+      displayName: 'GPT 5.5 Mini',
+      description: 'Fast model',
+      priority: 20,
+      defaultReasoningLevel: 'low',
+      supportedReasoningLevels: ['low', 'medium'],
+    },
+  ],
+};
 
 export class FakeCodexRunner implements CodexRunner {
   readonly sentMessages: string[] = [];

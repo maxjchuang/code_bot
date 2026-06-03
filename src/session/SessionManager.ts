@@ -19,6 +19,7 @@ import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
 import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
 import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
+import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -48,6 +49,10 @@ export interface Notifier {
   ): Promise<void>;
 }
 
+export interface ModelCatalogReader {
+  read(): Promise<CodexModelCatalog>;
+}
+
 export interface SessionManagerDeps {
   logger?: Pick<typeof console, 'info' | 'error'>;
   logLevel?: LogLevel | string;
@@ -69,6 +74,7 @@ export interface SessionManagerDeps {
     liveFetchTimeoutMs?: number;
     quietMs?: number;
   };
+  modelCatalog?: ModelCatalogReader;
 }
 
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
@@ -180,6 +186,8 @@ export class SessionManager {
         return this.sendToCurrentSession(input, parsed.args[0] ?? '');
       case 'status':
         return this.status(input.chatId);
+      case 'model':
+        return this.model(input.chatId, parsed.args);
       case 'tail':
         return this.tail(input.chatId, parsed.args[0]);
       case 'rawtail':
@@ -437,7 +445,15 @@ export class SessionManager {
   }
 
   private codexSessionRegistry(): CodexSessionDiscovery {
-    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(this.defaultCodexHome());
+  }
+
+  private modelCatalog(): ModelCatalogReader {
+    return this.deps.modelCatalog ?? { read: () => readCodexModelCatalog({ codexHome: this.defaultCodexHome() }) };
+  }
+
+  private defaultCodexHome(): string {
+    return process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`;
   }
 
   private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<string | undefined> {
@@ -689,6 +705,85 @@ export class SessionManager {
         { verbosity: this.uiVerbosity() },
       ),
     };
+  }
+
+  private async model(chatId: string, args: string[]): Promise<BotTextResult> {
+    if (args.length > 2) {
+      return { reply: 'Usage: /model [model] [reasoning]' };
+    }
+
+    const catalog = await this.modelCatalog().read();
+    if (catalog.kind === 'unavailable') {
+      return { reply: catalog.message };
+    }
+
+    if (args.length === 0) {
+      return { reply: await this.formatModelCatalog(chatId, catalog) };
+    }
+
+    const requestedSlug = args[0];
+    const requestedReasoning = args[1];
+    const selected = catalog.models.find((model) => model.slug === requestedSlug);
+    if (!selected) {
+      return { reply: `Unknown model: ${requestedSlug}\nAvailable models: ${formatModelSlugs(catalog.models)}` };
+    }
+
+    if (requestedReasoning && !selected.supportedReasoningLevels.includes(requestedReasoning)) {
+      return {
+        reply: `Unsupported reasoning level: ${requestedReasoning}\nSupported reasoning levels: ${formatReasoningLevels(selected)}`,
+      };
+    }
+
+    return {
+      reply: requestedReasoning
+        ? `Selected model: ${selected.slug} (reasoning: ${requestedReasoning})`
+        : `Selected model: ${selected.slug}`,
+    };
+  }
+
+  private async formatModelCatalog(chatId: string, catalog: Extract<CodexModelCatalog, { kind: 'available' }>): Promise<string> {
+    const chat = await this.store.getChat(chatId);
+    const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    const currentModel = await this.currentCodexModel(session);
+    const savedDefault = chat?.currentProjectId ? chat.modelSelectionsByProject?.[chat.currentProjectId] : undefined;
+    const lines = ['Codex models'];
+
+    if (catalog.clientVersion) {
+      lines.push(`Client: ${catalog.clientVersion}`);
+    }
+    if (catalog.fetchedAt) {
+      lines.push(`Fetched: ${catalog.fetchedAt}`);
+    }
+    if (currentModel?.model) {
+      lines.push(`Current: ${currentModel.model}`);
+      if (currentModel.reasoningEffort) {
+        lines.push(`Reasoning: ${currentModel.reasoningEffort}`);
+      }
+    }
+    if (savedDefault) {
+      lines.push(`Saved default: ${savedDefault.model}`);
+      if (savedDefault.reasoningEffort) {
+        lines.push(`Saved reasoning: ${savedDefault.reasoningEffort}`);
+      }
+    }
+
+    lines.push('Available:');
+    for (const model of catalog.models) {
+      lines.push(formatModelLine(model));
+    }
+    return lines.join('\n');
+  }
+
+  private async currentCodexModel(session: SessionRecord | undefined): Promise<{ model?: string; reasoningEffort?: string } | undefined> {
+    const codexStatus = await this.codexStatusResult(session);
+    if (codexStatus.kind !== 'available') {
+      return undefined;
+    }
+    const { model, reasoningEffort } = codexStatus.status.summary;
+    if (!model && !reasoningEffort) {
+      return undefined;
+    }
+    return { model, reasoningEffort };
   }
 
   private uiVerbosity(): 'normal' | 'debug' {
@@ -1586,7 +1681,7 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
     const resumeHelp = [
       'Resume: /resume <session> [project]',
       '- session can be a code_bot session id from /sessions or a Codex native id',
@@ -1603,6 +1698,22 @@ export class SessionManager {
 
 function isActiveSession(session: SessionRecord): boolean {
   return session.status === 'running' || session.status === 'starting';
+}
+
+function formatModelLine(model: CodexModelInfo): string {
+  const details = [
+    model.defaultReasoningLevel ? `default reasoning: ${model.defaultReasoningLevel}` : undefined,
+    `supported reasoning: ${formatReasoningLevels(model)}`,
+  ].filter((detail): detail is string => Boolean(detail));
+  return `- ${model.slug} (${model.displayName})${details.length > 0 ? ` - ${details.join('; ')}` : ''}`;
+}
+
+function formatModelSlugs(models: CodexModelInfo[]): string {
+  return models.map((model) => model.slug).join(', ') || 'none';
+}
+
+function formatReasoningLevels(model: CodexModelInfo): string {
+  return model.supportedReasoningLevels.join(', ') || 'none';
 }
 
 function isValidSessionTarget(target: string): boolean {
