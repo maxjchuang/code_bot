@@ -3,7 +3,7 @@ import type { ChatType } from '../domain/types.js';
 import type { BotErrorLogEntry, BotEvent } from '../domain/types.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
 import { sanitizeFeishuText } from './FeishuTextSanitizer.js';
-import { createAppLogger, type AppLogger } from '../logging/AppLogger.js';
+import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
 
 export interface FeishuIncomingMessage {
   chatId: string;
@@ -80,6 +80,7 @@ interface LarkGatewayDeps {
   wsClient?: LarkWSClientLike;
   createEventDispatcher?: () => EventDispatcherLike;
   logger?: LoggerLike;
+  logLevel?: LogLevel;
   recordEvent?: (event: BotEvent) => Promise<void>;
   recordError?: (entry: BotErrorLogEntry) => Promise<void>;
 }
@@ -99,7 +100,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     this.client = deps?.client ?? new lark.Client({ appId, appSecret });
     this.wsClient = deps?.wsClient ?? new lark.WSClient({ appId, appSecret });
     this.createEventDispatcher = deps?.createEventDispatcher ?? (() => new lark.EventDispatcher({}));
-    this.logger = createAppLogger({ sink: deps?.logger ?? console });
+    this.logger = createAppLogger({ level: deps?.logLevel, sink: deps?.logger ?? console });
     this.recordEvent = deps?.recordEvent;
     this.recordError = deps?.recordError;
   }

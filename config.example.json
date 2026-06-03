@@ -29,5 +29,6 @@
   "codex": {
     "command": "codex",
     "defaultArgs": []
-  }
+  },
+  "logLevel": "info"
 }

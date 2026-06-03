@@ -29,7 +29,7 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
 };
 
 export function createAppLogger(options: AppLoggerOptions = {}): AppLogger {
-  const level = parseLogLevel(options.level ?? process.env.LOG_LEVEL);
+  const level = parseLogLevel(process.env.LOG_LEVEL ?? options.level);
   const sink = {
     info: options.sink?.info ?? console.info.bind(console),
     error: options.sink?.error ?? console.error.bind(console),
