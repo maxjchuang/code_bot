@@ -3177,6 +3177,41 @@ describe('SessionManager', () => {
     }
   });
 
+  it('preserves saved model selection when new session updates chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    expect(result.reply).toContain('Created session');
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
+    expect(chat?.modelSelectionsByProject).toEqual({
+      repo: {
+        model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        updatedAt: '2026-06-04T01:02:03.000Z',
+      },
+    });
+  });
+
   it('saves model selection and sends runtime switch to running session', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

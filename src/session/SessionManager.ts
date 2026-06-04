@@ -423,11 +423,13 @@ export class SessionManager {
       at: now,
       data: { sessionId, projectId: project.id, chatId: input.chatId },
     });
+    const previousChat = await this.store.getChat(input.chatId);
     const chat: ChatContext = {
       chatId: input.chatId,
       chatType: input.chatType,
       currentProjectId: project.id,
       currentSessionId: sessionId,
+      modelSelectionsByProject: previousChat?.modelSelectionsByProject,
     };
     await this.store.saveChat(chat);
     this.logger.info(options.logEventType ?? options.eventType, {
