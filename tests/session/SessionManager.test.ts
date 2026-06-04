@@ -3073,7 +3073,7 @@ describe('SessionManager', () => {
     const payload = JSON.stringify(result.renderedReply.preferred.payload);
     expect(payload).toContain('## Session');
     expect(payload).toContain('## Codex');
-    expect(payload).toContain('## Raw');
+    expect(payload).not.toContain('## Raw');
     expect(payload).toContain('- **Status**: `running`');
     expect(payload).toContain('- **Source**: `live`');
     expect(result.reply).toContain('Project: repo');
