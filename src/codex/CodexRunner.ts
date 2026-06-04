@@ -57,10 +57,11 @@ export class PtyCodexRunner implements CodexRunner {
       throw new Error(`Codex session is already running: ${options.sessionId}`);
     }
     const mode = options.mode ?? { kind: 'new' };
+    const defaultArgs = removeOverriddenDefaultModelArgs(this.config.defaultArgs, options.args);
     const args =
       mode.kind === 'resume'
-        ? ['resume', ...this.config.defaultArgs, ...options.args, mode.target]
-        : [...this.config.defaultArgs, ...options.args];
+        ? ['resume', ...defaultArgs, ...options.args, mode.target]
+        : [...defaultArgs, ...options.args];
     const term = this.ptyModule.spawn(this.config.command, args, {
       name: 'xterm-256color',
       cols: 120,
@@ -138,4 +139,94 @@ async function readCodexVersion(command: string): Promise<string | undefined> {
       resolve(version.length > 0 ? version : undefined);
     });
   });
+}
+
+interface ModelArgOverrides {
+  model: boolean;
+  reasoningEffort: boolean;
+}
+
+function removeOverriddenDefaultModelArgs(defaultArgs: string[], sessionArgs: string[]): string[] {
+  const overrides = findModelArgOverrides(sessionArgs);
+  if (!overrides.model && !overrides.reasoningEffort) {
+    return [...defaultArgs];
+  }
+
+  const args: string[] = [];
+  for (let index = 0; index < defaultArgs.length; index += 1) {
+    const arg = defaultArgs[index]!;
+    if ((arg === '--model' || arg === '-m') && overrides.model) {
+      index += 1;
+      continue;
+    }
+    if ((arg.startsWith('--model=') || arg.startsWith('-m=')) && overrides.model) {
+      continue;
+    }
+    if ((arg === '-c' || arg === '--config') && shouldStripConfigArg(defaultArgs[index + 1], overrides)) {
+      index += 1;
+      continue;
+    }
+    if (shouldStripConfigArg(inlineConfigValue(arg), overrides)) {
+      continue;
+    }
+    args.push(arg);
+  }
+  return args;
+}
+
+function findModelArgOverrides(args: string[]): ModelArgOverrides {
+  const overrides: ModelArgOverrides = { model: false, reasoningEffort: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === '--model' || arg === '-m') {
+      overrides.model = true;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
+      overrides.model = true;
+      continue;
+    }
+    if (arg === '-c' || arg === '--config') {
+      markConfigArgOverride(args[index + 1], overrides);
+      index += 1;
+      continue;
+    }
+    markConfigArgOverride(inlineConfigValue(arg), overrides);
+  }
+  return overrides;
+}
+
+function markConfigArgOverride(configArg: string | undefined, overrides: ModelArgOverrides): void {
+  if (isModelConfigArg(configArg)) {
+    overrides.model = true;
+  }
+  if (isReasoningEffortConfigArg(configArg)) {
+    overrides.reasoningEffort = true;
+  }
+}
+
+function shouldStripConfigArg(configArg: string | undefined, overrides: ModelArgOverrides): boolean {
+  return (overrides.model && isModelConfigArg(configArg)) || (overrides.reasoningEffort && isReasoningEffortConfigArg(configArg));
+}
+
+function isModelConfigArg(arg: string | undefined): boolean {
+  return arg?.startsWith('model=') ?? false;
+}
+
+function isReasoningEffortConfigArg(arg: string | undefined): boolean {
+  return arg?.startsWith('model_reasoning_effort=') ?? false;
+}
+
+function inlineConfigValue(arg: string): string | undefined {
+  if (arg.startsWith('--config=')) {
+    return arg.slice('--config='.length);
+  }
+  if (arg.startsWith('-c=')) {
+    return arg.slice('-c='.length);
+  }
+  if (arg.startsWith('-c')) {
+    return arg.slice('-c'.length);
+  }
+  return undefined;
 }

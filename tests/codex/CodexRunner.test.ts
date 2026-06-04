@@ -143,6 +143,114 @@ describe('PtyCodexRunner', () => {
     );
   });
 
+  it('strips stale default model selections when session args provide model selections', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner(
+      {
+        command: 'codex',
+        defaultArgs: [
+          '--ask-for-approval',
+          'on-request',
+          '--model',
+          'gpt-stale',
+          '-c',
+          'model_reasoning_effort="low"',
+          '--sandbox',
+          'workspace-write',
+        ],
+      },
+      { spawn } as any,
+    );
+
+    await runner.start({
+      sessionId: 'sess-model-defaults',
+      cwd: '/tmp/project',
+      args: ['--model', 'gpt-5', '-c', 'model_reasoning_effort="high"'],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      [
+        '--ask-for-approval',
+        'on-request',
+        '--sandbox',
+        'workspace-write',
+        '--model',
+        'gpt-5',
+        '-c',
+        'model_reasoning_effort="high"',
+      ],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
+  it('strips matching default model config forms only for explicit session overrides', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner(
+      {
+        command: 'codex',
+        defaultArgs: [
+          '--model=gpt-stale',
+          '--config',
+          'model="gpt-config-stale"',
+          '-c=model_reasoning_effort="low"',
+          '--config=profile="work"',
+        ],
+      },
+      { spawn } as any,
+    );
+
+    await runner.start({
+      sessionId: 'sess-model-config-defaults',
+      cwd: '/tmp/project',
+      args: ['-m=gpt-5-mini'],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      ['-c=model_reasoning_effort="low"', '--config=profile="work"', '-m=gpt-5-mini'],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
+  it('strips stale default reasoning selections when session args provide reasoning selections', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner(
+      {
+        command: 'codex',
+        defaultArgs: [
+          '-m',
+          'gpt-default',
+          '--config',
+          'model_reasoning_effort="low"',
+          '--search',
+        ],
+      },
+      { spawn } as any,
+    );
+
+    await runner.start({
+      sessionId: 'sess-reasoning-defaults',
+      cwd: '/tmp/project',
+      args: ['--config=model_reasoning_effort="high"'],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      ['-m', 'gpt-default', '--search', '--config=model_reasoning_effort="high"'],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
   it('rejects duplicate start for same session and only spawns once', async () => {
     const fake = createFakeTerm();
     const spawn = vi.fn(() => fake.term as any);
