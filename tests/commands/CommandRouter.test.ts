@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { CommandName } from '../../src/commands/CommandRouter.js';
 import { parseIncomingText } from '../../src/commands/CommandRouter.js';
 
 describe('parseIncomingText', () => {
+  it('includes upgrade in known command names', () => {
+    const commandName: CommandName = 'upgrade';
+    expect(commandName).toBe('upgrade');
+  });
+
   it('treats a leading group mention before a slash command as a command', () => {
     expect(parseIncomingText('@_user_1 /projects')).toEqual({
       kind: 'command',
@@ -17,6 +23,15 @@ describe('parseIncomingText', () => {
       name: 'model',
       args: [],
       raw: '/model',
+    });
+  });
+
+  it('parses /upgrade as a command', () => {
+    expect(parseIncomingText('/upgrade')).toEqual({
+      kind: 'command',
+      name: 'upgrade',
+      args: [],
+      raw: '/upgrade',
     });
   });
 

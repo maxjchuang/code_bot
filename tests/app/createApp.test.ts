@@ -47,6 +47,7 @@ describe('createApp', () => {
     });
 
     await expect(app.healthCheck()).resolves.toEqual({ ok: true });
+    expect((app.sessionManager as any).deps.upgradeManager).toBeDefined();
   });
 
   it('passes notifier dependency to SessionManager', async () => {

@@ -85,6 +85,7 @@ With completion notifications enabled, plain text messages receive an immediate 
 /resume <session> [project]
 /approve <id>
 /reject <id>
+/upgrade
 ```
 
 Notes:
@@ -100,7 +101,33 @@ Notes:
 - `/rawtail [n]` returns raw PTY terminal output for exact debugging. It accepts an optional count and defaults to 80.
 - `/stop` stops the current session immediately.
 - `/approve <id>` and `/reject <id>` are reserved for future approval-gated actions.
+- `/upgrade` lets an admin user install the latest configured branch and restart the bot through pm2. See Self Upgrade below.
 - Resume limits: old sessions without a captured Codex native ID cannot be resumed by code_bot session ID; stop the active session before resuming another one; when you pass an explicit `project`, it must match the session history.
+
+## Self Upgrade
+
+`/upgrade` lets an admin user pull the latest configured branch, install dependencies, build, and restart the bot through pm2.
+
+Config:
+
+```json
+"upgrade": {
+  "enabled": true,
+  "adminUsers": ["ou_admin_open_id"],
+  "pm2ProcessName": "code-bot",
+  "remote": "origin",
+  "branch": "main"
+}
+```
+
+Run the bot under pm2:
+
+```bash
+npm run build
+pm2 start dist/index.js --name code-bot
+```
+
+The command refuses to run on a dirty worktree and uses fast-forward-only git updates.
 
 ## Build And Test
 

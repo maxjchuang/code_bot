@@ -19,6 +19,13 @@ export function sampleConfig(projectPath: string): BotConfig {
     logLevel: 'info',
     ui: { verbosity: 'normal' },
     notifications: { enabled: true, idleMs: 10, maxFinalChars: 8000, failureTailChars: 2000 },
+    upgrade: {
+      enabled: false,
+      adminUsers: [],
+      pm2ProcessName: 'code-bot',
+      remote: 'origin',
+      branch: 'main',
+    },
   };
 }
 
