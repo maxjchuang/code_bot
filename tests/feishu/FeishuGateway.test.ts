@@ -35,6 +35,7 @@ function createGatewayHarness() {
   let messageHandler: ReceiveHandler | undefined;
   let cardActionHandler: CardActionHandler | undefined;
   const sent: Array<{ receive_id: string; content: string }> = [];
+  const replies: Array<{ message_id: string; msg_type: string; content: string; reply_in_thread?: boolean }> = [];
   const errors: unknown[][] = [];
   const infos: unknown[][] = [];
   const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
@@ -52,6 +53,14 @@ function createGatewayHarness() {
           message: {
             create: async ({ data }) => {
               sent.push({ receive_id: data.receive_id, content: data.content });
+            },
+            reply: async ({ path, data }) => {
+              replies.push({
+                message_id: path.message_id,
+                msg_type: data.msg_type,
+                content: data.content,
+                reply_in_thread: data.reply_in_thread,
+              });
             },
           },
         },
@@ -86,6 +95,7 @@ function createGatewayHarness() {
   return {
     gateway,
     sent,
+    replies,
     errors,
     infos,
     events,
@@ -134,6 +144,33 @@ describe('LarkLongConnectionGateway', () => {
       text: 'hello bot',
       wasMentioned: false,
     });
+    expect(harness.sent).toEqual([]);
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_123',
+        msg_type: 'text',
+        content: JSON.stringify({ text: 'bot reply' }),
+        reply_in_thread: true,
+      },
+    ]);
+  });
+
+  it('falls back to chat send when an incoming reply target has no message id', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => ({ text: 'bot reply' }));
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello bot' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(harness.replies).toEqual([]);
     expect(harness.sent).toEqual([
       {
         receive_id: 'oc_1',
@@ -713,10 +750,13 @@ describe('LarkLongConnectionGateway', () => {
         reasoning: 'high',
       },
     });
-    expect(harness.sent).toEqual([
+    expect(harness.sent).toEqual([]);
+    expect(harness.replies).toEqual([
       {
-        receive_id: 'oc_1',
+        message_id: 'om_card_1',
+        msg_type: 'text',
         content: JSON.stringify({ text: 'model updated' }),
+        reply_in_thread: true,
       },
     ]);
   });
@@ -760,10 +800,13 @@ describe('LarkLongConnectionGateway', () => {
         projectId: 'repo2',
       },
     });
-    expect(harness.sent).toEqual([
+    expect(harness.sent).toEqual([]);
+    expect(harness.replies).toEqual([
       {
-        receive_id: 'oc_1',
+        message_id: 'om_card_1',
+        msg_type: 'text',
         content: JSON.stringify({ text: 'project updated' }),
+        reply_in_thread: true,
       },
     ]);
   });
