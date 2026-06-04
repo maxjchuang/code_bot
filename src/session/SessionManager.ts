@@ -20,6 +20,7 @@ import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLo
 import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
+import type { FeishuIncomingCardAction, ModelSelectCardAction } from '../feishu/FeishuCardActions.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 
 export interface IncomingBotText {
@@ -166,6 +167,10 @@ export class SessionManager {
     return this.decorateRenderedReply(input.text, result);
   }
 
+  async handleCardAction(input: FeishuIncomingCardAction): Promise<BotTextResult> {
+    return this.withChatQueue(input.chatId, () => this.handleCardActionQueued(input));
+  }
+
   private async handleTextQueued(input: IncomingBotText): Promise<BotTextResult> {
     if (!isAuthorizedMessage(this.config, input)) {
       return { reply: 'You are not allowed to control this bot.' };
@@ -210,6 +215,21 @@ export class SessionManager {
         return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
+    }
+  }
+
+  private async handleCardActionQueued(input: FeishuIncomingCardAction): Promise<BotTextResult> {
+    if (!isAuthorizedMessage(this.config, { chatId: input.chatId, chatType: input.chatType, userId: input.userId })) {
+      return { reply: 'Not authorized.' };
+    }
+
+    switch (input.action.kind) {
+      case 'model_select':
+        return this.selectModel(input.chatId, input.action);
+      case 'project_select':
+        return { reply: 'Unsupported card action: project_select' };
+      default:
+        return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
   }
 
@@ -750,30 +770,43 @@ export class SessionManager {
 
     const requestedSlug = args[0];
     const requestedReasoning = args[1];
-    const selected = catalog.models.find((model) => model.slug === requestedSlug);
-    if (!selected) {
-      return { reply: `Unknown model: ${requestedSlug}\nAvailable models: ${formatModelSlugs(catalog.models)}` };
+    return this.selectModel(input.chatId, {
+      kind: 'model_select',
+      model: requestedSlug,
+      reasoning: requestedReasoning,
+    });
+  }
+
+  private async selectModel(chatId: string, action: ModelSelectCardAction): Promise<BotTextResult> {
+    const catalog = await this.modelCatalog().read();
+    if (catalog.kind === 'unavailable') {
+      return { reply: catalog.message };
     }
 
-    if (requestedReasoning && !selected.supportedReasoningLevels.includes(requestedReasoning)) {
+    const selected = catalog.models.find((model) => model.slug === action.model);
+    if (!selected) {
+      return { reply: `Unknown model: ${action.model}\nAvailable models: ${formatModelSlugs(catalog.models)}` };
+    }
+
+    if (action.reasoning && !selected.supportedReasoningLevels.includes(action.reasoning)) {
       return {
-        reply: `Unsupported reasoning level: ${requestedReasoning}\nSupported reasoning levels: ${formatReasoningLevels(selected)}`,
+        reply: `Unsupported reasoning level: ${action.reasoning}\nSupported reasoning levels: ${formatReasoningLevels(selected)}`,
       };
     }
 
-    const chat = await this.store.getChat(input.chatId);
+    const chat = await this.store.getChat(chatId);
     if (!chat?.currentProjectId) {
       return { reply: 'No project selected. Run /use <project> or /new <project> first.' };
     }
 
-    const savedModelText = requestedReasoning ? `${selected.slug} ${requestedReasoning}` : selected.slug;
+    const savedModelText = action.reasoning ? `${selected.slug} ${action.reasoning}` : selected.slug;
     await this.store.saveChat({
       ...chat,
       modelSelectionsByProject: {
         ...chat.modelSelectionsByProject,
         [chat.currentProjectId]: {
           model: selected.slug,
-          reasoningEffort: requestedReasoning,
+          reasoningEffort: action.reasoning,
           updatedAt: new Date().toISOString(),
         },
       },
@@ -786,7 +819,7 @@ export class SessionManager {
       return { reply: lines.join('\n') };
     }
 
-    const nativeCommand = requestedReasoning ? `/model ${selected.slug} ${requestedReasoning}` : `/model ${selected.slug}`;
+    const nativeCommand = action.reasoning ? `/model ${selected.slug} ${action.reasoning}` : `/model ${selected.slug}`;
     try {
       await this.runner.send(runningSession.id, nativeCommand);
       lines.push('Sent runtime switch to current Codex session. Use /status to confirm the observed model.');
