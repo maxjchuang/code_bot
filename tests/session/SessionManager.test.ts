@@ -667,41 +667,50 @@ describe('SessionManager', () => {
   });
 
   it('adds Get reaction to first task after processing is confirmed', async () => {
-    const root = await createTmpDir();
-    const store = new FileStateStore(root);
-    const runner = new FakeCodexRunner();
-    const notifier = createNotifierWithReactions();
-    const observationStore = new FakeCodexObservationStore();
-    const manager = new SessionManager(sampleConfig(root), store, runner, {
-      notifier,
-      codexObservationStore: observationStore,
-      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
-    });
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = createNotifierWithReactions();
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(sampleConfig(root), store, runner, {
+        notifier,
+        codexObservationStore: observationStore,
+        sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, pollIntervalMs: 1 },
+      });
 
-    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
-    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
-    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3601';
-    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
-    observationStore.snapshots.set(codexSessionId, {
-      availability: { kind: 'ready' },
-      codexSessionId,
-      status: 'running',
-      latestCommentary: '我先检查当前状态。',
-      latestActivityAt: '2099-01-01T00:00:00.000Z',
-      recentToolEvents: [],
-    });
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3601';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
 
-    const sent = await manager.handleText({
-      chatId: 'oc_1',
-      chatType: 'group',
-      userId: 'ou_1',
-      messageId: 'om_first_confirmed',
-      text: 'inspect status',
-    });
+      const pendingReply = manager.handleText({
+        chatId: 'oc_1',
+        chatType: 'group',
+        userId: 'ou_1',
+        messageId: 'om_first_confirmed',
+        text: 'inspect status',
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(notifier.addReaction).not.toHaveBeenCalled();
 
-    expect(sent.reply).toBe('');
-    expect(notifier.addReaction).toHaveBeenCalledWith('om_first_confirmed', 'Get');
-    expect(notifier.addReaction).toHaveBeenCalledTimes(1);
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'running',
+        latestCommentary: '我先检查当前状态。',
+        latestActivityAt: '2099-01-01T00:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(pendingReply).resolves.toEqual({ reply: '' });
+      expect(notifier.addReaction).toHaveBeenCalledWith('om_first_confirmed', 'Get');
+      expect(notifier.addReaction).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not add Get reaction to first task when processing is unconfirmed', async () => {
@@ -725,6 +734,26 @@ describe('SessionManager', () => {
       chatType: 'group',
       userId: 'ou_1',
       messageId: 'om_first_unconfirmed',
+      text: 'inspect status',
+    });
+
+    expect(sent.reply).toBe('');
+    expect(notifier.addReaction).not.toHaveBeenCalled();
+  });
+
+  it('does not add Get reaction for a first task without send confirmation', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = createNotifierWithReactions();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_no_confirmation',
       text: 'inspect status',
     });
 
@@ -867,14 +896,18 @@ describe('SessionManager', () => {
 
     expect(sent.reply).toBe('');
     expect(notifier.addReaction).toHaveBeenCalledWith('om_reaction_denied', 'Get');
-    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('feishu.reaction_failed'));
+    await waitForAssertion(() => expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('feishu.reaction_failed')));
     const day = new Date().toISOString().slice(0, 10);
-    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
-    const event = content
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as BotEvent)
-      .find((entry) => entry.type === 'feishu.reaction_failed');
+    let event: BotEvent | undefined;
+    await waitForAssertion(async () => {
+      const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+      event = content
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as BotEvent)
+        .find((entry) => entry.type === 'feishu.reaction_failed');
+      expect(event).toBeDefined();
+    });
     expect(event).toMatchObject({
       type: 'feishu.reaction_failed',
       data: {

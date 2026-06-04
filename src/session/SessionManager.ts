@@ -734,7 +734,7 @@ export class SessionManager {
       );
     }
     if (notificationEnabled && followUpToActiveTurn) {
-      await this.addProcessingReaction({
+      this.queueProcessingReaction({
         messageId: input.messageId,
         chatId: input.chatId,
         sessionId: chat.currentSessionId,
@@ -750,15 +750,7 @@ export class SessionManager {
         if (!confirmation.confirmed) {
           return { reply: this.isDebugUi() ? `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` : '' };
         }
-        await this.addProcessingReaction({
-          messageId: input.messageId,
-          chatId: input.chatId,
-          sessionId: chat.currentSessionId,
-          projectId: session.projectId,
-        });
-      }
-      if (createdPendingTurn && !this.deps.sendConfirmation) {
-        await this.addProcessingReaction({
+        this.queueProcessingReaction({
           messageId: input.messageId,
           chatId: input.chatId,
           sessionId: chat.currentSessionId,
@@ -1948,6 +1940,28 @@ export class SessionManager {
       return;
     }
     this.pendingTurns.delete(sessionId);
+  }
+
+  private queueProcessingReaction(input: {
+    messageId?: string;
+    chatId: string;
+    sessionId: string;
+    projectId: string;
+  }): void {
+    if (!input.messageId || !this.deps.notifier?.addReaction) {
+      return;
+    }
+
+    void this.addProcessingReaction(input).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error('feishu.reaction_failed', {
+        chat: input.chatId,
+        session: input.sessionId,
+        messageId: input.messageId,
+        emojiType: CODEX_PROCESSING_REACTION,
+        reason: message,
+      });
+    });
   }
 
   private async addProcessingReaction(input: {
