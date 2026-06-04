@@ -783,7 +783,7 @@ describe('SessionManager', () => {
     expect(content).toContain('"type":"session.send_dispatched"');
     expect(content).toContain(`"sessionId":"${sessionId}"`);
     expect(content).toContain('"textPreview":"inspect status"');
-    expect(content).toContain('"transportTerminator":"\\\\r"');
+    expect(content).toContain('"transportTerminator":"\\\\u0018"');
   });
 
   it('does not treat PTY prompt echo as processing confirmation', async () => {

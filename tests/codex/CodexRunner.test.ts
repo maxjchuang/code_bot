@@ -4,6 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCodexSessionId, PtyCodexRunner } from '../../src/codex/CodexRunner.js';
 
+const CODEX_TUI_KEYMAP_ARGS = [
+  '-c',
+  'tui.keymap.composer.submit="ctrl-x"',
+  '-c',
+  'tui.keymap.editor.insert_newline=["ctrl-j","shift-enter","alt-enter"]',
+];
+
 describe('CodexRunner helpers', () => {
   it('creates stable prefixed session ids', () => {
     expect(createCodexSessionId('abc123').startsWith('sess_abc123_')).toBe(true);
@@ -101,7 +108,7 @@ describe('PtyCodexRunner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn).toHaveBeenCalledWith(
       'codex',
-      ['run', '--json', '--model', 'gpt-5'],
+      ['run', '--json', '--model', 'gpt-5', ...CODEX_TUI_KEYMAP_ARGS],
       expect.objectContaining({
         name: 'xterm-256color',
         cols: 120,
@@ -138,7 +145,15 @@ describe('PtyCodexRunner', () => {
 
     expect(spawn).toHaveBeenCalledWith(
       'codex',
-      ['resume', '--ask-for-approval', 'on-request', '--model', 'gpt-5', '019e7f20-a667-7632-a808-c9595d77116e'],
+      [
+        'resume',
+        '--ask-for-approval',
+        'on-request',
+        '--model',
+        'gpt-5',
+        ...CODEX_TUI_KEYMAP_ARGS,
+        '019e7f20-a667-7632-a808-c9595d77116e',
+      ],
       expect.objectContaining({ cwd: '/tmp/project' }),
     );
   });
@@ -182,6 +197,7 @@ describe('PtyCodexRunner', () => {
         'gpt-5',
         '-c',
         'model_reasoning_effort="high"',
+        ...CODEX_TUI_KEYMAP_ARGS,
       ],
       expect.objectContaining({ cwd: '/tmp/project' }),
     );
@@ -214,7 +230,7 @@ describe('PtyCodexRunner', () => {
 
     expect(spawn).toHaveBeenCalledWith(
       'codex',
-      ['-c=model_reasoning_effort="low"', '--config=profile="work"', '-m=gpt-5-mini'],
+      ['-c=model_reasoning_effort="low"', '--config=profile="work"', '-m=gpt-5-mini', ...CODEX_TUI_KEYMAP_ARGS],
       expect.objectContaining({ cwd: '/tmp/project' }),
     );
   });
@@ -246,7 +262,7 @@ describe('PtyCodexRunner', () => {
 
     expect(spawn).toHaveBeenCalledWith(
       'codex',
-      ['-m', 'gpt-default', '--search', '--config=model_reasoning_effort="high"'],
+      ['-m', 'gpt-default', '--search', '--config=model_reasoning_effort="high"', ...CODEX_TUI_KEYMAP_ARGS],
       expect.objectContaining({ cwd: '/tmp/project' }),
     );
   });
@@ -268,7 +284,7 @@ describe('PtyCodexRunner', () => {
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('submits prompts by writing enter after a short delay', async () => {
+  it('submits prompts by writing the configured control-key submit sequence after a short delay', async () => {
     vi.useFakeTimers();
     try {
       const fake = createFakeTerm();
@@ -291,7 +307,7 @@ describe('PtyCodexRunner', () => {
 
       await vi.advanceTimersByTimeAsync(1);
       await sendPromise;
-      expect(fake.writes).toEqual(['ping', '\r']);
+      expect(fake.writes).toEqual(['ping', '\x18']);
 
       await runner.stop('sess-send-stop');
       expect(fake.kill).toHaveBeenCalledTimes(1);
