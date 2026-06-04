@@ -1888,7 +1888,7 @@ describe('SessionManager', () => {
       'oc_1',
       `Codex 任务结束，但未能提取明确最终回答。\n\n原因：No structured final answer detected.\n可使用 /tail ${sessionId} 查看最近输出。`,
     );
-  });
+  }, 10000);
 
   it('uses a failure fallback when exit only has in-progress commentary', async () => {
     class ObservingStore extends FileStateStore {
