@@ -744,12 +744,12 @@ export class SessionManager {
       return { reply: 'Usage: /model [model] [reasoning]' };
     }
 
-    const catalog = await this.modelCatalog().read();
-    if (catalog.kind === 'unavailable') {
-      return { reply: catalog.message };
-    }
-
     if (args.length === 0) {
+      const catalog = await this.modelCatalog().read();
+      if (catalog.kind === 'unavailable') {
+        return { reply: catalog.message };
+      }
+
       const view = await this.loadModelCatalogView(input.chatId, catalog);
 
       return {

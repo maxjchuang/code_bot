@@ -3293,6 +3293,24 @@ describe('SessionManager', () => {
     expect(result.reply).toBe('Usage: /model [model] [reasoning]');
   });
 
+  it('reads model catalog once when selecting a model from the text command', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const modelCatalog = {
+      read: vi.fn(async () => sampleModelCatalog),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog,
+    });
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model gpt-5.5 high' });
+
+    expect(result.reply).toContain('Saved default model: gpt-5.5 high');
+    expect(modelCatalog.read).toHaveBeenCalledTimes(1);
+  });
+
   it('saves model selection without running session', async () => {
     vi.useFakeTimers();
     try {
@@ -3611,6 +3629,15 @@ describe('SessionManager', () => {
     expect(result.reply).toContain('Saved default model: gpt-5.5-mini');
     expect(result.reply).toContain('No running Codex session. The next /new or /resume will use this model.');
     expect(runner.sentMessages).toEqual([]);
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: expect.any(String),
+        },
+      },
+    });
+    expect((await store.getChat('oc_1'))?.modelSelectionsByProject?.repo.reasoningEffort).toBeUndefined();
   });
 
   it('rejects unsupported reasoning in model_select', async () => {
@@ -3620,7 +3647,18 @@ describe('SessionManager', () => {
     const manager = new SessionManager(sampleConfig(root), store, runner, {
       modelCatalog: { read: async () => sampleModelCatalog },
     });
-    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'medium',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
 
     const result = await manager.handleCardAction({
       chatId: 'oc_1',
@@ -3631,8 +3669,17 @@ describe('SessionManager', () => {
 
     expect(result.reply).toBe('Unsupported reasoning level: high\nSupported reasoning levels: low, medium');
     expect(runner.sentMessages).toEqual([]);
-    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+    await expect(store.getChat('oc_1')).resolves.toEqual({
+      chatId: 'oc_1',
+      chatType: 'group',
       currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'medium',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
     });
   });
 
