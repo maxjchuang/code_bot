@@ -3212,6 +3212,90 @@ describe('SessionManager', () => {
     });
   });
 
+  it('applies saved model selection when starting a new session and preserves project args without mutation', async () => {
+    const root = await createTmpDir();
+    const projectArgs = [
+      '--search',
+      '--model',
+      'gpt-5',
+      '-m=gpt-5-mini',
+      '-c',
+      'model_reasoning_effort="low"',
+      '-c',
+      'sandbox_mode=workspace-write',
+    ];
+    const config: BotConfig = {
+      ...sampleConfig(root),
+      projects: [{ id: 'repo', name: 'Repo', path: root, codexArgs: projectArgs }],
+    };
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(config, store, runner);
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    expect(result.reply).toContain('Created session');
+    expect(runner.starts[0].args).toEqual([
+      '--search',
+      '-c',
+      'sandbox_mode=workspace-write',
+      '--model',
+      'gpt-5.5',
+      '-c',
+      'model_reasoning_effort="high"',
+    ]);
+    expect(config.projects[0]!.codexArgs).toEqual(projectArgs);
+  });
+
+  it('applies saved model selection when resuming a native Codex session and overrides project shorthand model args', async () => {
+    const root = await createTmpDir();
+    const config: BotConfig = {
+      ...sampleConfig(root),
+      projects: [{ id: 'repo', name: 'Repo', path: root, codexArgs: ['-m', 'gpt-5', '--search'] }],
+    };
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(config, store, runner);
+    const codexSessionId = '019e7f20-a667-7632-a808-c9595d77116e';
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: `/resume ${codexSessionId}`,
+    });
+
+    expect(result.reply).toContain('Resumed session');
+    expect(runner.starts[0]).toMatchObject({
+      args: ['--search', '--model', 'gpt-5.5-mini'],
+      mode: { kind: 'resume', target: codexSessionId },
+    });
+    expect(config.projects[0]!.codexArgs).toEqual(['-m', 'gpt-5', '--search']);
+  });
+
   it('preserves saved model selection when /use updates chat', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

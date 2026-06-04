@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
+import type { BotConfig, ChatContext, ChatType, SavedModelSelection, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
@@ -381,12 +381,14 @@ export class SessionManager {
       logPath: this.store.sessionLogPath(sessionId),
       ...options.sessionFields,
     };
+    const previousChat = await this.store.getChat(input.chatId);
+    const codexArgs = applySavedModelSelection(project.codexArgs, previousChat?.modelSelectionsByProject?.[project.id]);
     await this.store.saveSession(session);
     try {
       await this.runner.start({
         sessionId,
         cwd: project.path,
-        args: project.codexArgs,
+        args: codexArgs,
         mode: options.mode,
         onOutput: (text) => {
           return this.appendSessionOutput(sessionId, text).catch((error) =>
@@ -424,7 +426,6 @@ export class SessionManager {
       at: now,
       data: { sessionId, projectId: project.id, chatId: input.chatId },
     });
-    const previousChat = await this.store.getChat(input.chatId);
     const chat: ChatContext = {
       chatId: input.chatId,
       chatType: input.chatType,
@@ -1748,6 +1749,42 @@ function formatModelSlugs(models: CodexModelInfo[]): string {
 
 function formatReasoningLevels(model: CodexModelInfo): string {
   return model.supportedReasoningLevels.join(', ') || 'none';
+}
+
+function applySavedModelSelection(codexArgs: string[], selection: SavedModelSelection | undefined): string[] {
+  if (!selection) {
+    return [...codexArgs];
+  }
+  const args = removeModelSelectionArgs(codexArgs);
+  args.push('--model', selection.model);
+  if (selection.reasoningEffort) {
+    args.push('-c', `model_reasoning_effort="${selection.reasoningEffort}"`);
+  }
+  return args;
+}
+
+function removeModelSelectionArgs(codexArgs: string[]): string[] {
+  const args: string[] = [];
+  for (let index = 0; index < codexArgs.length; index += 1) {
+    const arg = codexArgs[index]!;
+    if (arg === '--model' || arg === '-m') {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
+      continue;
+    }
+    if (arg === '-c' && isModelReasoningEffortArg(codexArgs[index + 1])) {
+      index += 1;
+      continue;
+    }
+    args.push(arg);
+  }
+  return args;
+}
+
+function isModelReasoningEffortArg(arg: string | undefined): boolean {
+  return arg?.startsWith('model_reasoning_effort=') ?? false;
 }
 
 function isValidSessionTarget(target: string): boolean {
