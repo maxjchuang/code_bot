@@ -135,6 +135,11 @@ interface LiveStatusWaiter {
   abortHandler: () => void;
 }
 
+interface OutputObservationState {
+  dirty: boolean;
+  promise: Promise<void>;
+}
+
 export class SessionManager {
   private readonly approvalManager: ApprovalManager;
   private readonly logger: AppLogger;
@@ -145,6 +150,7 @@ export class SessionManager {
   private readonly queuedTurns = new Map<string, PendingTurn[]>();
   private readonly ptyDebugBuffers = new Map<string, string>();
   private readonly liveStatusWaiters = new Map<string, Set<LiveStatusWaiter>>();
+  private readonly outputObservationStates = new Map<string, OutputObservationState>();
 
   constructor(
     private readonly config: BotConfig,
@@ -1222,7 +1228,35 @@ export class SessionManager {
     await this.store.appendSessionLog(sessionId, text);
     await this.logPtyDebugOutput(sessionId, text);
     this.notifyLiveStatusWaiters(sessionId, text);
-    await this.observePendingTurnOutput(sessionId);
+    await this.observePendingTurnOutputCoalesced(sessionId);
+  }
+
+  private async observePendingTurnOutputCoalesced(sessionId: string): Promise<void> {
+    const existing = this.outputObservationStates.get(sessionId);
+    if (existing) {
+      existing.dirty = true;
+      await existing.promise;
+      return;
+    }
+
+    const state: OutputObservationState = {
+      dirty: false,
+      promise: Promise.resolve(),
+    };
+    this.outputObservationStates.set(sessionId, state);
+    state.promise = (async () => {
+      try {
+        do {
+          state.dirty = false;
+          await this.observePendingTurnOutput(sessionId);
+        } while (state.dirty);
+      } finally {
+        if (this.outputObservationStates.get(sessionId) === state) {
+          this.outputObservationStates.delete(sessionId);
+        }
+      }
+    })();
+    await state.promise;
   }
 
   private async codexStatusResult(session: SessionRecord | undefined): Promise<CodexStatusLookupResult> {
