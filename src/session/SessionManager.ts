@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { BotConfig, ChatContext, ChatType, SavedModelSelection, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
-import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { CODEX_TUI_SUBMIT_SEQUENCE, createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { renderFeishuMessage, type BotMessage, type RenderedFeishuMessage } from '../feishu/FeishuMessageRenderer.js';
 import {
@@ -97,7 +97,7 @@ interface ModelCatalogView {
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
 const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
 const SEND_TEXT_PREVIEW_LIMIT = 120;
-const PTY_SEND_TERMINATOR = '\r';
+const PTY_SEND_TERMINATOR = CODEX_TUI_SUBMIT_SEQUENCE;
 const SEND_SUBMIT_RETRY_LIMIT = 1;
 const DEFAULT_SEND_CONFIRMATION_INITIAL_WAIT_MS = 3_000;
 const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;

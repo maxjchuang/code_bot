@@ -5,6 +5,13 @@ import { execFile } from 'node:child_process';
 import pty from 'node-pty';
 
 const SUBMIT_ENTER_DELAY_MS = 10;
+export const CODEX_TUI_SUBMIT_SEQUENCE = '\x18';
+const CODEX_TUI_KEYMAP_ARGS = [
+  '-c',
+  'tui.keymap.composer.submit="ctrl-x"',
+  '-c',
+  'tui.keymap.editor.insert_newline=["ctrl-j","shift-enter","alt-enter"]',
+];
 
 export type CodexStartMode =
   | { kind: 'new' }
@@ -60,8 +67,8 @@ export class PtyCodexRunner implements CodexRunner {
     const defaultArgs = removeOverriddenDefaultModelArgs(this.config.defaultArgs, options.args);
     const args =
       mode.kind === 'resume'
-        ? ['resume', ...defaultArgs, ...options.args, mode.target]
-        : [...defaultArgs, ...options.args];
+        ? ['resume', ...defaultArgs, ...options.args, ...CODEX_TUI_KEYMAP_ARGS, mode.target]
+        : [...defaultArgs, ...options.args, ...CODEX_TUI_KEYMAP_ARGS];
     const term = this.ptyModule.spawn(this.config.command, args, {
       name: 'xterm-256color',
       cols: 120,
@@ -81,7 +88,7 @@ export class PtyCodexRunner implements CodexRunner {
     const term = this.requireProcess(sessionId);
     term.write(text);
     await delay(SUBMIT_ENTER_DELAY_MS);
-    term.write('\r');
+    term.write(CODEX_TUI_SUBMIT_SEQUENCE);
   }
 
   async stop(sessionId: string): Promise<void> {
