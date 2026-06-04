@@ -8,6 +8,8 @@ const SUBMIT_ENTER_DELAY_MS = 10;
 export const CODEX_TUI_SUBMIT_SEQUENCE = '\x18';
 const CODEX_TUI_KEYMAP_ARGS = [
   '-c',
+  'disable_paste_burst=true',
+  '-c',
   'tui.keymap.composer.submit="ctrl-x"',
   '-c',
   'tui.keymap.editor.insert_newline=["ctrl-j","shift-enter","alt-enter"]',
