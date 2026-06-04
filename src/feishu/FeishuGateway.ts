@@ -18,14 +18,26 @@ export interface FeishuIncomingMessage {
   botOpenIdResolved?: boolean;
 }
 
+export interface FeishuReplyTarget {
+  chatId: string;
+  replyToMessageId?: string;
+  replyInThread?: boolean;
+  mentionUserId?: string;
+}
+
 export interface FeishuGateway {
   start(
     onMessage: (message: FeishuIncomingMessage) => Promise<FeishuOutgoingReply>,
     onCardAction?: (action: FeishuIncomingCardAction) => Promise<FeishuOutgoingReply>,
   ): Promise<void>;
   sendText(chatId: string, text: string): Promise<void>;
+  sendTextToTarget(target: FeishuReplyTarget, text: string): Promise<void>;
   sendRenderedMessage(
     chatId: string,
+    message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
+  ): Promise<void>;
+  sendRenderedMessageToTarget(
+    target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void>;
 }
@@ -81,6 +93,10 @@ interface LarkClientLike {
         create: (payload: {
           params: { receive_id_type: 'chat_id' };
           data: { receive_id: string; msg_type: 'text' | 'interactive'; content: string };
+        }) => Promise<unknown>;
+        reply?: (payload: {
+          path: { message_id: string };
+          data: { msg_type: 'text' | 'interactive'; content: string; reply_in_thread?: boolean };
         }) => Promise<unknown>;
       };
     };
@@ -291,10 +307,11 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     reply: FeishuOutgoingReply,
   ): Promise<void> {
     try {
+      const target = this.replyTargetForMessage(chatId, message);
       if (reply.rendered) {
-        await this.sendRenderedMessage(chatId, reply.rendered);
+        await this.sendRenderedMessageToTarget(target, reply.rendered);
       } else if (reply.text !== '') {
-        await this.sendText(chatId, reply.text);
+        await this.sendTextToTarget(target, reply.text);
       }
     } catch (error) {
       await this.recordProcessingFailure('send_reply', message, reply.text, error);
@@ -306,16 +323,28 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     }
   }
 
+  private replyTargetForMessage(
+    chatId: string,
+    message: FeishuIncomingMessage | FeishuIncomingCardAction,
+  ): FeishuReplyTarget {
+    return {
+      chatId,
+      replyToMessageId: message.messageId,
+      replyInThread: message.messageId ? true : undefined,
+      mentionUserId: message.chatType === 'group' ? message.userId : undefined,
+    };
+  }
+
   async sendText(chatId: string, text: string): Promise<void> {
-    const sanitizedText = sanitizeFeishuText(text);
+    await this.sendTextToTarget({ chatId }, text);
+  }
+
+  async sendTextToTarget(target: FeishuReplyTarget, text: string): Promise<void> {
+    const sanitizedText = sanitizeFeishuText(textWithMention(target, text));
     for (const chunk of splitFeishuMessages(sanitizedText)) {
-      await this.client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          msg_type: 'text',
-          content: JSON.stringify({ text: chunk }),
-        },
+      await this.sendPayloadToTarget(target, {
+        msg_type: 'text',
+        content: JSON.stringify({ text: chunk }),
       });
     }
   }
@@ -324,31 +353,101 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     chatId: string,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void> {
+    await this.sendRenderedMessageToTarget({ chatId }, message);
+  }
+
+  async sendRenderedMessageToTarget(
+    target: FeishuReplyTarget,
+    message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
+  ): Promise<void> {
+    const rendered = renderedWithMention(target, message);
     try {
-      await this.sendOne(chatId, message.preferred);
+      await this.sendOneToTarget(rendered.target, rendered.message.preferred);
     } catch (error) {
       this.logger.debug('feishu.render_fallback', {
-        chat: chatId,
+        chat: target.chatId,
         reason: error instanceof Error ? error.message : String(error),
       });
-      await this.sendOne(chatId, message.fallback);
+      await this.sendOneToTarget(rendered.target, rendered.message.fallback);
     }
   }
 
-  private async sendOne(chatId: string, message: RenderedFeishuMessage): Promise<void> {
+  private async sendOneToTarget(target: FeishuReplyTarget, message: RenderedFeishuMessage): Promise<void> {
     if (message.kind === 'text') {
-      await this.sendText(chatId, message.text);
+      await this.sendTextToTarget(target, message.text);
       return;
     }
 
+    await this.sendPayloadToTarget(target, {
+      msg_type: 'interactive',
+      content: JSON.stringify(message.payload),
+    });
+  }
+
+  private async sendPayloadToTarget(
+    target: FeishuReplyTarget,
+    data: { msg_type: 'text' | 'interactive'; content: string },
+  ): Promise<void> {
+    if (!target.replyToMessageId) {
+      await this.sendPayloadToChat(target.chatId, data);
+      return;
+    }
+
+    try {
+      await this.replyToMessage(target, {
+        ...data,
+        reply_in_thread: target.replyInThread,
+      });
+    } catch (error) {
+      this.logger.error('feishu.reply_message_failed', {
+        chat: target.chatId,
+        messageId: target.replyToMessageId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      await this.sendPayloadToChat(target.chatId, data);
+    }
+  }
+
+  private async sendPayloadToChat(
+    chatId: string,
+    data: { msg_type: 'text' | 'interactive'; content: string },
+  ): Promise<void> {
     await this.client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
-        msg_type: 'interactive',
-        content: JSON.stringify(message.payload),
+        ...data,
       },
     });
+  }
+
+  private async replyToMessage(
+    target: FeishuReplyTarget,
+    data: { msg_type: 'text' | 'interactive'; content: string; reply_in_thread?: boolean },
+  ): Promise<void> {
+    if (!target.replyToMessageId) {
+      throw new Error('Feishu reply target message id is required');
+    }
+
+    const reply = this.client.im.v1.message.reply;
+    if (reply) {
+      await reply({
+        path: { message_id: target.replyToMessageId },
+        data,
+      });
+      return;
+    }
+
+    if (this.client.request) {
+      await this.client.request({
+        url: `/open-apis/im/v1/messages/${encodeURIComponent(target.replyToMessageId)}/reply`,
+        method: 'POST',
+        data,
+      });
+      return;
+    }
+
+    throw new Error('Feishu reply API is unavailable');
   }
 
   private async recordProcessingFailure(
@@ -405,6 +504,101 @@ function splitFeishuMessages(text: string): string[] {
     chunks.push(text.slice(index, index + FEISHU_TEXT_MESSAGE_MAX_CHARS));
   }
   return chunks;
+}
+
+function textWithMention(target: FeishuReplyTarget, text: string): string {
+  if (!target.mentionUserId) {
+    return text;
+  }
+  return `<at user_id="${escapeFeishuAttribute(target.mentionUserId)}"></at> ${text}`;
+}
+
+function renderedWithMention(
+  target: FeishuReplyTarget,
+  message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
+): { target: FeishuReplyTarget; message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } } {
+  if (!target.mentionUserId) {
+    return { target, message };
+  }
+
+  return {
+    target: { ...target, mentionUserId: undefined },
+    message: {
+      preferred: renderedMessageWithMention(message.preferred, target.mentionUserId),
+      fallback: renderedMessageWithMention(message.fallback, target.mentionUserId),
+    },
+  };
+}
+
+function renderedMessageWithMention(message: RenderedFeishuMessage, userId: string): RenderedFeishuMessage {
+  if (message.kind === 'text') {
+    return { kind: 'text', text: textWithMention({ chatId: '', mentionUserId: userId }, message.text) };
+  }
+  return { kind: 'card', payload: mentionCardMarkdown(message.payload, userId) };
+}
+
+function mentionCardMarkdown(payload: Record<string, unknown>, userId: string): Record<string, unknown> {
+  const clone = cloneJsonObject(payload);
+  const mention = `<at id="${escapeFeishuAttribute(userId)}"></at>\n`;
+  prefixFirstMarkdownElement(clone, mention);
+  return clone;
+}
+
+function prefixFirstMarkdownElement(value: unknown, prefix: string): boolean {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (prefixFirstMarkdownElement(item, prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (value.tag === 'markdown' && typeof value.content === 'string') {
+    value.content = `${prefix}${value.content}`;
+    return true;
+  }
+
+  for (const child of Object.values(value)) {
+    if (prefixFirstMarkdownElement(child, prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function cloneJsonObject(value: Record<string, unknown>): Record<string, unknown> {
+  return cloneJsonValue(value) as Record<string, unknown>;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJsonValue(item));
+  }
+  if (isRecord(value)) {
+    const result: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      result[key] = cloneJsonValue(entry);
+    }
+    return result;
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function escapeFeishuAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function serializeError(error: unknown): Record<string, unknown> {

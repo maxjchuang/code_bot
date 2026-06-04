@@ -23,6 +23,11 @@ const config: BotConfig = {
   notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
 };
 
+const gatewayTargetMethods = {
+  sendTextToTarget: async () => undefined,
+  sendRenderedMessageToTarget: async () => undefined,
+};
+
 describe('bootstrap', () => {
   it('records health check failure and still starts gateway', async () => {
     const root = await createTmpDir();
@@ -35,6 +40,7 @@ describe('bootstrap', () => {
       start: gatewayStart,
       sendText: async () => undefined,
       sendRenderedMessage: async () => undefined,
+      ...gatewayTargetMethods,
     }));
 
     await bootstrap({
@@ -100,6 +106,7 @@ describe('bootstrap', () => {
       start: gatewayStart,
       sendText: async () => undefined,
       sendRenderedMessage: async () => undefined,
+      ...gatewayTargetMethods,
     }));
 
     await bootstrap({
@@ -125,7 +132,7 @@ describe('bootstrap', () => {
   });
 
   it('creates the app with the Feishu gateway as notifier', async () => {
-    const gateway = { start: vi.fn(), sendText: vi.fn(), sendRenderedMessage: vi.fn() };
+    const gateway = { start: vi.fn(), sendText: vi.fn(), sendRenderedMessage: vi.fn(), ...gatewayTargetMethods };
     const createApp = vi.fn().mockReturnValue({
       sessionManager: { handleText: vi.fn().mockResolvedValue({ reply: 'ok' }) },
       healthCheck: vi.fn().mockResolvedValue({ ok: true }),
@@ -164,6 +171,7 @@ describe('bootstrap', () => {
         start: gatewayStart,
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
+        ...gatewayTargetMethods,
       }),
       logger,
       createApp: () =>
@@ -210,6 +218,7 @@ describe('bootstrap', () => {
         },
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
+        ...gatewayTargetMethods,
       }),
       logger,
       createApp: () =>
@@ -267,6 +276,7 @@ describe('bootstrap', () => {
         },
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
+        ...gatewayTargetMethods,
       }),
       createApp: () =>
         ({
@@ -313,6 +323,7 @@ describe('bootstrap', () => {
         },
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
+        ...gatewayTargetMethods,
       }),
       createApp: () =>
         ({
@@ -349,6 +360,7 @@ describe('bootstrap', () => {
         },
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
+        ...gatewayTargetMethods,
       }),
       createApp: () =>
         ({
@@ -388,6 +400,7 @@ describe('bootstrap', () => {
         },
         sendText: async () => undefined,
         sendRenderedMessage: async () => undefined,
+        ...gatewayTargetMethods,
       }),
       createApp: () =>
         ({
@@ -432,6 +445,7 @@ describe('bootstrap', () => {
           start: gatewayStart,
           sendText: async () => undefined,
           sendRenderedMessage: async () => undefined,
+          ...gatewayTargetMethods,
         }),
         createApp: () =>
           ({
@@ -470,6 +484,7 @@ describe('bootstrap', () => {
           start: gatewayStart,
           sendText: async () => undefined,
           sendRenderedMessage: async () => undefined,
+          ...gatewayTargetMethods,
         }),
         createApp: () =>
           ({
