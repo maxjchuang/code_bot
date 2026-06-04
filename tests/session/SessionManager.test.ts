@@ -7,6 +7,7 @@ import { createTmpDir } from '../helpers/tmp.js';
 import { FakeCodexObservationStore, FakeCodexRunner, sampleConfig, sampleModelCatalog } from '../helpers/fakes.js';
 import type { BotConfig, BotEvent, SessionRecord } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
+import type { FeishuReactionType } from '../../src/feishu/FeishuGateway.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -36,6 +37,14 @@ async function waitForAssertion(assertion: () => Promise<void> | void, timeoutMs
     throw lastError;
   }
   throw new Error(`Timed out after ${timeoutMs}ms`);
+}
+
+function createNotifierWithReactions() {
+  return {
+    sendText: vi.fn().mockResolvedValue(undefined),
+    sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+    addReaction: vi.fn<(messageId: string, emojiType: FeishuReactionType) => Promise<void>>().mockResolvedValue(undefined),
+  };
 }
 
 describe('SessionManager', () => {
@@ -655,6 +664,229 @@ describe('SessionManager', () => {
 
     expect(sent.reply).toBe('');
     expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
+  it('adds Get reaction to first task after processing is confirmed', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = createNotifierWithReactions();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3601';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '我先检查当前状态。',
+      latestActivityAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_first_confirmed',
+      text: 'inspect status',
+    });
+
+    expect(sent.reply).toBe('');
+    expect(notifier.addReaction).toHaveBeenCalledWith('om_first_confirmed', 'Get');
+    expect(notifier.addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add Get reaction to first task when processing is unconfirmed', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = createNotifierWithReactions();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId: '019e86b4-12ed-7731-9639-c128626a3602' }));
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_first_unconfirmed',
+      text: 'inspect status',
+    });
+
+    expect(sent.reply).toBe('');
+    expect(notifier.addReaction).not.toHaveBeenCalled();
+  });
+
+  it('adds Get reaction to follow-up after dispatch while a pending turn is active', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = createNotifierWithReactions();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3603';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '我先处理第一条。',
+      latestActivityAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_first_active',
+      text: 'first task',
+    });
+    const followUp = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_follow_up_active',
+      text: '补充约束',
+    });
+
+    expect(followUp.reply).toBe('');
+    expect(runner.sentMessages).toEqual(['first task', '补充约束']);
+    expect(notifier.addReaction).toHaveBeenNthCalledWith(1, 'om_first_active', 'Get');
+    expect(notifier.addReaction).toHaveBeenNthCalledWith(2, 'om_follow_up_active', 'Get');
+  });
+
+  it('does not add Get reaction when sending to Codex fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    runner.send = vi.fn(async () => {
+      throw new Error('transport down');
+    });
+    const notifier = createNotifierWithReactions();
+    const manager = new SessionManager(singleProjectConfig(root), store, runner, { notifier });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      messageId: 'om_send_failed',
+      text: 'inspect status',
+    });
+
+    expect(notifier.addReaction).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt Get reaction when incoming message id is missing', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = createNotifierWithReactions();
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3604';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '我先检查当前状态。',
+      latestActivityAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+
+    expect(notifier.addReaction).not.toHaveBeenCalled();
+  });
+
+  it('swallows Get reaction failure and records an event', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const notifier = createNotifierWithReactions();
+    notifier.addReaction.mockRejectedValueOnce(new Error('reaction denied'));
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      logger,
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, sleep: async () => undefined },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3605';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'running',
+      latestCommentary: '我先检查当前状态。',
+      latestActivityAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_reaction_denied',
+      text: 'inspect status',
+    });
+
+    expect(sent.reply).toBe('');
+    expect(notifier.addReaction).toHaveBeenCalledWith('om_reaction_denied', 'Get');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('feishu.reaction_failed'));
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    const event = content
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as BotEvent)
+      .find((entry) => entry.type === 'feishu.reaction_failed');
+    expect(event).toMatchObject({
+      type: 'feishu.reaction_failed',
+      data: {
+        messageId: 'om_reaction_denied',
+        chatId: 'oc_1',
+        sessionId,
+        projectId: 'repo',
+        emojiType: 'Get',
+        reason: 'reaction denied',
+      },
+    });
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({ status: 'running' });
   });
 
   it('acknowledges tasks only after observation confirms Codex started processing', async () => {
@@ -2363,14 +2595,22 @@ describe('SessionManager', () => {
     const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, enabled: false } };
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
-    const manager = new SessionManager(config, store, runner, { notifier: { sendText: vi.fn() } });
+    const notifier = createNotifierWithReactions();
+    const manager = new SessionManager(config, store, runner, { notifier });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
-    const sent = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'inspect status' });
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_notifications_disabled',
+      text: 'inspect status',
+    });
 
     expect(sent.reply).toBe(`Sent to Codex session ${sessionId}.`);
     expect(runner.sentMessages).toEqual(['inspect status']);
+    expect(notifier.addReaction).not.toHaveBeenCalled();
   });
 
   it('resumes from a code_bot session id with a known Codex id', async () => {
