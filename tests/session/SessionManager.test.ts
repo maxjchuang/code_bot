@@ -3111,6 +3111,33 @@ describe('SessionManager', () => {
     expect(result.reply.indexOf('- gpt-5.5 (GPT 5.5)')).toBeLessThan(result.reply.indexOf('- gpt-5.5-mini (GPT 5.5 Mini)'));
   });
 
+  it('returns an interactive model selector when the catalog is available', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model' });
+
+    expect(result.reply).toContain('Codex models');
+    expect(result.reply).toContain('- gpt-5.5');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    if (result.renderedReply?.preferred.kind !== 'card') {
+      throw new Error('expected a card payload');
+    }
+    const payload = JSON.stringify(result.renderedReply.preferred.payload);
+    expect(payload).toContain('Codex Model');
+    expect(payload).toContain('select_static');
+    expect(payload).toContain('gpt-5.5');
+    expect(payload).toContain('confirm_model_select');
+    expect(payload).toContain('"kind":"model_select"');
+    expect(payload).toContain('"chatId":"oc_1"');
+  });
+
   it('rejects unknown model and lists available models', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

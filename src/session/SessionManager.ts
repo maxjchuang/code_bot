@@ -20,6 +20,7 @@ import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLo
 import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
+import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -187,7 +188,7 @@ export class SessionManager {
       case 'status':
         return this.status(input.chatId);
       case 'model':
-        return this.model(input.chatId, parsed.args);
+        return this.model(input, parsed.args);
       case 'tail':
         return this.tail(input.chatId, parsed.args[0]);
       case 'rawtail':
@@ -711,7 +712,7 @@ export class SessionManager {
     };
   }
 
-  private async model(chatId: string, args: string[]): Promise<BotTextResult> {
+  private async model(input: IncomingBotText, args: string[]): Promise<BotTextResult> {
     if (args.length > 2) {
       return { reply: 'Usage: /model [model] [reasoning]' };
     }
@@ -722,7 +723,26 @@ export class SessionManager {
     }
 
     if (args.length === 0) {
-      return { reply: await this.formatModelCatalog(chatId, catalog) };
+      const chat = await this.store.getChat(input.chatId);
+      const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+      const currentModel = await this.currentCodexModel(session);
+      const savedDefault = chat?.currentProjectId ? chat.modelSelectionsByProject?.[chat.currentProjectId] : undefined;
+      const fallbackText = await this.formatModelCatalog(input.chatId, catalog);
+
+      return {
+        reply: fallbackText,
+        renderedReply: renderModelSelectorCard({
+          chatId: input.chatId,
+          chatType: input.chatType,
+          projectId: chat?.currentProjectId,
+          current: currentModel,
+          saved: savedDefault,
+          clientVersion: catalog.clientVersion,
+          fetchedAt: catalog.fetchedAt,
+          models: catalog.models,
+          fallbackText,
+        }),
+      };
     }
 
     const requestedSlug = args[0];
@@ -738,7 +758,7 @@ export class SessionManager {
       };
     }
 
-    const chat = await this.store.getChat(chatId);
+    const chat = await this.store.getChat(input.chatId);
     if (!chat?.currentProjectId) {
       return { reply: 'No project selected. Run /use <project> or /new <project> first.' };
     }
