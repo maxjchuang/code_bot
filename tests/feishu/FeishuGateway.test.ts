@@ -37,6 +37,7 @@ function createGatewayHarness() {
   let cardActionHandler: CardActionHandler | undefined;
   const sent: Array<{ receive_id: string; content: string }> = [];
   const replies: Array<{ message_id: string; msg_type: string; content: string; reply_in_thread?: boolean }> = [];
+  const requests: Array<{ url: string; method: string; data?: unknown }> = [];
   const errors: unknown[][] = [];
   const infos: unknown[][] = [];
   const events: Array<{ type: string; at: string; data: Record<string, unknown> }> = [];
@@ -44,11 +45,21 @@ function createGatewayHarness() {
 
   const gateway = new LarkLongConnectionGateway('app', 'secret', {
     client: {
-      request: async () => ({
-        bot: {
-          open_id: 'ou_bot',
-        },
-      }),
+      request: async (payload) => {
+        if (payload.url === '/open-apis/bot/v3/info') {
+          return {
+            bot: {
+              open_id: 'ou_bot',
+            },
+          };
+        }
+        requests.push({
+          url: payload.url,
+          method: payload.method,
+          data: payload.data,
+        });
+        return { code: 0, msg: 'success' };
+      },
       im: {
         v1: {
           message: {
@@ -97,6 +108,7 @@ function createGatewayHarness() {
     gateway,
     sent,
     replies,
+    requests,
     errors,
     infos,
     events,
@@ -117,6 +129,24 @@ function createGatewayHarness() {
 }
 
 describe('LarkLongConnectionGateway', () => {
+  it('adds a Feishu reaction to a message', async () => {
+    const harness = createGatewayHarness();
+
+    await harness.gateway.addReaction('om_123', 'Get');
+
+    expect(harness.requests).toEqual([
+      {
+        url: '/open-apis/im/v1/messages/om_123/reactions',
+        method: 'POST',
+        data: {
+          reaction_type: {
+            emoji_type: 'Get',
+          },
+        },
+      },
+    ]);
+  });
+
   it('handles text event and sends onMessage reply to original chat', async () => {
     const harness = createGatewayHarness();
     const onMessage = vi.fn(async () => ({ text: 'bot reply' }));
