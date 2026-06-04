@@ -1692,6 +1692,53 @@ describe('SessionManager', () => {
     await expect(store.getSession(sessionId)).resolves.toMatchObject({ status: 'running' });
   });
 
+  it('does not run overlapping observation extraction for concurrent PTY output chunks', async () => {
+    class BlockingObservationStore extends FakeCodexObservationStore {
+      readonly entered = deferred<void>();
+      readonly release = deferred<void>();
+      calls = 0;
+      active = 0;
+      maxActive = 0;
+
+      async readSnapshot(input: { codexSessionId: string }) {
+        this.calls += 1;
+        this.active += 1;
+        this.maxActive = Math.max(this.maxActive, this.active);
+        this.entered.resolve();
+        try {
+          await this.release.promise;
+          return super.readSnapshot(input);
+        } finally {
+          this.active -= 1;
+        }
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new BlockingObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier, codexObservationStore: observationStore });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3295';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '解释当前实现' });
+
+    const firstOutput = runner.emitOutput(sessionId, 'tick 1\n');
+    await observationStore.entered.promise;
+    const secondOutput = runner.emitOutput(sessionId, 'tick 2\n');
+    await delay(25);
+
+    expect(observationStore.calls).toBe(1);
+    expect(observationStore.maxActive).toBe(1);
+
+    observationStore.release.resolve();
+    await Promise.all([firstOutput, secondOutput]);
+  });
+
   it('does not fall back to PTY extraction when observation lookup throws and still notifies', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
