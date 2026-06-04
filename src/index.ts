@@ -5,7 +5,7 @@ import { FileStateStore } from './state/FileStateStore.js';
 import { PtyCodexRunner } from './codex/CodexRunner.js';
 import { createApp, recoverStartupState } from './app/createApp.js';
 import { LarkLongConnectionGateway, type FeishuGateway } from './feishu/FeishuGateway.js';
-import type { BotConfig } from './domain/types.js';
+import type { BotConfig, ClaimInboundMessageResult } from './domain/types.js';
 import type { FileStateStore as FileStateStoreType } from './state/FileStateStore.js';
 import type { CodexRunner } from './codex/CodexRunner.js';
 import type { SessionManager } from './session/SessionManager.js';
@@ -101,6 +101,47 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
         botOpenIdResolved: message.botOpenIdResolved,
       },
     });
+    let claim: ClaimInboundMessageResult;
+    try {
+      claim = await store.claimInboundMessage(message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('inbound.dedupe_failed', {
+        chat: message.chatId,
+        type: message.chatType,
+        messageId: message.messageId,
+        reason: errorMessage,
+      });
+      await store.appendErrorLog({
+        at: new Date().toISOString(),
+        source: 'inbound.dedupe',
+        message: errorMessage,
+        data: {
+          chatId: message.chatId,
+          chatType: message.chatType,
+          userId: message.userId,
+          messageId: message.messageId,
+        },
+      });
+      return { text: '', rendered: undefined };
+    }
+
+    if (!claim.claimed) {
+      await store.appendEvent({
+        type: 'command.duplicate_dropped',
+        at: new Date().toISOString(),
+        data: {
+          chatId: message.chatId,
+          chatType: message.chatType,
+          userId: message.userId,
+          messageId: message.messageId,
+          text: message.text,
+          duplicateCount: claim.receipt.duplicateCount,
+        },
+      });
+      return { text: '', rendered: undefined };
+    }
+
     const result = await app.sessionManager.handleText(message);
     logger.info('outbound.replied', {
       chat: message.chatId,
