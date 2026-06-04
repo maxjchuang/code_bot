@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { UpgradeConfig } from '../../src/domain/types.js';
-import { UpgradeManager, type UpgradeCommandRunner } from '../../src/upgrade/UpgradeManager.js';
+import { UpgradeManager, type UpgradeCommandRunner, type UpgradeStateStore } from '../../src/upgrade/UpgradeManager.js';
 
 interface RecordedCommand {
   command: string;
@@ -32,6 +32,20 @@ function runner(outputs: Record<string, string | Error> = {}): UpgradeCommandRun
       }
       return { stdout: output, stderr: '' };
     }),
+  };
+}
+
+function stateStore(deployedCommit?: string): UpgradeStateStore & { writes: Array<{ deployedCommit: string; deployedAt: string }> } {
+  const writes: Array<{ deployedCommit: string; deployedAt: string }> = [];
+  return {
+    writes,
+    async read() {
+      return { deployedCommit };
+    },
+    async write(state) {
+      writes.push(state);
+      deployedCommit = state.deployedCommit;
+    },
   };
 }
 
@@ -76,12 +90,13 @@ describe('UpgradeManager', () => {
     expect(commandLines(commandRunner.calls)).toEqual(['git status --porcelain']);
   });
 
-  it('returns already-current when HEAD equals remote branch', async () => {
+  it('returns already-current only when HEAD equals remote branch and deployed state matches', async () => {
     const commandRunner = runner({
       'git rev-parse HEAD': 'abc123\n',
       'git rev-parse origin/main': 'abc123\n',
     });
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner });
+    const state = stateStore('abc123');
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'already-current',
@@ -95,6 +110,51 @@ describe('UpgradeManager', () => {
       'git rev-parse HEAD',
       'git rev-parse origin/main',
     ]);
+    expect(state.writes).toEqual([]);
+  });
+
+  it('retries deployment without checkout or merge when HEAD equals remote but deployed state is missing', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'abc123\n',
+      'git rev-parse origin/main': 'abc123\n',
+    });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+
+    await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'restart-triggered',
+      oldCommit: 'abc123',
+      newCommit: 'abc123',
+    });
+    expect(commandLines(commandRunner.calls)).toEqual([
+      'git status --porcelain',
+      'git fetch origin main',
+      'git rev-parse HEAD',
+      'git rev-parse origin/main',
+      'npm install',
+      'npm run build',
+      'pm2 restart code-bot',
+    ]);
+    expect(state.writes).toHaveLength(1);
+    expect(state.writes[0].deployedCommit).toBe('abc123');
+  });
+
+  it('retries deployment without checkout or merge when HEAD equals remote but deployed state differs', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'abc123\n',
+      'git rev-parse origin/main': 'abc123\n',
+    });
+    const state = stateStore('old123');
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+
+    await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'restart-triggered',
+      oldCommit: 'abc123',
+      newCommit: 'abc123',
+    });
+    expect(commandLines(commandRunner.calls)).not.toContain('git checkout main');
+    expect(commandLines(commandRunner.calls)).not.toContain('git merge --ff-only origin/main');
+    expect(state.writes[0].deployedCommit).toBe('abc123');
   });
 
   it('stops before build when npm install fails', async () => {
@@ -103,7 +163,8 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main': 'new\n',
       'npm install': new Error('install failed'),
     });
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'failed',
@@ -113,6 +174,7 @@ describe('UpgradeManager', () => {
       newCommit: 'new',
     });
     expect(commandLines(commandRunner.calls)).not.toContain('npm run build');
+    expect(state.writes).toEqual([]);
   });
 
   it('stops before pm2 restart when build fails', async () => {
@@ -121,7 +183,8 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main': 'new\n',
       'npm run build': new Error('build failed'),
     });
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'failed',
@@ -131,6 +194,26 @@ describe('UpgradeManager', () => {
       newCommit: 'new',
     });
     expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart code-bot');
+    expect(state.writes).toEqual([]);
+  });
+
+  it('truncates long failure messages in replies and events', async () => {
+    const longError = `build failed: ${'x'.repeat(1000)}`;
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'old\n',
+      'git rev-parse origin/main': 'new\n',
+      'npm run build': new Error(longError),
+    });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state: stateStore() });
+
+    const result = await manager.upgrade({ userId: 'ou_admin' });
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') {
+      expect(result.error).toHaveLength(500);
+      expect(result.reply).toHaveLength('Upgrade failed at npm-build: '.length + 500);
+      expect(result.event.error).toHaveLength(500);
+    }
   });
 
   it('runs fast-forward, install, build, and pm2 restart on success', async () => {
@@ -138,7 +221,8 @@ describe('UpgradeManager', () => {
       'git rev-parse HEAD': 'old\n',
       'git rev-parse origin/main': 'new\n',
     });
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'restart-triggered',
@@ -158,5 +242,7 @@ describe('UpgradeManager', () => {
       'pm2 restart code-bot',
     ]);
     expect(commandRunner.calls.every((call) => call.cwd === '/repo')).toBe(true);
+    expect(state.writes).toHaveLength(1);
+    expect(state.writes[0].deployedCommit).toBe('new');
   });
 });
