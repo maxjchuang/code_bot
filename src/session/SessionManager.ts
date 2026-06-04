@@ -219,7 +219,7 @@ export class SessionManager {
   }
 
   private async handleCardActionQueued(input: FeishuIncomingCardAction): Promise<BotTextResult> {
-    if (!isAuthorizedMessage(this.config, { chatId: input.chatId, chatType: input.chatType, userId: input.userId })) {
+    if (!isAuthorizedMessage(this.config, { chatId: input.chatId, chatType: 'group', userId: input.userId })) {
       return { reply: 'Not authorized.' };
     }
 

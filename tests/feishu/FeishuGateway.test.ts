@@ -690,7 +690,7 @@ describe('LarkLongConnectionGateway', () => {
           value: {
             kind: 'model_select',
             chatId: 'oc_1',
-            chatType: 'group',
+            chatType: 'private',
           },
           form_value: {
             model: 'gpt-5.5',
@@ -754,6 +754,44 @@ describe('LarkLongConnectionGateway', () => {
     expect(onCardAction).not.toHaveBeenCalled();
     expect(harness.sent).toEqual([]);
     expect(harness.errors).toEqual([]);
+  });
+
+  it('uses top-level origin chat and message id fallback for card actions', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'model updated' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await harness.getCardActionHandler()({
+      event: {
+        open_chat_id: 'oc_1',
+        open_message_id: 'om_card_top_level',
+        operator: {
+          open_id: 'ou_1',
+        },
+        action: {
+          value: {
+            kind: 'model_select',
+            chatId: 'oc_1',
+            chatType: 'private',
+          },
+          form_value: {
+            model: 'gpt-5.5',
+          },
+        },
+      },
+    });
+
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_card_top_level',
+      action: {
+        kind: 'model_select',
+        model: 'gpt-5.5',
+      },
+    });
   });
 
   it('ignores card actions when origin chat id is missing', async () => {

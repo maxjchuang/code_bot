@@ -2840,6 +2840,53 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual([]);
   });
 
+  it('rejects unauthorized forged private model_select card actions for unallowed origin chats', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const config = {
+      ...sampleConfig(root),
+      allowedUsers: ['ou_1'],
+      allowedChatIds: ['oc_allowed'],
+    };
+    const manager = new SessionManager(config, store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+
+    await store.saveChat({
+      chatId: 'oc_blocked',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_blocked',
+      chatType: 'private',
+      userId: 'ou_1',
+      action: { kind: 'model_select', model: 'gpt-5.5', reasoning: 'high' },
+    });
+
+    expect(result.reply).toBe('Not authorized.');
+    await expect(store.getChat('oc_blocked')).resolves.toEqual({
+      chatId: 'oc_blocked',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+    expect(runner.sentMessages).toEqual([]);
+  });
+
   it('supports /use, /status, and /tail', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
