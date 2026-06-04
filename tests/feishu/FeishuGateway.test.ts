@@ -690,6 +690,39 @@ describe('LarkLongConnectionGateway', () => {
     expect(sent[0]?.msg_type).toBe('interactive');
   });
 
+  it('sends rendered replies with source message id through the reply API', async () => {
+    const harness = createGatewayHarness();
+
+    await harness.gateway.start(async () => ({
+      text: 'fallback',
+      rendered: {
+        preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } } },
+        fallback: { kind: 'text', text: 'fallback' },
+      },
+    }));
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_rendered_1',
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello bot' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(harness.sent).toEqual([]);
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_rendered_1',
+        msg_type: 'interactive',
+        content: JSON.stringify({ schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } }),
+        reply_in_thread: true,
+      },
+    ]);
+  });
+
   it('does not send an empty reply payload back to Feishu', async () => {
     const harness = createGatewayHarness();
     await harness.gateway.start(async () => ({ text: '' }));

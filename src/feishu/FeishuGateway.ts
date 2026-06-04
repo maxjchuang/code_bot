@@ -351,31 +351,31 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     chatId: string,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void> {
-    try {
-      await this.sendOne(chatId, message.preferred);
-    } catch (error) {
-      this.logger.debug('feishu.render_fallback', {
-        chat: chatId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-      await this.sendOne(chatId, message.fallback);
-    }
+    await this.sendRenderedMessageToTarget({ chatId }, message);
   }
 
   async sendRenderedMessageToTarget(
     target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void> {
-    await this.sendRenderedMessage(target.chatId, message);
+    try {
+      await this.sendOneToTarget(target, message.preferred);
+    } catch (error) {
+      this.logger.debug('feishu.render_fallback', {
+        chat: target.chatId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      await this.sendOneToTarget(target, message.fallback);
+    }
   }
 
-  private async sendOne(chatId: string, message: RenderedFeishuMessage): Promise<void> {
+  private async sendOneToTarget(target: FeishuReplyTarget, message: RenderedFeishuMessage): Promise<void> {
     if (message.kind === 'text') {
-      await this.sendText(chatId, message.text);
+      await this.sendTextToTarget(target, message.text);
       return;
     }
 
-    await this.sendPayloadToChat(chatId, {
+    await this.sendPayloadToTarget(target, {
       msg_type: 'interactive',
       content: JSON.stringify(message.payload),
     });
