@@ -2820,6 +2820,26 @@ describe('SessionManager', () => {
     expect(result.reply).toBe('You are not allowed to control this bot.');
   });
 
+  it('rejects unauthorized card actions without mutating store or sending runner commands', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_blocked',
+      action: { kind: 'model_select', model: 'gpt-5.5', reasoning: 'high' },
+    });
+
+    expect(result.reply).toBe('Not authorized.');
+    expect(await store.getChat('oc_1')).toBeUndefined();
+    expect(runner.sentMessages).toEqual([]);
+  });
+
   it('supports /use, /status, and /tail', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

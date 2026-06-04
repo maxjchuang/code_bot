@@ -16,8 +16,11 @@ type ReceiveHandler = (data: {
 type CardActionHandler = (data: {
   event?: {
     context?: {
+      open_chat_id?: string;
       open_message_id?: string;
     };
+    open_chat_id?: string;
+    open_message_id?: string;
     operator?: {
       open_id?: string;
     };
@@ -667,7 +670,7 @@ describe('LarkLongConnectionGateway', () => {
     expect(harness.sent).toEqual([]);
   });
 
-  it('routes model selector card actions to onCardAction', async () => {
+  it('routes model selector card actions to onCardAction using origin chat id', async () => {
     const harness = createGatewayHarness();
     const onMessage = vi.fn(async () => ({ text: 'should not be used' }));
     const onCardAction = vi.fn(async () => ({ text: 'model updated' }));
@@ -677,6 +680,7 @@ describe('LarkLongConnectionGateway', () => {
     await harness.getCardActionHandler()({
       event: {
         context: {
+          open_chat_id: 'oc_1',
           open_message_id: 'om_card_1',
         },
         operator: {
@@ -715,6 +719,75 @@ describe('LarkLongConnectionGateway', () => {
         content: JSON.stringify({ text: 'model updated' }),
       },
     ]);
+  });
+
+  it('ignores card actions when origin chat differs from embedded payload chat', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'unused' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await expect(
+      harness.getCardActionHandler()({
+        event: {
+          context: {
+            open_chat_id: 'oc_real',
+            open_message_id: 'om_card_1',
+          },
+          operator: {
+            open_id: 'ou_1',
+          },
+          action: {
+            value: {
+              kind: 'model_select',
+              chatId: 'oc_embedded',
+              chatType: 'group',
+            },
+            form_value: {
+              model: 'gpt-5.5',
+            },
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(onCardAction).not.toHaveBeenCalled();
+    expect(harness.sent).toEqual([]);
+    expect(harness.errors).toEqual([]);
+  });
+
+  it('ignores card actions when origin chat id is missing', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'unused' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await expect(
+      harness.getCardActionHandler()({
+        event: {
+          context: {
+            open_message_id: 'om_card_1',
+          },
+          operator: {
+            open_id: 'ou_1',
+          },
+          action: {
+            value: {
+              kind: 'model_select',
+              chatId: 'oc_1',
+              chatType: 'group',
+            },
+            form_value: {
+              model: 'gpt-5.5',
+            },
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(onCardAction).not.toHaveBeenCalled();
+    expect(harness.sent).toEqual([]);
+    expect(harness.errors).toEqual([]);
   });
 
   it('ignores malformed card actions without throwing', async () => {

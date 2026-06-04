@@ -58,8 +58,11 @@ interface LarkReceiveMessageEvent {
 interface LarkCardActionEvent {
   event?: {
     context?: {
+      open_chat_id?: string;
       open_message_id?: string;
     };
+    open_chat_id?: string;
+    open_message_id?: string;
     operator?: {
       open_id?: string;
     };
@@ -191,11 +194,19 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             return;
           }
 
+          const originChatId = event?.context?.open_chat_id ?? event?.open_chat_id;
+          if (!originChatId) {
+            return;
+          }
+          if (parsedAction.chatId !== originChatId) {
+            return;
+          }
+
           const incomingAction: FeishuIncomingCardAction = {
-            chatId: parsedAction.chatId,
+            chatId: originChatId,
             chatType: parsedAction.chatType,
             userId,
-            messageId: event?.context?.open_message_id,
+            messageId: event?.context?.open_message_id ?? event?.open_message_id,
             action: parsedAction.action,
           };
 
@@ -212,7 +223,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             return;
           }
 
-          await this.sendReply(incomingAction.chatId, incomingAction, reply);
+          await this.sendReply(originChatId, incomingAction, reply);
         },
       });
     await this.wsClient.start({
