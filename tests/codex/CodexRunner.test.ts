@@ -6,6 +6,8 @@ import { createCodexSessionId, PtyCodexRunner } from '../../src/codex/CodexRunne
 
 const CODEX_TUI_KEYMAP_ARGS = [
   '-c',
+  'disable_paste_burst=true',
+  '-c',
   'tui.keymap.composer.submit="ctrl-x"',
   '-c',
   'tui.keymap.editor.insert_newline=["ctrl-j","shift-enter","alt-enter"]',
