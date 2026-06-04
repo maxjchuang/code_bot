@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { appendFile, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   ApprovalRecord,
@@ -13,6 +13,34 @@ import type {
 } from '../domain/types.js';
 
 type Clock = () => Date;
+
+const MAX_TAIL_SCAN_BYTES = 1_048_576;
+const MAX_LOG_LINE_CHARS = 16_384;
+
+function capLogLine(line: string): string {
+  if (line.length <= MAX_LOG_LINE_CHARS) {
+    return line;
+  }
+  return `[truncated ${line.length - MAX_LOG_LINE_CHARS} chars]${line.slice(-MAX_LOG_LINE_CHARS)}`;
+}
+
+async function readFileWindow(filePath: string, position: number, length: number): Promise<Buffer> {
+  const buffer = Buffer.alloc(length);
+  const file = await open(filePath, 'r');
+  let bytesRead = 0;
+  try {
+    while (bytesRead < length) {
+      const result = await file.read(buffer, bytesRead, length - bytesRead, position + bytesRead);
+      if (result.bytesRead === 0) {
+        break;
+      }
+      bytesRead += result.bytesRead;
+    }
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await file.close();
+  }
+}
 
 export class FileStateStore {
   private writeChain: Promise<unknown> = Promise.resolve();
@@ -169,14 +197,32 @@ export class FileStateStore {
   }
 
   async tailSessionLog(sessionId: string, lineCount: number): Promise<string[]> {
+    const normalizedLineCount = Math.floor(lineCount);
+    if (!Number.isFinite(lineCount) || normalizedLineCount <= 0) {
+      return [];
+    }
+
     await this.waitForPendingWrites();
+    const filePath = this.sessionLogPath(sessionId);
     try {
-      const content = await readFile(this.sessionLogPath(sessionId), 'utf8');
+      const { size } = await stat(filePath);
+      const isBoundedTail = size > MAX_TAIL_SCAN_BYTES;
+      const start = isBoundedTail ? size - MAX_TAIL_SCAN_BYTES + 1 : 0;
+      const readStart = isBoundedTail ? start - 1 : start;
+      const bytesToRead = size - readStart;
+      const buffer = await readFileWindow(filePath, readStart, bytesToRead);
+
+      const previousByte = isBoundedTail && buffer.length > 0 ? buffer[0] : undefined;
+      const contentStart = isBoundedTail ? 1 : 0;
+      const content = buffer.subarray(contentStart).toString('utf8');
       const lines = content.split(/\r?\n/);
+      if (isBoundedTail && previousByte !== 0x0a && lines.length > 1) {
+        lines.shift();
+      }
       if (lines[lines.length - 1] === '') {
         lines.pop();
       }
-      return lines.slice(-lineCount);
+      return lines.slice(-normalizedLineCount).map(capLogLine);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return [];
@@ -199,13 +245,25 @@ export class FileStateStore {
 
   async sessionLogLinesFrom(sessionId: string, byteOffset: number): Promise<string[]> {
     await this.waitForPendingWrites();
+    const filePath = this.sessionLogPath(sessionId);
     try {
-      const content = await readFile(this.sessionLogPath(sessionId));
-      const lines = content.subarray(byteOffset).toString('utf8').split(/\r?\n/);
+      const { size } = await stat(filePath);
+      const isOldOffset = size - byteOffset > MAX_TAIL_SCAN_BYTES;
+      const start = isOldOffset ? size - MAX_TAIL_SCAN_BYTES + 1 : byteOffset;
+      const readStart = isOldOffset ? start - 1 : start;
+      const bytesToRead = Math.max(0, size - readStart);
+      const buffer = await readFileWindow(filePath, readStart, bytesToRead);
+      const previousByte = isOldOffset && buffer.length > 0 ? buffer[0] : undefined;
+      const contentStart = isOldOffset ? 1 : 0;
+      const content = buffer.subarray(contentStart).toString('utf8');
+      const lines = content.split(/\r?\n/);
+      if (isOldOffset && previousByte !== 0x0a && lines.length > 1) {
+        lines.shift();
+      }
       if (lines[lines.length - 1] === '') {
         lines.pop();
       }
-      return lines;
+      return lines.map(capLogLine);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return [];

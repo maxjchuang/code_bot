@@ -7,6 +7,7 @@ export interface SanitizedTerminalOutput {
 const BOXDRAWING_PATTERN = /^[\s╭╮╰╯│─┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬]+$/u;
 const WARNING_PATTERN = /(⚠|warning|error|failed|failure|not logged in|denied|invalid|missing|cannot|can't)/i;
 const WORKING_REDRAW_PATTERN = /^[\s\d•·Workingorkin]+$/;
+const MAX_SANITIZER_INPUT_LINE_CHARS = 65_536;
 
 export function sanitizeTerminalOutput(lines: string[]): SanitizedTerminalOutput {
   const readableLines: string[] = [];
@@ -16,6 +17,12 @@ export function sanitizeTerminalOutput(lines: string[]): SanitizedTerminalOutput
   let previousWasBlank = false;
 
   for (const line of lines) {
+    if (line.length > MAX_SANITIZER_INPUT_LINE_CHARS && line.includes('\u001b')) {
+      hadControlSequences = true;
+      removedLineCount += 1;
+      continue;
+    }
+
     const rendered = renderTerminalLine(line);
     hadControlSequences = hadControlSequences || rendered.hadControlSequences;
     for (const renderedLine of rendered.lines) {

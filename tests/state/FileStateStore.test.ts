@@ -1,10 +1,31 @@
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTmpDir } from '../helpers/tmp.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 
+const fsMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+  stat: vi.fn(),
+}));
+
+vi.mock('node:fs/promises', async () => {
+  const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  fsMocks.open.mockImplementation(actual.open);
+  fsMocks.stat.mockImplementation(actual.stat);
+  return {
+    ...actual,
+    open: fsMocks.open,
+    stat: fsMocks.stat,
+  };
+});
+
 describe('FileStateStore', () => {
+  beforeEach(() => {
+    fsMocks.open.mockClear();
+    fsMocks.stat.mockClear();
+  });
+
   it('writes chat snapshots atomically and reads them back', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -118,6 +139,179 @@ describe('FileStateStore', () => {
     await store.appendSessionLog('session_blank', 'one\n\ntwo\n');
 
     await expect(store.tailSessionLog('session_blank', 3)).resolves.toEqual(['one', '', 'two']);
+  });
+
+  it('tails session logs from the end without returning older oversized content', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_large', `${'x'.repeat(2_000_000)}\n`);
+    await store.appendSessionLog('session_large', 'last-one\nlast-two\n');
+
+    await expect(store.tailSessionLog('session_large', 2)).resolves.toEqual(['last-one', 'last-two']);
+  });
+
+  it('caps a single oversized tailed log line', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_long_line', `${'x'.repeat(100_000)}\nlast\n`);
+
+    const lines = await store.tailSessionLog('session_long_line', 2);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.length).toBeLessThanOrEqual(16_384 + 32);
+    expect(lines[0]).toContain('[truncated');
+    expect(lines[1]).toBe('last');
+  });
+
+  it('returns one capped line when a single session log line exceeds the tail scan window', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_single_huge_line', 'x'.repeat(1_148_576));
+
+    const lines = await store.tailSessionLog('session_single_huge_line', 1);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.length).toBeLessThanOrEqual(16_384 + 32);
+    expect(lines[0]).toContain('[truncated');
+  });
+
+  it('keeps the first complete line when the tail window starts after a newline', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const firstLine = 'first-in-window';
+    const secondLine = 'second-in-window';
+    const prefix = `${'x'.repeat(10)}\n`;
+    const firstLines = `${firstLine}\n${secondLine}\n`;
+    await store.appendSessionLog('session_boundary', prefix);
+    await store.appendSessionLog('session_boundary', `${firstLines}${'z'.repeat(1_048_576 - 1 - firstLines.length)}`);
+
+    const lines = await store.tailSessionLog('session_boundary', 3);
+
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe(firstLine);
+    expect(lines[1]).toBe(secondLine);
+    expect(lines[2]).toContain('[truncated');
+  });
+
+  it('returns no tailed session log lines for zero or negative line counts', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_no_lines', 'one\ntwo\n');
+
+    await expect(store.tailSessionLog('session_no_lines', 0)).resolves.toEqual([]);
+    await expect(store.tailSessionLog('session_no_lines', -1)).resolves.toEqual([]);
+  });
+
+  it('returns no tailed session log lines for non-finite line counts', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_non_finite_lines', 'one\ntwo\n');
+
+    await expect(store.tailSessionLog('session_non_finite_lines', NaN)).resolves.toEqual([]);
+    await expect(store.tailSessionLog('session_non_finite_lines', Infinity)).resolves.toEqual([]);
+    await expect(store.tailSessionLog('session_non_finite_lines', -Infinity)).resolves.toEqual([]);
+  });
+
+  it('reads a bounded tail window with a short-read loop and closes the file', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const read = vi.fn()
+      .mockResolvedValueOnce({ bytesRead: 400_000, buffer: Buffer.alloc(0) })
+      .mockResolvedValueOnce({ bytesRead: 400_000, buffer: Buffer.alloc(0) })
+      .mockResolvedValueOnce({ bytesRead: 248_576, buffer: Buffer.alloc(0) });
+    const close = vi.fn().mockResolvedValue(undefined);
+    fsMocks.stat.mockResolvedValueOnce({ size: 2_000_000 });
+    fsMocks.open.mockResolvedValueOnce({ read, close });
+
+    const lines = await store.tailSessionLog('session_short_reads', 1);
+
+    expect(lines).toHaveLength(1);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(read.mock.calls.map((call) => call[2])).toEqual([1_048_576, 648_576, 248_576]);
+    expect(read.mock.calls.map((call) => call[3])).toEqual([951_424, 1_351_424, 1_751_424]);
+    const bytesRead = await Promise.all(read.mock.results.map(async (result) => (await result.value).bytesRead));
+    expect(bytesRead.reduce((total, count) => total + count, 0)).toBe(1_048_576);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(fsMocks.open).toHaveBeenCalledWith(expect.stringContaining('session_short_reads.log'), 'r');
+  });
+
+  it('closes the session log file when a tail read fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const readError = new Error('read failed');
+    const read = vi.fn().mockRejectedValue(readError);
+    const close = vi.fn().mockResolvedValue(undefined);
+    fsMocks.stat.mockResolvedValueOnce({ size: 32 });
+    fsMocks.open.mockResolvedValueOnce({ read, close });
+
+    await expect(store.tailSessionLog('session_read_error', 1)).rejects.toThrow(readError);
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps session log lines read from an old byte offset', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_offset', `${'x'.repeat(2_000_000)}\ncurrent\n`);
+
+    const lines = await store.sessionLogLinesFrom('session_offset', 0);
+
+    expect(lines.at(-1)).toBe('current');
+    expect(lines.every((line) => line.length <= 16_384 + 32)).toBe(true);
+  });
+
+  it('returns one capped line when a single session log line from an old offset exceeds the scan window', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.appendSessionLog('session_offset_single_huge_line', 'x'.repeat(1_148_576));
+
+    const lines = await store.sessionLogLinesFrom('session_offset_single_huge_line', 0);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.length).toBeLessThanOrEqual(16_384 + 32);
+    expect(lines[0]).toContain('[truncated');
+  });
+
+  it('keeps the first complete line when the old-offset scan window starts after a newline', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const firstLine = 'first-from-window';
+    const secondLine = 'second-from-window';
+    const prefix = `${'x'.repeat(10)}\n`;
+    const firstLines = `${firstLine}\n${secondLine}\n`;
+    await store.appendSessionLog('session_offset_boundary', prefix);
+    await store.appendSessionLog('session_offset_boundary', `${firstLines}${'z'.repeat(1_048_576 - 1 - firstLines.length)}`);
+
+    const lines = await store.sessionLogLinesFrom('session_offset_boundary', 0);
+
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe(firstLine);
+    expect(lines[1]).toBe(secondLine);
+    expect(lines[2]).toContain('[truncated');
+  });
+
+  it('reads old-offset session log lines with a short-read loop and closes the file', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const read = vi.fn()
+      .mockResolvedValueOnce({ bytesRead: 400_000, buffer: Buffer.alloc(0) })
+      .mockResolvedValueOnce({ bytesRead: 400_000, buffer: Buffer.alloc(0) })
+      .mockResolvedValueOnce({ bytesRead: 248_576, buffer: Buffer.alloc(0) });
+    const close = vi.fn().mockResolvedValue(undefined);
+    fsMocks.stat.mockResolvedValueOnce({ size: 2_000_000 });
+    fsMocks.open.mockResolvedValueOnce({ read, close });
+
+    const lines = await store.sessionLogLinesFrom('session_offset_short_reads', 0);
+
+    expect(lines).toHaveLength(1);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(read.mock.calls.map((call) => call[2])).toEqual([1_048_576, 648_576, 248_576]);
+    expect(read.mock.calls.map((call) => call[3])).toEqual([951_424, 1_351_424, 1_751_424]);
+    const bytesRead = await Promise.all(read.mock.results.map(async (result) => (await result.value).bytesRead));
+    expect(bytesRead.reduce((total, count) => total + count, 0)).toBe(1_048_576);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(fsMocks.open).toHaveBeenCalledWith(expect.stringContaining('session_offset_short_reads.log'), 'r');
   });
 
   it('returns empty pending approvals when approvals directory is missing', async () => {

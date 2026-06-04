@@ -101,6 +101,16 @@ describe('sanitizeTerminalOutput', () => {
     expect(result.hadControlSequences).toBe(true);
   });
 
+  it('bounds work for oversized terminal-controlled lines', () => {
+    const hugeRedraw = '\u001b[?2026h\u001b[35;1H•Working'.repeat(20_000);
+
+    const result = sanitizeTerminalOutput([hugeRedraw, 'final useful line']);
+
+    expect(result.hadControlSequences).toBe(true);
+    expect(result.readableLines).toEqual(['final useful line']);
+    expect(result.removedLineCount).toBeGreaterThan(0);
+  });
+
   it('preserves useful output when status redraws move elsewhere on screen', () => {
     const result = sanitizeTerminalOutput([
       '└ ## develop...origin/develop\u001b[10;1H\u001b[K•Working\u001b[10;2H\u001b[KWorking',
