@@ -10,4 +10,22 @@ describe('parseIncomingText', () => {
       raw: '/projects',
     });
   });
+
+  it('parses /model with no args as a command', () => {
+    expect(parseIncomingText('/model')).toEqual({
+      kind: 'command',
+      name: 'model',
+      args: [],
+      raw: '/model',
+    });
+  });
+
+  it('parses /model with model and reasoning args as a command', () => {
+    expect(parseIncomingText('/model gpt-5.5 high')).toEqual({
+      kind: 'command',
+      name: 'model',
+      args: ['gpt-5.5', 'high'],
+      raw: '/model gpt-5.5 high',
+    });
+  });
 });

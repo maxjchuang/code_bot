@@ -4,12 +4,13 @@ import { loadConfig } from './config/loadConfig.js';
 import { FileStateStore } from './state/FileStateStore.js';
 import { PtyCodexRunner } from './codex/CodexRunner.js';
 import { createApp, recoverStartupState } from './app/createApp.js';
-import { LarkLongConnectionGateway, type FeishuGateway } from './feishu/FeishuGateway.js';
+import { LarkLongConnectionGateway, type FeishuGateway, type FeishuIncomingMessage } from './feishu/FeishuGateway.js';
 import type { BotConfig, ClaimInboundMessageResult } from './domain/types.js';
 import type { FileStateStore as FileStateStoreType } from './state/FileStateStore.js';
 import type { CodexRunner } from './codex/CodexRunner.js';
 import type { SessionManager } from './session/SessionManager.js';
 import { createAppLogger } from './logging/AppLogger.js';
+import type { FeishuIncomingCardAction } from './feishu/FeishuCardActions.js';
 
 export interface BootstrapDeps {
   projectRoot?: string;
@@ -79,7 +80,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     projects: config.projects.length,
     verbosity: config.ui.verbosity,
   });
-  await gateway.start(async (message) => {
+  const onMessage = async (message: FeishuIncomingMessage) => {
     logger.info('inbound.received', {
       chat: message.chatId,
       type: message.chatType,
@@ -162,7 +163,48 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
       },
     });
     return { text: result.reply, rendered: result.renderedReply };
-  });
+  };
+  const onCardAction = async (action: FeishuIncomingCardAction) => {
+    logger.info('inbound.card_action_received', {
+      chat: action.chatId,
+      type: action.chatType,
+      messageId: action.messageId,
+      kind: action.action.kind,
+    });
+    await store.appendEvent({
+      type: 'card_action.received',
+      at: new Date().toISOString(),
+      data: {
+        chatId: action.chatId,
+        chatType: action.chatType,
+        userId: action.userId,
+        messageId: action.messageId,
+        action: action.action,
+      },
+    });
+    const result = await app.sessionManager.handleCardAction(action);
+    logger.info('outbound.card_action_replied', {
+      chat: action.chatId,
+      type: action.chatType,
+      messageId: action.messageId,
+      kind: action.action.kind,
+      reply: result.reply,
+    });
+    await store.appendEvent({
+      type: 'card_action.replied',
+      at: new Date().toISOString(),
+      data: {
+        chatId: action.chatId,
+        chatType: action.chatType,
+        userId: action.userId,
+        messageId: action.messageId,
+        action: action.action,
+        replyPreview: result.reply.length <= 200 ? result.reply : `${result.reply.slice(0, 197)}...`,
+      },
+    });
+    return { text: result.reply, rendered: result.renderedReply };
+  };
+  await gateway.start(onMessage, onCardAction);
 }
 
 async function main(): Promise<void> {

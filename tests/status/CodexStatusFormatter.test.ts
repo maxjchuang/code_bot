@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { formatCodexStatusSection } from '../../src/status/CodexStatusFormatter.js';
 
 describe('formatCodexStatusSection', () => {
-  it('renders structured summary fields and the raw appendix', () => {
+  it('renders structured summary fields without the raw appendix', () => {
     const reply = formatCodexStatusSection({
       kind: 'available',
       status: {
@@ -20,7 +20,8 @@ describe('formatCodexStatusSection', () => {
     expect(reply).toContain('Source: live');
     expect(reply).toContain('Status line: running');
     expect(reply).toContain('Current task: Implement status integration');
-    expect(reply).toContain('Codex raw status:');
+    expect(reply).not.toContain('Codex raw status:');
+    expect(reply).not.toContain('Status: running\nTask: Implement status integration');
   });
 
   it('renders unavailable when nothing can be shown', () => {

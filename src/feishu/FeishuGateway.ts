@@ -2,6 +2,8 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import type { ChatType } from '../domain/types.js';
 import type { BotErrorLogEntry, BotEvent } from '../domain/types.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
+import type { FeishuIncomingCardAction } from './FeishuCardActions.js';
+import { parseCardActionValue } from './FeishuCardActions.js';
 import { sanitizeFeishuText } from './FeishuTextSanitizer.js';
 import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
 
@@ -17,7 +19,10 @@ export interface FeishuIncomingMessage {
 }
 
 export interface FeishuGateway {
-  start(onMessage: (message: FeishuIncomingMessage) => Promise<FeishuOutgoingReply>): Promise<void>;
+  start(
+    onMessage: (message: FeishuIncomingMessage) => Promise<FeishuOutgoingReply>,
+    onCardAction?: (action: FeishuIncomingCardAction) => Promise<FeishuOutgoingReply>,
+  ): Promise<void>;
   sendText(chatId: string, text: string): Promise<void>;
   sendRenderedMessage(
     chatId: string,
@@ -50,6 +55,24 @@ interface LarkReceiveMessageEvent {
   };
 }
 
+interface LarkCardActionEvent {
+  event?: {
+    context?: {
+      open_chat_id?: string;
+      open_message_id?: string;
+    };
+    open_chat_id?: string;
+    open_message_id?: string;
+    operator?: {
+      open_id?: string;
+    };
+    action?: {
+      value?: unknown;
+      form_value?: unknown;
+    };
+  };
+}
+
 interface LarkClientLike {
   request?: (payload: { url: string; method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; [key: string]: unknown }) => Promise<unknown>;
   im: {
@@ -69,7 +92,10 @@ interface LarkWSClientLike {
 }
 
 interface EventDispatcherLike {
-  register: (handlers: { 'im.message.receive_v1': (data: LarkReceiveMessageEvent) => Promise<void> }) => unknown;
+  register: (handlers: {
+    'im.message.receive_v1': (data: LarkReceiveMessageEvent) => Promise<void>;
+    'card.action.trigger'?: (data: LarkCardActionEvent) => Promise<void>;
+  }) => unknown;
 }
 
 interface LoggerLike {
@@ -107,7 +133,10 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     this.recordError = deps?.recordError;
   }
 
-  async start(onMessage: (message: FeishuIncomingMessage) => Promise<FeishuOutgoingReply>): Promise<void> {
+  async start(
+    onMessage: (message: FeishuIncomingMessage) => Promise<FeishuOutgoingReply>,
+    onCardAction?: (action: FeishuIncomingCardAction) => Promise<FeishuOutgoingReply>,
+  ): Promise<void> {
     this.botOpenId = await this.resolveBotOpenId();
     const dispatcher = this.createEventDispatcher();
     dispatcher.register({
@@ -147,20 +176,54 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             return;
           }
 
+          await this.sendReply(message.chat_id, incomingMessage, reply);
+        },
+        'card.action.trigger': async (data: LarkCardActionEvent) => {
+          if (!onCardAction) {
+            return;
+          }
+
+          const event = data.event;
+          const userId = event?.operator?.open_id;
+          if (!userId) {
+            return;
+          }
+
+          const parsedAction = parseCardActionValue(event?.action?.value, event?.action?.form_value);
+          if (!parsedAction) {
+            return;
+          }
+
+          const originChatId = event?.context?.open_chat_id ?? event?.open_chat_id;
+          if (!originChatId) {
+            return;
+          }
+          if (parsedAction.chatId !== originChatId) {
+            return;
+          }
+
+          const incomingAction: FeishuIncomingCardAction = {
+            chatId: originChatId,
+            chatType: parsedAction.chatType,
+            userId,
+            messageId: event?.context?.open_message_id ?? event?.open_message_id,
+            action: parsedAction.action,
+          };
+
+          let reply: FeishuOutgoingReply;
           try {
-            if (reply.rendered) {
-              await this.sendRenderedMessage(message.chat_id, reply.rendered);
-            } else if (reply.text !== '') {
-              await this.sendText(message.chat_id, reply.text);
-            }
+            reply = await onCardAction(incomingAction);
           } catch (error) {
-            await this.recordProcessingFailure('send_reply', incomingMessage, reply.text, error);
-            this.logger.error('feishu.send_reply_failed', {
-              chat: incomingMessage.chatId,
-              user: incomingMessage.userId,
+            await this.recordProcessingFailure('handle_message', incomingAction, undefined, error);
+            this.logger.error('feishu.handle_message_failed', {
+              chat: incomingAction.chatId,
+              user: incomingAction.userId,
               reason: error instanceof Error ? error.message : String(error),
             });
+            return;
           }
+
+          await this.sendReply(originChatId, incomingAction, reply);
         },
       });
     await this.wsClient.start({
@@ -222,6 +285,27 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     return message.mentions?.some((mention) => mention.id?.open_id === this.botOpenId) ?? false;
   }
 
+  private async sendReply(
+    chatId: string,
+    message: FeishuIncomingMessage | FeishuIncomingCardAction,
+    reply: FeishuOutgoingReply,
+  ): Promise<void> {
+    try {
+      if (reply.rendered) {
+        await this.sendRenderedMessage(chatId, reply.rendered);
+      } else if (reply.text !== '') {
+        await this.sendText(chatId, reply.text);
+      }
+    } catch (error) {
+      await this.recordProcessingFailure('send_reply', message, reply.text, error);
+      this.logger.error('feishu.send_reply_failed', {
+        chat: message.chatId,
+        user: message.userId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async sendText(chatId: string, text: string): Promise<void> {
     const sanitizedText = sanitizeFeishuText(text);
     for (const chunk of splitFeishuMessages(sanitizedText)) {
@@ -269,7 +353,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
 
   private async recordProcessingFailure(
     stage: 'handle_message' | 'send_reply',
-    message: FeishuIncomingMessage,
+    message: FeishuIncomingMessage | FeishuIncomingCardAction,
     reply: string | undefined,
     error: unknown,
   ): Promise<void> {
@@ -281,9 +365,13 @@ export class LarkLongConnectionGateway implements FeishuGateway {
       chatType: message.chatType,
       userId: message.userId,
       messageId: message.messageId,
-      text: message.text,
       ...details,
     };
+    if ('text' in message) {
+      data.text = message.text;
+    } else {
+      data.action = normalizeUnknown(message.action);
+    }
     if (reply !== undefined) {
       data.replyPreview = reply.length <= 200 ? reply : `${reply.slice(0, 197)}...`;
     }

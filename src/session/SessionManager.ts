@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BotConfig, ChatContext, ChatType, SessionRecord } from '../domain/types.js';
+import type { BotConfig, ChatContext, ChatType, SavedModelSelection, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
@@ -19,6 +19,10 @@ import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
 import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLogger.js';
 import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
+import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
+import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
+import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
+import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -48,6 +52,10 @@ export interface Notifier {
   ): Promise<void>;
 }
 
+export interface ModelCatalogReader {
+  read(): Promise<CodexModelCatalog>;
+}
+
 export interface SessionManagerDeps {
   logger?: Pick<typeof console, 'info' | 'error'>;
   logLevel?: LogLevel | string;
@@ -69,6 +77,14 @@ export interface SessionManagerDeps {
     liveFetchTimeoutMs?: number;
     quietMs?: number;
   };
+  modelCatalog?: ModelCatalogReader;
+}
+
+interface ModelCatalogView {
+  projectId?: string;
+  current?: { model?: string; reasoningEffort?: string };
+  saved?: SavedModelSelection;
+  fallbackText: string;
 }
 
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
@@ -152,6 +168,10 @@ export class SessionManager {
     return this.decorateRenderedReply(input.text, result);
   }
 
+  async handleCardAction(input: FeishuIncomingCardAction): Promise<BotTextResult> {
+    return this.withChatQueue(input.chatId, () => this.handleCardActionQueued(input));
+  }
+
   private async handleTextQueued(input: IncomingBotText): Promise<BotTextResult> {
     if (!isAuthorizedMessage(this.config, input)) {
       return { reply: 'You are not allowed to control this bot.' };
@@ -169,7 +189,7 @@ export class SessionManager {
       case 'help':
         return { reply: this.helpText() };
       case 'projects':
-        return { reply: this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n') };
+        return this.projects(input);
       case 'use':
         return this.useProject(input, parsed.args[0]);
       case 'new':
@@ -180,6 +200,8 @@ export class SessionManager {
         return this.sendToCurrentSession(input, parsed.args[0] ?? '');
       case 'status':
         return this.status(input.chatId);
+      case 'model':
+        return this.model(input, parsed.args);
       case 'tail':
         return this.tail(input.chatId, parsed.args[0]);
       case 'rawtail':
@@ -194,6 +216,24 @@ export class SessionManager {
         return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
+    }
+  }
+
+  private async handleCardActionQueued(input: FeishuIncomingCardAction): Promise<BotTextResult> {
+    const existingChat = await this.store.getChat(input.chatId);
+    const authoritativeChatType = existingChat?.chatType ?? input.chatType;
+    if (!isAuthorizedMessage(this.config, { chatId: input.chatId, chatType: authoritativeChatType, userId: input.userId })) {
+      return { reply: 'Not authorized.' };
+    }
+    const authorizedInput = { ...input, chatType: authoritativeChatType };
+
+    switch (input.action.kind) {
+      case 'model_select':
+        return this.selectModel(input.chatId, input.action, { unsupportedReasoning: 'drop' });
+      case 'project_select':
+        return this.selectProject(authorizedInput, input.action);
+      default:
+        return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
   }
 
@@ -213,21 +253,53 @@ export class SessionManager {
   }
 
   private async useProject(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
+    return this.selectProject(input, { kind: 'project_select', projectId: projectId ?? '' });
+  }
+
+  private async projects(input: IncomingBotText): Promise<BotTextResult> {
+    if (this.config.projects.length === 0) {
+      return { reply: 'No projects configured.' };
+    }
+
+    const fallbackText = this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n');
+    const chat = await this.store.getChat(input.chatId);
+    const runningSession = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+
+    return {
+      reply: fallbackText,
+      renderedReply: renderProjectSelectorCard({
+        chatId: input.chatId,
+        chatType: input.chatType,
+        currentProjectId: chat?.currentProjectId,
+        runningProjectId: runningSession && isActiveSession(runningSession) ? runningSession.projectId : undefined,
+        projects: this.config.projects,
+        fallbackText,
+      }),
+    };
+  }
+
+  private async selectProject(
+    input: Pick<IncomingBotText, 'chatId' | 'chatType'>,
+    action: ProjectSelectCardAction,
+  ): Promise<BotTextResult> {
+    const projectId = action.projectId;
     if (!projectId || !resolveProject(this.config, projectId)) {
       return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
     }
     const existingChat = await this.store.getChat(input.chatId);
     const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
-    if (currentSession && isActiveSession(currentSession) && currentSession.projectId !== projectId) {
+    const activeSession = currentSession && isActiveSession(currentSession) ? currentSession : undefined;
+    if (activeSession && activeSession.projectId !== projectId) {
       return {
-        reply: `Current session ${currentSession.id} is still running. Run /stop before switching projects.`,
+        reply: `Current session ${activeSession.id} is still running. Run /stop before switching projects.`,
       };
     }
     await this.store.saveChat({
       chatId: input.chatId,
       chatType: input.chatType,
       currentProjectId: projectId,
-      currentSessionId: currentSession && isActiveSession(currentSession) ? currentSession.id : undefined,
+      currentSessionId: activeSession?.id,
+      modelSelectionsByProject: existingChat?.modelSelectionsByProject,
     });
     return { reply: `Current project set to ${projectId}.` };
   }
@@ -372,12 +444,14 @@ export class SessionManager {
       logPath: this.store.sessionLogPath(sessionId),
       ...options.sessionFields,
     };
+    const previousChat = await this.store.getChat(input.chatId);
+    const codexArgs = applySavedModelSelection(project.codexArgs, previousChat?.modelSelectionsByProject?.[project.id]);
     await this.store.saveSession(session);
     try {
       await this.runner.start({
         sessionId,
         cwd: project.path,
-        args: project.codexArgs,
+        args: codexArgs,
         mode: options.mode,
         onOutput: (text) => {
           return this.appendSessionOutput(sessionId, text).catch((error) =>
@@ -420,6 +494,7 @@ export class SessionManager {
       chatType: input.chatType,
       currentProjectId: project.id,
       currentSessionId: sessionId,
+      modelSelectionsByProject: previousChat?.modelSelectionsByProject,
     };
     await this.store.saveChat(chat);
     this.logger.info(options.logEventType ?? options.eventType, {
@@ -437,7 +512,15 @@ export class SessionManager {
   }
 
   private codexSessionRegistry(): CodexSessionDiscovery {
-    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(this.defaultCodexHome());
+  }
+
+  private modelCatalog(): ModelCatalogReader {
+    return this.deps.modelCatalog ?? { read: () => readCodexModelCatalog({ codexHome: this.defaultCodexHome() }) };
+  }
+
+  private defaultCodexHome(): string {
+    return process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`;
   }
 
   private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<string | undefined> {
@@ -691,6 +774,167 @@ export class SessionManager {
     };
   }
 
+  private async model(input: IncomingBotText, args: string[]): Promise<BotTextResult> {
+    if (args.length > 2) {
+      return { reply: 'Usage: /model [model] [reasoning]' };
+    }
+
+    if (args.length === 0) {
+      const catalog = await this.modelCatalog().read();
+      if (catalog.kind === 'unavailable') {
+        return { reply: catalog.message };
+      }
+
+      const view = await this.loadModelCatalogView(input.chatId, catalog);
+
+      return {
+        reply: view.fallbackText,
+        renderedReply: renderModelSelectorCard({
+          chatId: input.chatId,
+          chatType: input.chatType,
+          projectId: view.projectId,
+          current: view.current,
+          saved: view.saved,
+          clientVersion: catalog.clientVersion,
+          fetchedAt: catalog.fetchedAt,
+          models: catalog.models,
+          fallbackText: view.fallbackText,
+        }),
+      };
+    }
+
+    const requestedSlug = args[0];
+    const requestedReasoning = args[1];
+    return this.selectModel(input.chatId, {
+      kind: 'model_select',
+      model: requestedSlug,
+      reasoning: requestedReasoning,
+    });
+  }
+
+  private async selectModel(
+    chatId: string,
+    action: ModelSelectCardAction,
+    options: { unsupportedReasoning?: 'reject' | 'drop' } = {},
+  ): Promise<BotTextResult> {
+    const catalog = await this.modelCatalog().read();
+    if (catalog.kind === 'unavailable') {
+      return { reply: catalog.message };
+    }
+
+    const selected = catalog.models.find((model) => model.slug === action.model);
+    if (!selected) {
+      return { reply: `Unknown model: ${action.model}\nAvailable models: ${formatModelSlugs(catalog.models)}` };
+    }
+
+    const selectedReasoning =
+      action.reasoning && selected.supportedReasoningLevels.includes(action.reasoning)
+        ? action.reasoning
+        : undefined;
+    if (action.reasoning && !selectedReasoning && options.unsupportedReasoning !== 'drop') {
+      return {
+        reply: `Unsupported reasoning level: ${action.reasoning}\nSupported reasoning levels: ${formatReasoningLevels(selected)}`,
+      };
+    }
+
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentProjectId) {
+      return { reply: 'No project selected. Run /use <project> or /new <project> first.' };
+    }
+
+    const savedModelText = selectedReasoning ? `${selected.slug} ${selectedReasoning}` : selected.slug;
+    await this.store.saveChat({
+      ...chat,
+      modelSelectionsByProject: {
+        ...chat.modelSelectionsByProject,
+        [chat.currentProjectId]: {
+          model: selected.slug,
+          reasoningEffort: selectedReasoning,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    const runningSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    const lines = [`Saved default model: ${savedModelText}`];
+    if (!runningSession || !isActiveSession(runningSession)) {
+      lines.push('No running Codex session. The next /new or /resume will use this model.');
+      return { reply: lines.join('\n') };
+    }
+
+    const nativeCommand = selectedReasoning ? `/model ${selected.slug} ${selectedReasoning}` : `/model ${selected.slug}`;
+    try {
+      await this.runner.send(runningSession.id, nativeCommand);
+      lines.push('Sent runtime switch to current Codex session. Use /status to confirm the observed model.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lines.push(`Runtime switch failed: ${message}`);
+    }
+    return { reply: lines.join('\n') };
+  }
+
+  private async loadModelCatalogView(
+    chatId: string,
+    catalog: Extract<CodexModelCatalog, { kind: 'available' }>,
+  ): Promise<ModelCatalogView> {
+    const chat = await this.store.getChat(chatId);
+    const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    const currentModel = await this.currentCodexModel(session);
+    const savedDefault = chat?.currentProjectId ? chat.modelSelectionsByProject?.[chat.currentProjectId] : undefined;
+
+    return {
+      projectId: chat?.currentProjectId,
+      current: currentModel,
+      saved: savedDefault,
+      fallbackText: this.formatModelCatalog(catalog, currentModel, savedDefault),
+    };
+  }
+
+  private formatModelCatalog(
+    catalog: Extract<CodexModelCatalog, { kind: 'available' }>,
+    currentModel?: { model?: string; reasoningEffort?: string },
+    savedDefault?: SavedModelSelection,
+  ): string {
+    const lines = ['Codex models'];
+
+    if (catalog.clientVersion) {
+      lines.push(`Client: ${catalog.clientVersion}`);
+    }
+    if (catalog.fetchedAt) {
+      lines.push(`Fetched: ${catalog.fetchedAt}`);
+    }
+    if (currentModel?.model) {
+      lines.push(`Current: ${currentModel.model}`);
+      if (currentModel.reasoningEffort) {
+        lines.push(`Reasoning: ${currentModel.reasoningEffort}`);
+      }
+    }
+    if (savedDefault) {
+      lines.push(`Saved default: ${savedDefault.model}`);
+      if (savedDefault.reasoningEffort) {
+        lines.push(`Saved reasoning: ${savedDefault.reasoningEffort}`);
+      }
+    }
+
+    lines.push('Available:');
+    for (const model of catalog.models) {
+      lines.push(formatModelLine(model));
+    }
+    return lines.join('\n');
+  }
+
+  private async currentCodexModel(session: SessionRecord | undefined): Promise<{ model?: string; reasoningEffort?: string } | undefined> {
+    const codexStatus = await this.codexStatusResult(session);
+    if (codexStatus.kind !== 'available') {
+      return undefined;
+    }
+    const { model, reasoningEffort } = codexStatus.status.summary;
+    if (!model && !reasoningEffort) {
+      return undefined;
+    }
+    return { model, reasoningEffort };
+  }
+
   private uiVerbosity(): 'normal' | 'debug' {
     return this.config.ui.verbosity;
   }
@@ -705,7 +949,11 @@ export class SessionManager {
     }
 
     const parsed = parseIncomingText(rawInputText);
-    if (parsed.kind === 'command' && (parsed.name === 'tail' || parsed.name === 'rawtail')) {
+    if (
+      parsed.kind === 'command' &&
+      ((parsed.name === 'tail' || parsed.name === 'rawtail') ||
+        (parsed.name === 'projects' && result.reply === 'No projects configured.'))
+    ) {
       return result;
     }
 
@@ -816,6 +1064,7 @@ export class SessionManager {
         chatType: input.chatType,
         currentProjectId: chat.currentProjectId,
         currentSessionId: undefined,
+        modelSelectionsByProject: chat.modelSelectionsByProject,
       });
       return { reply: 'No running session.' };
     }
@@ -925,6 +1174,7 @@ export class SessionManager {
         chatType: chat.chatType,
         currentProjectId: chat.currentProjectId,
         currentSessionId: undefined,
+        modelSelectionsByProject: chat.modelSelectionsByProject,
       });
     }
     return { reply: `Stopped session ${sessionId}.` };
@@ -1586,7 +1836,7 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
     const resumeHelp = [
       'Resume: /resume <session> [project]',
       '- session can be a code_bot session id from /sessions or a Codex native id',
@@ -1603,6 +1853,87 @@ export class SessionManager {
 
 function isActiveSession(session: SessionRecord): boolean {
   return session.status === 'running' || session.status === 'starting';
+}
+
+function formatModelLine(model: CodexModelInfo): string {
+  const details = [
+    model.defaultReasoningLevel ? `default reasoning: ${model.defaultReasoningLevel}` : undefined,
+    `supported reasoning: ${formatReasoningLevels(model)}`,
+  ].filter((detail): detail is string => Boolean(detail));
+  return `- ${model.slug} (${model.displayName})${details.length > 0 ? ` - ${details.join('; ')}` : ''}`;
+}
+
+function formatModelSlugs(models: CodexModelInfo[]): string {
+  return models.map((model) => model.slug).join(', ') || 'none';
+}
+
+function formatReasoningLevels(model: CodexModelInfo): string {
+  return model.supportedReasoningLevels.join(', ') || 'none';
+}
+
+function applySavedModelSelection(codexArgs: string[], selection: SavedModelSelection | undefined): string[] {
+  if (!selection) {
+    return [...codexArgs];
+  }
+  const args = removeModelSelectionArgs(codexArgs);
+  args.push('--model', selection.model);
+  if (selection.reasoningEffort) {
+    args.push('-c', `model_reasoning_effort="${selection.reasoningEffort}"`);
+  }
+  return args;
+}
+
+function removeModelSelectionArgs(codexArgs: string[]): string[] {
+  const args: string[] = [];
+  for (let index = 0; index < codexArgs.length; index += 1) {
+    const arg = codexArgs[index]!;
+    if (arg === '--model' || arg === '-m') {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
+      continue;
+    }
+    if (arg === '-c' && isSavedModelConfigArg(codexArgs[index + 1])) {
+      index += 1;
+      continue;
+    }
+    if (arg === '--config' && isSavedModelConfigArg(codexArgs[index + 1])) {
+      index += 1;
+      continue;
+    }
+    if (isInlineSavedModelConfigArg(arg)) {
+      continue;
+    }
+    args.push(arg);
+  }
+  return args;
+}
+
+function isSavedModelConfigArg(arg: string | undefined): boolean {
+  return isModelConfigArg(arg) || (arg?.startsWith('model_reasoning_effort=') ?? false);
+}
+
+function isModelConfigArg(arg: string | undefined): boolean {
+  return arg?.startsWith('model=') ?? false;
+}
+
+function isInlineSavedModelConfigArg(arg: string): boolean {
+  const configValue = inlineConfigValue(arg);
+  return configValue ? isSavedModelConfigArg(configValue) : false;
+}
+
+function inlineConfigValue(arg: string): string | undefined {
+  if (arg.startsWith('--config=')) {
+    return arg.slice('--config='.length);
+  }
+  if (arg.startsWith('-c=')) {
+    return arg.slice('-c='.length);
+  }
+  if (arg.startsWith('-c')) {
+    return arg.slice('-c'.length);
+  }
+  return undefined;
 }
 
 function isValidSessionTarget(target: string): boolean {

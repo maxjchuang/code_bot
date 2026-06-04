@@ -11,6 +11,12 @@ export interface ProjectConfig {
   codexArgs: string[];
 }
 
+export interface SavedModelSelection {
+  model: string;
+  reasoningEffort?: string;
+  updatedAt: string;
+}
+
 export interface NotificationConfig {
   enabled: boolean;
   idleMs: number;
@@ -48,6 +54,7 @@ export interface ChatContext {
   chatType: ChatType;
   currentProjectId?: string;
   currentSessionId?: string;
+  modelSelectionsByProject?: Record<string, SavedModelSelection>;
 }
 
 export interface CachedCodexStatusSummary {

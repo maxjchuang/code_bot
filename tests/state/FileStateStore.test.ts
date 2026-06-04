@@ -17,6 +17,36 @@ describe('FileStateStore', () => {
     });
   });
 
+  it('preserves model selections on chat records', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    });
+
+    await expect(store.getChat('oc_1')).resolves.toEqual({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: '2026-06-03T10:00:00.000Z',
+        },
+      },
+    });
+  });
+
   it('appends audit events as json lines', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root, () => new Date('2026-05-31T10:00:00.000Z'));

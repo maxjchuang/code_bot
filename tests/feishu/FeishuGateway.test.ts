@@ -13,8 +13,27 @@ type ReceiveHandler = (data: {
   sender?: { sender_id?: { open_id?: string } };
 }) => Promise<void>;
 
+type CardActionHandler = (data: {
+  event?: {
+    context?: {
+      open_chat_id?: string;
+      open_message_id?: string;
+    };
+    open_chat_id?: string;
+    open_message_id?: string;
+    operator?: {
+      open_id?: string;
+    };
+    action?: {
+      value?: unknown;
+      form_value?: unknown;
+    };
+  };
+}) => Promise<void>;
+
 function createGatewayHarness() {
-  let handler: ReceiveHandler | undefined;
+  let messageHandler: ReceiveHandler | undefined;
+  let cardActionHandler: CardActionHandler | undefined;
   const sent: Array<{ receive_id: string; content: string }> = [];
   const errors: unknown[][] = [];
   const infos: unknown[][] = [];
@@ -43,7 +62,8 @@ function createGatewayHarness() {
     },
     createEventDispatcher: () => ({
       register: (handlers) => {
-        handler = handlers['im.message.receive_v1'];
+        messageHandler = handlers['im.message.receive_v1'];
+        cardActionHandler = handlers['card.action.trigger'];
         return handlers;
       },
     }),
@@ -71,10 +91,16 @@ function createGatewayHarness() {
     events,
     errorLogs,
     getHandler: () => {
-      if (!handler) {
+      if (!messageHandler) {
         throw new Error('handler not registered');
       }
-      return handler;
+      return messageHandler;
+    },
+    getCardActionHandler: () => {
+      if (!cardActionHandler) {
+        throw new Error('card action handler not registered');
+      }
+      return cardActionHandler;
     },
   };
 }
@@ -642,5 +668,240 @@ describe('LarkLongConnectionGateway', () => {
     });
 
     expect(harness.sent).toEqual([]);
+  });
+
+  it('routes model selector card actions to onCardAction using origin chat id', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => ({ text: 'should not be used' }));
+    const onCardAction = vi.fn(async () => ({ text: 'model updated' }));
+
+    await harness.gateway.start(onMessage, onCardAction);
+
+    await harness.getCardActionHandler()({
+      event: {
+        context: {
+          open_chat_id: 'oc_1',
+          open_message_id: 'om_card_1',
+        },
+        operator: {
+          open_id: 'ou_1',
+        },
+        action: {
+          value: {
+            kind: 'model_select',
+            chatId: 'oc_1',
+            chatType: 'private',
+          },
+          form_value: {
+            model: 'gpt-5.5',
+            reasoning: 'high',
+          },
+        },
+      },
+    });
+
+    expect(onMessage).not.toHaveBeenCalled();
+    expect(onCardAction).toHaveBeenCalledTimes(1);
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      messageId: 'om_card_1',
+      action: {
+        kind: 'model_select',
+        model: 'gpt-5.5',
+        reasoning: 'high',
+      },
+    });
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        content: JSON.stringify({ text: 'model updated' }),
+      },
+    ]);
+  });
+
+  it('routes project selector card actions from form_value to onCardAction using origin chat id', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'project updated' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await harness.getCardActionHandler()({
+      event: {
+        context: {
+          open_chat_id: 'oc_1',
+          open_message_id: 'om_card_1',
+        },
+        operator: {
+          open_id: 'ou_1',
+        },
+        action: {
+          value: {
+            kind: 'project_select',
+            chatId: 'oc_1',
+            chatType: 'group',
+          },
+          form_value: {
+            projectId: 'repo2',
+          },
+        },
+      },
+    });
+
+    expect(onCardAction).toHaveBeenCalledTimes(1);
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_card_1',
+      action: {
+        kind: 'project_select',
+        projectId: 'repo2',
+      },
+    });
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        content: JSON.stringify({ text: 'project updated' }),
+      },
+    ]);
+  });
+
+  it('ignores card actions when origin chat differs from embedded payload chat', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'unused' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await expect(
+      harness.getCardActionHandler()({
+        event: {
+          context: {
+            open_chat_id: 'oc_real',
+            open_message_id: 'om_card_1',
+          },
+          operator: {
+            open_id: 'ou_1',
+          },
+          action: {
+            value: {
+              kind: 'model_select',
+              chatId: 'oc_embedded',
+              chatType: 'group',
+            },
+            form_value: {
+              model: 'gpt-5.5',
+            },
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(onCardAction).not.toHaveBeenCalled();
+    expect(harness.sent).toEqual([]);
+    expect(harness.errors).toEqual([]);
+  });
+
+  it('uses top-level origin chat and message id fallback for card actions', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'model updated' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await harness.getCardActionHandler()({
+      event: {
+        open_chat_id: 'oc_1',
+        open_message_id: 'om_card_top_level',
+        operator: {
+          open_id: 'ou_1',
+        },
+        action: {
+          value: {
+            kind: 'model_select',
+            chatId: 'oc_1',
+            chatType: 'private',
+          },
+          form_value: {
+            model: 'gpt-5.5',
+          },
+        },
+      },
+    });
+
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      messageId: 'om_card_top_level',
+      action: {
+        kind: 'model_select',
+        model: 'gpt-5.5',
+      },
+    });
+  });
+
+  it('ignores card actions when origin chat id is missing', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'unused' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await expect(
+      harness.getCardActionHandler()({
+        event: {
+          context: {
+            open_message_id: 'om_card_1',
+          },
+          operator: {
+            open_id: 'ou_1',
+          },
+          action: {
+            value: {
+              kind: 'model_select',
+              chatId: 'oc_1',
+              chatType: 'group',
+            },
+            form_value: {
+              model: 'gpt-5.5',
+            },
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(onCardAction).not.toHaveBeenCalled();
+    expect(harness.sent).toEqual([]);
+    expect(harness.errors).toEqual([]);
+  });
+
+  it('ignores malformed card actions without throwing', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'unused' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await expect(
+      harness.getCardActionHandler()({
+        event: {
+          operator: {
+            open_id: 'ou_1',
+          },
+          action: {
+            value: {
+              kind: 'model_select',
+              chatId: 'oc_1',
+            },
+            form_value: {
+              reasoning: 'high',
+            },
+          },
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(onCardAction).not.toHaveBeenCalled();
+    expect(harness.sent).toEqual([]);
+    expect(harness.errors).toEqual([]);
   });
 });

@@ -33,9 +33,6 @@ export function formatCodexStatusSection(section: CodexStatusSection): string {
   if (status.summary.cwd) {
     lines.push(`Working directory: ${status.summary.cwd}`);
   }
-  if (status.rawText) {
-    lines.push('', 'Codex raw status:', status.rawText);
-  }
 
   return lines.join('\n');
 }

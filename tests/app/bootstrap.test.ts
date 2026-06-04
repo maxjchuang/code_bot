@@ -5,6 +5,7 @@ import { bootstrap } from '../../src/index.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import type { BotConfig } from '../../src/domain/types.js';
 import type { FeishuIncomingMessage } from '../../src/feishu/FeishuGateway.js';
+import type { FeishuIncomingCardAction } from '../../src/feishu/FeishuCardActions.js';
 import { FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
 import { createTmpDir } from '../helpers/tmp.js';
 
@@ -182,6 +183,71 @@ describe('bootstrap', () => {
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('startup.ready'));
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('inbound.received'));
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('outbound.replied'));
+  });
+
+  it('dispatches card actions to the session manager and records card action events', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const renderedReply = {
+      kind: 'interactive-card' as const,
+      card: {
+        config: { wide_screen_mode: true },
+        elements: [],
+      },
+    };
+    const handleCardAction = vi.fn().mockResolvedValue({ reply: 'Current project set to repo2.', renderedReply });
+    let onCardAction: ((action: FeishuIncomingCardAction) => Promise<{ text: string; rendered?: unknown }>) | undefined;
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => sampleConfig(root),
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway: () => ({
+        start: async (_onMessage, cardActionHandler) => {
+          onCardAction = cardActionHandler;
+        },
+        sendText: async () => undefined,
+        sendRenderedMessage: async () => undefined,
+      }),
+      logger,
+      createApp: () =>
+        ({
+          sessionManager: {
+            handleText: async () => ({ reply: 'unused' }),
+            handleCardAction,
+          },
+          healthCheck: async () => ({ ok: true }),
+        }) as never,
+    });
+
+    expect(onCardAction).toBeDefined();
+    const dispatch = onCardAction as (action: FeishuIncomingCardAction) => Promise<{ text: string; rendered?: unknown }>;
+    const action = {
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_card_1',
+      action: { kind: 'project_select', projectId: 'repo2' },
+    } satisfies FeishuIncomingCardAction;
+
+    await expect(dispatch(action)).resolves.toEqual({
+      text: 'Current project set to repo2.',
+      rendered: renderedReply,
+    });
+
+    expect(handleCardAction).toHaveBeenCalledWith(action);
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('inbound.card_action_received'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('outbound.card_action_replied'));
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"card_action.received"');
+    expect(content).toContain('"messageId":"om_card_1"');
+    expect(content).toContain('"projectId":"repo2"');
+    expect(content).toContain('"type":"card_action.replied"');
+    expect(content).toContain('"replyPreview":"Current project set to repo2."');
   });
 
   it('silently drops duplicate inbound message ids before session dispatch', async () => {
