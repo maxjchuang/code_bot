@@ -166,8 +166,8 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   };
   const onCardAction = async (action: FeishuIncomingCardAction) => {
     logger.info('inbound.card_action_received', {
-      chatId: action.chatId,
-      chatType: action.chatType,
+      chat: action.chatId,
+      type: action.chatType,
       messageId: action.messageId,
       kind: action.action.kind,
     });
@@ -184,8 +184,8 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     });
     const result = await app.sessionManager.handleCardAction(action);
     logger.info('outbound.card_action_replied', {
-      chatId: action.chatId,
-      chatType: action.chatType,
+      chat: action.chatId,
+      type: action.chatType,
       messageId: action.messageId,
       kind: action.action.kind,
       reply: result.reply,

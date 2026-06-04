@@ -189,7 +189,14 @@ describe('bootstrap', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const logger = { info: vi.fn(), error: vi.fn() };
-    const handleCardAction = vi.fn().mockResolvedValue({ reply: 'Current project set to repo2.' });
+    const renderedReply = {
+      kind: 'interactive-card' as const,
+      card: {
+        config: { wide_screen_mode: true },
+        elements: [],
+      },
+    };
+    const handleCardAction = vi.fn().mockResolvedValue({ reply: 'Current project set to repo2.', renderedReply });
     let onCardAction: ((action: FeishuIncomingCardAction) => Promise<{ text: string; rendered?: unknown }>) | undefined;
 
     await bootstrap({
@@ -227,7 +234,7 @@ describe('bootstrap', () => {
 
     await expect(dispatch(action)).resolves.toEqual({
       text: 'Current project set to repo2.',
-      rendered: undefined,
+      rendered: renderedReply,
     });
 
     expect(handleCardAction).toHaveBeenCalledWith(action);
