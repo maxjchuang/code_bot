@@ -184,6 +184,128 @@ describe('bootstrap', () => {
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('outbound.replied'));
   });
 
+  it('silently drops duplicate inbound message ids before session dispatch', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const handleText = vi.fn().mockResolvedValue({ reply: 'tail output' });
+    let onMessage: ((message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>) | undefined;
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => sampleConfig(root),
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway: () => ({
+        start: async (handler) => {
+          onMessage = handler;
+        },
+        sendText: async () => undefined,
+        sendRenderedMessage: async () => undefined,
+      }),
+      createApp: () =>
+        ({
+          sessionManager: { handleText },
+          healthCheck: async () => ({ ok: true }),
+        }) as never,
+    });
+
+    expect(onMessage).toBeDefined();
+    const dispatch = onMessage as (message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>;
+
+    await expect(dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
+      text: 'tail output',
+      rendered: undefined,
+    });
+    await expect(dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: '/tail 20' })).resolves.toEqual({
+      text: '',
+      rendered: undefined,
+    });
+
+    expect(handleText).toHaveBeenCalledTimes(1);
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"command.duplicate_dropped"');
+    expect(content).toContain('"messageId":"om_123"');
+    expect(content).toContain('"duplicateCount":1');
+    expect(content.match(/"type":"command.replied"/g)).toHaveLength(1);
+  });
+
+  it('continues processing messages without message id', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const handleText = vi.fn().mockResolvedValue({ reply: 'ok' });
+    let onMessage: ((message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>) | undefined;
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => sampleConfig(root),
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway: () => ({
+        start: async (handler) => {
+          onMessage = handler;
+        },
+        sendText: async () => undefined,
+        sendRenderedMessage: async () => undefined,
+      }),
+      createApp: () =>
+        ({
+          sessionManager: { handleText },
+          healthCheck: async () => ({ ok: true }),
+        }) as never,
+    });
+
+    expect(onMessage).toBeDefined();
+    const dispatch = onMessage as (message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>;
+
+    await dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: 'same text' });
+    await dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: 'same text' });
+
+    expect(handleText).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when inbound message claim storage fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const handleText = vi.fn().mockResolvedValue({ reply: 'ok' });
+    const logger = { info: vi.fn(), error: vi.fn() };
+    vi.spyOn(store, 'claimInboundMessage').mockRejectedValue(new Error('disk full'));
+    let onMessage: ((message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>) | undefined;
+
+    await bootstrap({
+      projectRoot: root,
+      loadConfig: async () => sampleConfig(root),
+      createStore: () => store,
+      createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+      createGateway: () => ({
+        start: async (handler) => {
+          onMessage = handler;
+        },
+        sendText: async () => undefined,
+        sendRenderedMessage: async () => undefined,
+      }),
+      createApp: () =>
+        ({
+          sessionManager: { handleText },
+          healthCheck: async () => ({ ok: true }),
+        }) as never,
+      logger,
+    });
+
+    expect(onMessage).toBeDefined();
+    const dispatch = onMessage as (message: FeishuIncomingMessage) => Promise<{ text: string; rendered?: unknown }>;
+
+    await expect(dispatch({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', messageId: 'om_123', text: 'status' })).resolves.toEqual({
+      text: '',
+      rendered: undefined,
+    });
+    expect(handleText).not.toHaveBeenCalled();
+    const day = new Date().toISOString().slice(0, 10);
+    const errors = await readFile(join(root, '.code-bot', 'logs/errors', `${day}.jsonl`), 'utf8');
+    expect(errors).toContain('"source":"inbound.dedupe"');
+    expect(errors).toContain('"message":"disk full"');
+  });
+
   it('records mention diagnostics on inbound command events', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

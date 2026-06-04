@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTmpDir } from '../helpers/tmp.js';
@@ -201,5 +201,126 @@ describe('FileStateStore', () => {
 
     await expect(store.listChats()).resolves.toMatchObject([{ chatId: 'oc_1' }, { chatId: 'oc_2' }]);
     await expect(store.listSessions()).resolves.toMatchObject([{ id: 'sess_2' }, { id: 'sess_1' }]);
+  });
+
+  it('claims a first inbound message id and persists the receipt', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-03T10:00:00.000Z'));
+    const text = 'a'.repeat(201);
+    const textPreview = text.length <= 200 ? text : `${text.slice(0, 197)}...`;
+
+    const result = await store.claimInboundMessage({
+      messageId: 'om_123',
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text,
+    });
+
+    expect(textPreview).toHaveLength(200);
+    expect(textPreview.endsWith('...')).toBe(true);
+    expect(result).toEqual({
+      claimed: true,
+      receipt: {
+        messageId: 'om_123',
+        chatId: 'oc_1',
+        chatType: 'group',
+        userId: 'ou_1',
+        textPreview,
+        firstReceivedAt: '2026-06-03T10:00:00.000Z',
+        duplicateCount: 0,
+        status: 'claimed',
+      },
+    });
+    if (!result.claimed || !('receipt' in result)) {
+      throw new Error('Expected first claim to include a receipt');
+    }
+    const receipt = JSON.parse(await readFile(join(root, '.code-bot/state/inbound-messages/om_123.json'), 'utf8'));
+    expect(receipt).toEqual(result.receipt);
+  });
+
+  it('drops duplicate inbound message ids and increments duplicate count', async () => {
+    const root = await createTmpDir();
+    let now = new Date('2026-06-03T10:00:00.000Z');
+    const store = new FileStateStore(root, () => now);
+
+    await store.claimInboundMessage({
+      messageId: 'om_123',
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'hello codex',
+    });
+    now = new Date('2026-06-03T10:00:20.000Z');
+
+    const duplicate = await store.claimInboundMessage({
+      messageId: 'om_123',
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: 'hello codex',
+    });
+
+    expect(duplicate).toMatchObject({
+      claimed: false,
+      receipt: {
+        messageId: 'om_123',
+        duplicateCount: 1,
+        firstReceivedAt: '2026-06-03T10:00:00.000Z',
+        lastDuplicateAt: '2026-06-03T10:00:20.000Z',
+      },
+    });
+    const receipt = JSON.parse(await readFile(join(root, '.code-bot/state/inbound-messages/om_123.json'), 'utf8'));
+    expect(receipt.duplicateCount).toBe(1);
+    expect(receipt.lastDuplicateAt).toBe('2026-06-03T10:00:20.000Z');
+  });
+
+  it('treats missing inbound message id as claimed without writing a receipt', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await expect(
+      store.claimInboundMessage({
+        chatId: 'oc_1',
+        chatType: 'group',
+        userId: 'ou_1',
+        text: 'hello codex',
+      }),
+    ).resolves.toEqual({ claimed: true, reason: 'missing_message_id' });
+
+    let receipts: string[] = [];
+    try {
+      receipts = await readdir(join(root, '.code-bot/state/inbound-messages'));
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'ENOENT' });
+    }
+    expect(receipts).toEqual([]);
+  });
+
+  it('serializes concurrent inbound message claims for the same id', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-03T10:00:00.000Z'));
+
+    const results = await Promise.all([
+      store.claimInboundMessage({ messageId: 'om_123', chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello codex' }),
+      store.claimInboundMessage({ messageId: 'om_123', chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello codex' }),
+    ]);
+
+    expect(results.filter((result) => result.claimed)).toHaveLength(1);
+    expect(results.filter((result) => !result.claimed)).toHaveLength(1);
+    const receipt = JSON.parse(await readFile(join(root, '.code-bot/state/inbound-messages/om_123.json'), 'utf8'));
+    expect(receipt.duplicateCount).toBe(1);
+  });
+
+  it('rejects unsafe inbound message ids and prevents path traversal', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await expect(
+      store.claimInboundMessage({ messageId: '../escape', chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello codex' }),
+    ).rejects.toThrow('Invalid state id: ../escape');
+
+    await mkdir(join(root, '.code-bot/state/inbound-messages'), { recursive: true });
+    await expect(readFile(join(root, '.code-bot/state/escape.json'), 'utf8')).rejects.toThrow();
   });
 });

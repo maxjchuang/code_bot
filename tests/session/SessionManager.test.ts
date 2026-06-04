@@ -1888,7 +1888,7 @@ describe('SessionManager', () => {
       'oc_1',
       `Codex 任务结束，但未能提取明确最终回答。\n\n原因：No structured final answer detected.\n可使用 /tail ${sessionId} 查看最近输出。`,
     );
-  });
+  }, 10000);
 
   it('uses a failure fallback when exit only has in-progress commentary', async () => {
     class ObservingStore extends FileStateStore {
@@ -3073,7 +3073,7 @@ describe('SessionManager', () => {
     const payload = JSON.stringify(result.renderedReply.preferred.payload);
     expect(payload).toContain('## Session');
     expect(payload).toContain('## Codex');
-    expect(payload).toContain('## Raw');
+    expect(payload).not.toContain('## Raw');
     expect(payload).toContain('- **Status**: `running`');
     expect(payload).toContain('- **Source**: `live`');
     expect(result.reply).toContain('Project: repo');

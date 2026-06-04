@@ -109,6 +109,31 @@ export interface ApprovalRecord {
   resolvedAt?: string;
 }
 
+export interface InboundMessageReceipt {
+  messageId: string;
+  chatId: string;
+  chatType: ChatType;
+  userId: string;
+  textPreview: string;
+  firstReceivedAt: string;
+  lastDuplicateAt?: string;
+  duplicateCount: number;
+  status: 'claimed';
+}
+
+export interface ClaimInboundMessageInput {
+  messageId?: string;
+  chatId: string;
+  chatType: ChatType;
+  userId: string;
+  text: string;
+}
+
+export type ClaimInboundMessageResult =
+  | { claimed: true; receipt: InboundMessageReceipt }
+  | { claimed: true; reason: 'missing_message_id' }
+  | { claimed: false; receipt: InboundMessageReceipt };
+
 export interface BotEvent {
   type: string;
   at: string;

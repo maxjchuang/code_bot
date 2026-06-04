@@ -1,7 +1,16 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { appendFile, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { ApprovalRecord, BotErrorLogEntry, BotEvent, ChatContext, SessionRecord } from '../domain/types.js';
+import type {
+  ApprovalRecord,
+  BotErrorLogEntry,
+  BotEvent,
+  ChatContext,
+  ClaimInboundMessageInput,
+  ClaimInboundMessageResult,
+  InboundMessageReceipt,
+  SessionRecord,
+} from '../domain/types.js';
 
 type Clock = () => Date;
 
@@ -96,6 +105,41 @@ export class FileStateStore {
     );
 
     return approvals.filter((approval): approval is ApprovalRecord => Boolean(approval && approval.chatId === chatId && approval.status === 'pending'));
+  }
+
+  async claimInboundMessage(input: ClaimInboundMessageInput): Promise<ClaimInboundMessageResult> {
+    if (!input.messageId) {
+      return { claimed: true, reason: 'missing_message_id' };
+    }
+
+    const messageId = input.messageId;
+    const id = this.safeFileName(messageId);
+    const filePath = join(this.baseDir, 'state/inbound-messages', `${id}.json`);
+    return this.enqueue(async () => {
+      const current = await this.readJson<InboundMessageReceipt>(filePath);
+      if (current) {
+        const duplicate: InboundMessageReceipt = {
+          ...current,
+          lastDuplicateAt: this.clock().toISOString(),
+          duplicateCount: current.duplicateCount + 1,
+        };
+        await this.writeJsonFile(filePath, duplicate);
+        return { claimed: false, receipt: duplicate };
+      }
+
+      const receipt: InboundMessageReceipt = {
+        messageId,
+        chatId: input.chatId,
+        chatType: input.chatType,
+        userId: input.userId,
+        textPreview: input.text.length <= 200 ? input.text : `${input.text.slice(0, 197)}...`,
+        firstReceivedAt: this.clock().toISOString(),
+        duplicateCount: 0,
+        status: 'claimed',
+      };
+      await this.writeJsonFile(filePath, receipt);
+      return { claimed: true, receipt };
+    });
   }
 
   async appendEvent(event: BotEvent): Promise<void> {
