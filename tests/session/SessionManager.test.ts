@@ -3115,8 +3115,31 @@ describe('SessionManager', () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
+    const modelCatalog = {
+      kind: 'available' as const,
+      fetchedAt: '2026-06-03T13:43:32.128077Z',
+      clientVersion: '0.136.0',
+      models: [
+        {
+          slug: 'gpt-5.5',
+          displayName: 'GPT 5.5',
+          description: 'Most capable model',
+          priority: 10,
+          defaultReasoningLevel: 'medium',
+          supportedReasoningLevels: ['medium'],
+        },
+        {
+          slug: 'gpt-5.5-mini',
+          displayName: 'GPT 5.5 Mini',
+          description: 'Fast model',
+          priority: 20,
+          defaultReasoningLevel: 'low',
+          supportedReasoningLevels: ['low', 'high'],
+        },
+      ],
+    };
     const manager = new SessionManager(sampleConfig(root), store, runner, {
-      modelCatalog: { read: async () => sampleModelCatalog },
+      modelCatalog: { read: async () => modelCatalog },
     });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
@@ -3126,16 +3149,107 @@ describe('SessionManager', () => {
     expect(result.reply).toContain('Codex models');
     expect(result.reply).toContain('- gpt-5.5');
     expect(result.renderedReply?.preferred.kind).toBe('card');
+    expect(result.renderedReply?.fallback).toEqual({ kind: 'text', text: result.reply });
     if (result.renderedReply?.preferred.kind !== 'card') {
       throw new Error('expected a card payload');
     }
-    const payload = JSON.stringify(result.renderedReply.preferred.payload);
-    expect(payload).toContain('Codex Model');
-    expect(payload).toContain('select_static');
-    expect(payload).toContain('gpt-5.5');
-    expect(payload).toContain('confirm_model_select');
-    expect(payload).toContain('"kind":"model_select"');
-    expect(payload).toContain('"chatId":"oc_1"');
+    const payload = result.renderedReply.preferred.payload as {
+      schema: string;
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<Record<string, unknown>> };
+    };
+    expect(payload.schema).toBe('2.0');
+    expect(payload.header?.title?.content).toBe('Codex Model');
+    const form = payload.body?.elements?.find((element) => element.tag === 'form') as
+      | { name?: string; elements?: Array<Record<string, unknown>> }
+      | undefined;
+    expect(form?.name).toBe('model_select_form');
+    const formElements = form?.elements ?? [];
+    const modelSelect = formElements.find((element) => element.name === 'model') as
+      | { tag?: string; initial_option?: unknown; options?: Array<{ value: string }> }
+      | undefined;
+    const reasoningSelect = formElements.find((element) => element.name === 'reasoning') as
+      | { tag?: string; initial_option?: unknown; options?: Array<{ value: string }> }
+      | undefined;
+    const confirmButton = formElements.find((element) => element.name === 'confirm_model_select') as
+      | { action_type?: string; value?: Record<string, unknown> }
+      | undefined;
+
+    expect(modelSelect?.tag).toBe('select_static');
+    expect(modelSelect?.initial_option).toBe('gpt-5.5');
+    expect(typeof modelSelect?.initial_option).toBe('string');
+    expect(modelSelect?.options?.map((option) => option.value)).toEqual(['gpt-5.5', 'gpt-5.5-mini']);
+
+    expect(reasoningSelect?.tag).toBe('select_static');
+    expect(reasoningSelect?.initial_option).toBe('medium');
+    expect(typeof reasoningSelect?.initial_option).toBe('string');
+    expect(reasoningSelect?.options?.map((option) => option.value)).toEqual(['medium']);
+
+    expect(confirmButton?.action_type).toBe('form_submit');
+    expect(confirmButton?.value).toEqual({
+      kind: 'model_select',
+      chatId: 'oc_1',
+      chatType: 'group',
+    });
+    expect(confirmButton?.value).not.toHaveProperty('model');
+    expect(confirmButton?.value).not.toHaveProperty('reasoning');
+    expect(runner.sentMessages.filter((message) => message === 'status')).toHaveLength(1);
+  });
+
+  it('returns an interactive model selector without reasoning select when the selected model has no reasoning levels', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const modelCatalog = {
+      kind: 'available' as const,
+      models: [
+        {
+          slug: 'gpt-5.5-noreason',
+          displayName: 'GPT 5.5 No Reason',
+          priority: 10,
+          supportedReasoningLevels: [],
+        },
+        {
+          slug: 'gpt-5.5',
+          displayName: 'GPT 5.5',
+          priority: 20,
+          defaultReasoningLevel: 'medium',
+          supportedReasoningLevels: ['low', 'medium', 'high'],
+        },
+      ],
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => modelCatalog },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const chat = (await store.getChat('oc_1'))!;
+    await store.saveChat({
+      ...chat,
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-noreason',
+          updatedAt: '2026-06-04T00:00:00.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model' });
+
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    if (result.renderedReply?.preferred.kind !== 'card') {
+      throw new Error('expected a card payload');
+    }
+    const payload = result.renderedReply.preferred.payload as {
+      body?: { elements?: Array<Record<string, unknown>> };
+    };
+    const form = payload.body?.elements?.find((element) => element.tag === 'form') as
+      | { elements?: Array<Record<string, unknown>> }
+      | undefined;
+    const formElements = form?.elements ?? [];
+
+    expect(formElements.find((element) => element.name === 'model')).toBeDefined();
+    expect(formElements.find((element) => element.name === 'reasoning')).toBeUndefined();
   });
 
   it('rejects unknown model and lists available models', async () => {

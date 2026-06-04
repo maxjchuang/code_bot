@@ -78,6 +78,13 @@ export interface SessionManagerDeps {
   modelCatalog?: ModelCatalogReader;
 }
 
+interface ModelCatalogView {
+  projectId?: string;
+  current?: { model?: string; reasoningEffort?: string };
+  saved?: SavedModelSelection;
+  fallbackText: string;
+}
+
 const DEFAULT_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 10;
 const DEFAULT_CODEX_SESSION_DISCOVERY_RETRY_DELAY_MS = 250;
 const SEND_TEXT_PREVIEW_LIMIT = 120;
@@ -723,24 +730,20 @@ export class SessionManager {
     }
 
     if (args.length === 0) {
-      const chat = await this.store.getChat(input.chatId);
-      const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
-      const currentModel = await this.currentCodexModel(session);
-      const savedDefault = chat?.currentProjectId ? chat.modelSelectionsByProject?.[chat.currentProjectId] : undefined;
-      const fallbackText = await this.formatModelCatalog(input.chatId, catalog);
+      const view = await this.loadModelCatalogView(input.chatId, catalog);
 
       return {
-        reply: fallbackText,
+        reply: view.fallbackText,
         renderedReply: renderModelSelectorCard({
           chatId: input.chatId,
           chatType: input.chatType,
-          projectId: chat?.currentProjectId,
-          current: currentModel,
-          saved: savedDefault,
+          projectId: view.projectId,
+          current: view.current,
+          saved: view.saved,
           clientVersion: catalog.clientVersion,
           fetchedAt: catalog.fetchedAt,
           models: catalog.models,
-          fallbackText,
+          fallbackText: view.fallbackText,
         }),
       };
     }
@@ -794,11 +797,28 @@ export class SessionManager {
     return { reply: lines.join('\n') };
   }
 
-  private async formatModelCatalog(chatId: string, catalog: Extract<CodexModelCatalog, { kind: 'available' }>): Promise<string> {
+  private async loadModelCatalogView(
+    chatId: string,
+    catalog: Extract<CodexModelCatalog, { kind: 'available' }>,
+  ): Promise<ModelCatalogView> {
     const chat = await this.store.getChat(chatId);
     const session = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
     const currentModel = await this.currentCodexModel(session);
     const savedDefault = chat?.currentProjectId ? chat.modelSelectionsByProject?.[chat.currentProjectId] : undefined;
+
+    return {
+      projectId: chat?.currentProjectId,
+      current: currentModel,
+      saved: savedDefault,
+      fallbackText: this.formatModelCatalog(catalog, currentModel, savedDefault),
+    };
+  }
+
+  private formatModelCatalog(
+    catalog: Extract<CodexModelCatalog, { kind: 'available' }>,
+    currentModel?: { model?: string; reasoningEffort?: string },
+    savedDefault?: SavedModelSelection,
+  ): string {
     const lines = ['Codex models'];
 
     if (catalog.clientVersion) {

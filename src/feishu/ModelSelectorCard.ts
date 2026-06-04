@@ -23,14 +23,16 @@ export function renderModelSelectorCard(
   input: RenderModelSelectorCardInput,
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
   const selectedModel = selectModel(input.models, input.current?.model, input.saved?.model);
-  const reasoningOptions = collectReasoningOptions(input.models);
+  const reasoningOptions = selectedModel?.supportedReasoningLevels ?? [];
   const selectedReasoning = selectReasoning(reasoningOptions, [
     input.current?.reasoningEffort,
     input.saved?.reasoningEffort,
     selectedModel?.defaultReasoningLevel,
   ]);
 
-  const summaryLines = ['Choose a Codex model and reasoning level.'];
+  const summaryLines = [
+    reasoningOptions.length > 0 ? 'Choose a Codex model and reasoning level.' : 'Choose a Codex model.',
+  ];
   if (input.projectId) {
     summaryLines.push(`- **Project**: \`${input.projectId}\``);
   }
@@ -60,13 +62,53 @@ export function renderModelSelectorCard(
     },
     value: model.slug,
   }));
-  const reasoningSelectOptions = reasoningOptions.map((level) => ({
+  const formElements: Array<Record<string, unknown>> = [
+    {
+      tag: 'select_static',
+      name: 'model',
+      placeholder: {
+        tag: 'plain_text',
+        content: 'Select model',
+      },
+      initial_option: selectedModel?.slug,
+      options: modelOptions,
+    },
+  ];
+
+  if (reasoningOptions.length > 0) {
+    formElements.push({
+      tag: 'select_static',
+      name: 'reasoning',
+      placeholder: {
+        tag: 'plain_text',
+        content: 'Select reasoning',
+      },
+      initial_option: selectedReasoning,
+      options: reasoningOptions.map((level) => ({
+        text: {
+          tag: 'plain_text',
+          content: level,
+        },
+        value: level,
+      })),
+    });
+  }
+
+  formElements.push({
+    tag: 'button',
+    name: 'confirm_model_select',
     text: {
       tag: 'plain_text',
-      content: level,
+      content: 'Apply model',
     },
-    value: level,
-  }));
+    type: 'primary',
+    action_type: 'form_submit',
+    value: {
+      kind: 'model_select',
+      chatId: input.chatId,
+      chatType: input.chatType,
+    },
+  });
 
   const payload = {
     schema: '2.0',
@@ -85,43 +127,7 @@ export function renderModelSelectorCard(
         {
           tag: 'form',
           name: 'model_select_form',
-          elements: [
-            {
-              tag: 'select_static',
-              name: 'model',
-              placeholder: {
-                tag: 'plain_text',
-                content: 'Select model',
-              },
-              initial_option: findOption(modelOptions, selectedModel?.slug),
-              options: modelOptions,
-            },
-            {
-              tag: 'select_static',
-              name: 'reasoning',
-              placeholder: {
-                tag: 'plain_text',
-                content: 'Select reasoning',
-              },
-              initial_option: findOption(reasoningSelectOptions, selectedReasoning),
-              options: reasoningSelectOptions,
-            },
-            {
-              tag: 'button',
-              name: 'confirm_model_select',
-              text: {
-                tag: 'plain_text',
-                content: 'Apply model',
-              },
-              type: 'primary',
-              action_type: 'form_submit',
-              value: {
-                kind: 'model_select',
-                chatId: input.chatId,
-                chatType: input.chatType,
-              },
-            },
-          ],
+          elements: formElements,
         },
       ],
     },
@@ -141,18 +147,6 @@ function selectModel(models: CodexModelInfo[], currentModel?: string, savedModel
   );
 }
 
-function collectReasoningOptions(models: CodexModelInfo[]): string[] {
-  const options: string[] = [];
-  for (const model of models) {
-    for (const level of model.supportedReasoningLevels) {
-      if (!options.includes(level)) {
-        options.push(level);
-      }
-    }
-  }
-  return options;
-}
-
 function selectReasoning(options: string[], preferredValues: Array<string | undefined>): string | undefined {
   for (const value of preferredValues) {
     if (value && options.includes(value)) {
@@ -160,14 +154,4 @@ function selectReasoning(options: string[], preferredValues: Array<string | unde
     }
   }
   return options[0];
-}
-
-function findOption(
-  options: Array<{ text: { tag: 'plain_text'; content: string }; value: string }>,
-  value: string | undefined,
-): { text: { tag: 'plain_text'; content: string }; value: string } | undefined {
-  if (!value) {
-    return undefined;
-  }
-  return options.find((option) => option.value === value);
 }
