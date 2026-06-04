@@ -3812,13 +3812,11 @@ describe('SessionManager', () => {
       action: { kind: 'project_select', projectId: 'repo2' },
     });
 
-    expect(result.reply).toContain('Current project set to repo2.');
-    expect(result.reply).toContain(`Running session remains ${sessionId}`);
-    expect(result.reply).toContain('use /new <project> to start selected project session');
+    expect(result.reply).toBe(`Current session ${sessionId} is still running. Run /stop before switching projects.`);
     await expect(store.getChat('oc_1')).resolves.toMatchObject({
       chatId: 'oc_1',
       chatType: 'group',
-      currentProjectId: 'repo2',
+      currentProjectId: 'repo',
       currentSessionId: sessionId,
     });
     await expect(store.getSession(sessionId)).resolves.toMatchObject({
@@ -3979,12 +3977,10 @@ describe('SessionManager', () => {
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
 
     const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
-    expect(switched.reply).toContain('Current project set to repo2.');
-    expect(switched.reply).toContain(`Running session remains ${sessionId}`);
-    expect(switched.reply).toContain('use /new <project> to start selected project session');
+    expect(switched.reply).toBe(`Current session ${sessionId} is still running. Run /stop before switching projects.`);
 
     const chat = await store.getChat('oc_1');
-    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentProjectId).toBe('repo');
     expect(chat?.currentSessionId).toBe(sessionId);
 
     const stopped = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });

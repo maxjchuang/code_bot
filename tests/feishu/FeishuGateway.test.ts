@@ -721,6 +721,53 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('routes project selector card actions from form_value to onCardAction using origin chat id', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'project updated' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await harness.getCardActionHandler()({
+      event: {
+        context: {
+          open_chat_id: 'oc_1',
+          open_message_id: 'om_card_1',
+        },
+        operator: {
+          open_id: 'ou_1',
+        },
+        action: {
+          value: {
+            kind: 'project_select',
+            chatId: 'oc_1',
+            chatType: 'group',
+          },
+          form_value: {
+            projectId: 'repo2',
+          },
+        },
+      },
+    });
+
+    expect(onCardAction).toHaveBeenCalledTimes(1);
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_card_1',
+      action: {
+        kind: 'project_select',
+        projectId: 'repo2',
+      },
+    });
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        content: JSON.stringify({ text: 'project updated' }),
+      },
+    ]);
+  });
+
   it('ignores card actions when origin chat differs from embedded payload chat', async () => {
     const harness = createGatewayHarness();
     const onCardAction = vi.fn(async () => ({ text: 'unused' }));

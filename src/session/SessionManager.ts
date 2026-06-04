@@ -286,6 +286,11 @@ export class SessionManager {
     const existingChat = await this.store.getChat(input.chatId);
     const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
     const activeSession = currentSession && isActiveSession(currentSession) ? currentSession : undefined;
+    if (activeSession && activeSession.projectId !== projectId) {
+      return {
+        reply: `Current session ${activeSession.id} is still running. Run /stop before switching projects.`,
+      };
+    }
     await this.store.saveChat({
       chatId: input.chatId,
       chatType: input.chatType,
@@ -293,11 +298,7 @@ export class SessionManager {
       currentSessionId: activeSession?.id,
       modelSelectionsByProject: existingChat?.modelSelectionsByProject,
     });
-    const lines = [`Current project set to ${projectId}.`];
-    if (activeSession && activeSession.projectId !== projectId) {
-      lines.push(`Running session remains ${activeSession.id} on project ${activeSession.projectId}; use /new <project> to start selected project session.`);
-    }
-    return { reply: lines.join('\n') };
+    return { reply: `Current project set to ${projectId}.` };
   }
 
   private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
