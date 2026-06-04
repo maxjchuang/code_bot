@@ -13,6 +13,13 @@ export interface RenderProjectSelectorCardInput {
 export function renderProjectSelectorCard(
   input: RenderProjectSelectorCardInput,
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
+  if (input.projects.length === 0) {
+    return {
+      preferred: { kind: 'text', text: input.fallbackText },
+      fallback: { kind: 'text', text: input.fallbackText },
+    };
+  }
+
   const defaultProjectId = selectDefaultProjectId(input);
   const summaryLines = ['Choose the project this chat should target.'];
   if (input.currentProjectId) {

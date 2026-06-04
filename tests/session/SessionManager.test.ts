@@ -3001,6 +3001,24 @@ describe('SessionManager', () => {
     expect(confirmButton?.value).not.toHaveProperty('projectId');
   });
 
+  it('returns text only for /projects when no projects are configured', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const config = sampleConfig(root);
+    config.projects = [];
+    const manager = new SessionManager(config, store, new FakeCodexRunner());
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/projects',
+    });
+
+    expect(result.reply).toBe('No projects configured.');
+    expect(result.renderedReply).toBeUndefined();
+  });
+
   it('silently ignores unmentioned group commands', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());

@@ -254,6 +254,10 @@ export class SessionManager {
   }
 
   private async projects(input: IncomingBotText): Promise<BotTextResult> {
+    if (this.config.projects.length === 0) {
+      return { reply: 'No projects configured.' };
+    }
+
     const fallbackText = this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n');
     const chat = await this.store.getChat(input.chatId);
     const runningSession = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
@@ -933,7 +937,11 @@ export class SessionManager {
     }
 
     const parsed = parseIncomingText(rawInputText);
-    if (parsed.kind === 'command' && (parsed.name === 'tail' || parsed.name === 'rawtail')) {
+    if (
+      parsed.kind === 'command' &&
+      ((parsed.name === 'tail' || parsed.name === 'rawtail') ||
+        (parsed.name === 'projects' && result.reply === 'No projects configured.'))
+    ) {
       return result;
     }
 
