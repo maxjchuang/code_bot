@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Route Feishu bot replies through the original message id so group replies quote the triggering message and topic replies stay inside the topic/thread.
+**Goal:** Route Feishu bot replies through the original message id so group replies quote the triggering message, mention the triggering user, and topic replies stay inside the topic/thread.
 
-**Architecture:** Add a small reply-target type shared by the Feishu gateway and session notifier. The gateway chooses Feishu reply API when a `replyToMessageId` exists and falls back to the current chat-level create API on missing target or reply failure. The session layer stores the reply target on pending Codex turns so asynchronous completion notifications use the original message context.
+**Architecture:** Add a small reply-target type shared by the Feishu gateway and session notifier. The gateway chooses Feishu reply API when a `replyToMessageId` exists and falls back to the current chat-level create API on missing target or reply failure. The gateway applies Feishu mention markup at the outbound boundary when `mentionUserId` is present. The session layer stores the reply target on pending Codex turns so asynchronous completion notifications use the original message context.
 
 **Tech Stack:** TypeScript, Vitest, `@larksuiteoapi/node-sdk`, existing Feishu gateway/session manager abstractions.
 
@@ -12,11 +12,11 @@
 
 ## File Structure
 
-- Modify `src/feishu/FeishuGateway.ts`: add `FeishuReplyTarget`, reply-aware send methods, reply API adapter, fallback behavior, and send-reply routing.
-- Modify `src/session/SessionManager.ts`: add optional `messageId` to `IncomingBotText`, add `NotifierReplyTarget`, store reply target on `PendingTurn`, and use reply-aware notifier methods for completion notifications.
+- Modify `src/feishu/FeishuGateway.ts`: add `FeishuReplyTarget`, reply-aware send methods, reply API adapter, fallback behavior, send-reply routing, and outbound mention formatting.
+- Modify `src/session/SessionManager.ts`: add optional `messageId` to `IncomingBotText`, add `NotifierReplyTarget`, store reply target on `PendingTurn`, and use reply-aware notifier methods for completion notifications including mention targets.
 - Modify `src/index.ts`: no direct behavior change expected after gateway-driven immediate replies, but keep logging/data flow compatible with `messageId`.
-- Modify `tests/feishu/FeishuGateway.test.ts`: add reply API harness support and tests for inbound text replies, rendered replies, card actions, chunking, and fallback.
-- Modify `tests/session/SessionManager.test.ts`: add tests that pending Codex completion notifications pass the stored reply target to the notifier.
+- Modify `tests/feishu/FeishuGateway.test.ts`: add reply API harness support and tests for inbound text replies, rendered replies, card actions, mentions, chunking, and fallback.
+- Modify `tests/session/SessionManager.test.ts`: add tests that pending Codex completion notifications pass the stored reply target and mention target to the notifier.
 - Modify `tests/app/bootstrap.test.ts` and `tests/app/createApp.test.ts` only if TypeScript interface changes require mock notifier updates.
 
 ## Task 1: Add Gateway Reply API Routing
@@ -624,6 +624,341 @@ git commit -m "feat: preserve feishu reply targets for notifications"
 
 If the app test files were not changed, omit them from `git add`.
 
+## Task 5: Mention Triggering Users in Group and Topic Replies
+
+**Files:**
+- Modify: `src/feishu/FeishuGateway.ts`
+- Modify: `src/session/SessionManager.ts`
+- Test: `tests/feishu/FeishuGateway.test.ts`
+- Test: `tests/session/SessionManager.test.ts`
+
+- [ ] **Step 1: Write failing gateway tests for group text mentions**
+
+In `tests/feishu/FeishuGateway.test.ts`, add this group reply test:
+
+```ts
+it('mentions the triggering user when replying to group text messages', async () => {
+  const harness = createGatewayHarness();
+  await harness.gateway.start(async () => ({ text: 'bot reply' }));
+
+  await harness.getHandler()({
+    message: {
+      message_id: 'om_mention_1',
+      chat_id: 'oc_1',
+      chat_type: 'group',
+      message_type: 'text',
+      content: JSON.stringify({ text: '@_user_1 hello bot' }),
+      mentions: [{ id: { open_id: 'ou_bot' } }],
+    },
+    sender: { sender_id: { open_id: 'ou_trigger' } },
+  });
+
+  expect(harness.replies).toEqual([
+    {
+      message_id: 'om_mention_1',
+      msg_type: 'text',
+      content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> bot reply' }),
+      reply_in_thread: true,
+    },
+  ]);
+});
+```
+
+Add this private-chat guard test:
+
+```ts
+it('does not mention users when replying to private messages', async () => {
+  const harness = createGatewayHarness();
+  await harness.gateway.start(async () => ({ text: 'bot reply' }));
+
+  await harness.getHandler()({
+    message: {
+      message_id: 'om_private_1',
+      chat_id: 'oc_1',
+      chat_type: 'p2p',
+      message_type: 'text',
+      content: JSON.stringify({ text: 'hello bot' }),
+    },
+    sender: { sender_id: { open_id: 'ou_trigger' } },
+  });
+
+  expect(harness.replies).toEqual([
+    {
+      message_id: 'om_private_1',
+      msg_type: 'text',
+      content: JSON.stringify({ text: 'bot reply' }),
+      reply_in_thread: true,
+    },
+  ]);
+});
+```
+
+- [ ] **Step 2: Write failing gateway tests for rendered card mentions**
+
+Add this direct card mention test:
+
+```ts
+it('mentions the triggering user in rendered card markdown', async () => {
+  const harness = createGatewayHarness();
+
+  await harness.gateway.sendRenderedMessageToTarget(
+    { chatId: 'oc_1', replyToMessageId: 'om_card_mention_1', replyInThread: true, mentionUserId: 'ou_trigger' },
+    {
+      preferred: {
+        kind: 'card',
+        payload: {
+          schema: '2.0',
+          body: {
+            elements: [{ tag: 'markdown', content: '**Status**\nDone' }],
+          },
+        },
+      },
+      fallback: { kind: 'text', text: 'Done' },
+    },
+  );
+
+  const cardContent = JSON.parse(harness.replies[0]!.content) as {
+    body: { elements: Array<{ tag: string; content?: string }> };
+  };
+  expect(cardContent.body.elements[0]).toMatchObject({
+    tag: 'markdown',
+    content: '<at id="ou_trigger"></at>\n**Status**\nDone',
+  });
+});
+```
+
+Add this rendered fallback mention test:
+
+```ts
+it('mentions the triggering user in rendered text fallback after card send failure', async () => {
+  const sent: Array<{ receive_id: string; msg_type: string; content: string }> = [];
+  const errors: unknown[][] = [];
+  const gateway = new LarkLongConnectionGateway('app', 'secret', {
+    client: {
+      im: {
+        v1: {
+          message: {
+            reply: async () => {
+              throw new Error('reply unsupported');
+            },
+            create: async ({ data }) => {
+              sent.push({ receive_id: data.receive_id, msg_type: data.msg_type, content: data.content });
+            },
+          },
+        },
+      },
+    },
+    logger: { error: (...args: unknown[]) => errors.push(args) },
+  } as any);
+
+  await gateway.sendRenderedMessageToTarget(
+    { chatId: 'oc_1', replyToMessageId: 'om_card_mention_1', replyInThread: true, mentionUserId: 'ou_trigger' },
+    {
+      preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [] } } },
+      fallback: { kind: 'text', text: 'fallback text' },
+    },
+  );
+
+  expect(sent.at(-1)).toEqual({
+    receive_id: 'oc_1',
+    msg_type: 'text',
+    content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> fallback text' }),
+  });
+});
+```
+
+- [ ] **Step 3: Write failing session-manager test for persisted mention targets**
+
+In `tests/session/SessionManager.test.ts`, add a completion notification test where a follow-up message arrives from a different user before completion. Use the existing async completion test setup helpers around the current reply-target tests, then assert:
+
+```ts
+expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledWith(
+  { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true, mentionUserId: 'ou_original' },
+  expect.objectContaining({ preferred: expect.any(Object), fallback: expect.any(Object) }),
+);
+```
+
+The test input sequence must include:
+
+```ts
+await manager.handleText({
+  chatId: 'oc_1',
+  chatType: 'group',
+  userId: 'ou_original',
+  messageId: 'om_original_1',
+  text: 'run tests',
+  wasMentioned: true,
+});
+
+await manager.handleText({
+  chatId: 'oc_1',
+  chatType: 'group',
+  userId: 'ou_followup',
+  messageId: 'om_followup_1',
+  text: 'also check lint',
+  wasMentioned: true,
+});
+```
+
+- [ ] **Step 4: Run tests to verify they fail**
+
+Run:
+
+```bash
+npm test -- tests/feishu/FeishuGateway.test.ts tests/session/SessionManager.test.ts
+```
+
+Expected: FAIL because `FeishuReplyTarget` lacks `mentionUserId`, gateway targets do not set it, gateway send paths do not apply mention markup, and session pending turns do not preserve it.
+
+- [ ] **Step 5: Implement mention target propagation**
+
+In `src/feishu/FeishuGateway.ts`, extend `FeishuReplyTarget`:
+
+```ts
+mentionUserId?: string;
+```
+
+Update `replyTargetForMessage()`:
+
+```ts
+private replyTargetForMessage(
+  chatId: string,
+  message: FeishuIncomingMessage | FeishuIncomingCardAction,
+): FeishuReplyTarget {
+  const mentionUserId = message.chatType === 'group' ? message.userId : undefined;
+  return {
+    chatId,
+    replyToMessageId: message.messageId,
+    replyInThread: message.messageId ? true : undefined,
+    mentionUserId,
+  };
+}
+```
+
+In `src/session/SessionManager.ts`, include `mentionUserId` when creating a pending-turn target:
+
+```ts
+const replyTarget = input.messageId
+  ? {
+      chatId: input.chatId,
+      replyToMessageId: input.messageId,
+      replyInThread: true,
+      mentionUserId: input.chatType === 'group' ? input.userId : undefined,
+    }
+  : undefined;
+```
+
+- [ ] **Step 6: Implement mention formatting at the gateway boundary**
+
+In `src/feishu/FeishuGateway.ts`, add helpers:
+
+```ts
+private textWithMention(target: FeishuReplyTarget, text: string): string {
+  if (!target.mentionUserId) {
+    return text;
+  }
+  return `<at user_id="${escapeFeishuAttribute(target.mentionUserId)}"></at> ${text}`;
+}
+
+private renderedWithMention(target: FeishuReplyTarget, message: RenderedFeishuMessage): RenderedFeishuMessage {
+  if (!target.mentionUserId) {
+    return message;
+  }
+  if (message.kind === 'text') {
+    return { kind: 'text', text: this.textWithMention(target, message.text) };
+  }
+  return { kind: 'card', payload: mentionCardMarkdown(message.payload, target.mentionUserId) };
+}
+```
+
+Add pure helpers near the bottom of the file:
+
+```ts
+function mentionCardMarkdown(payload: Record<string, unknown>, userId: string): Record<string, unknown> {
+  const body = isRecord(payload.body) ? payload.body : undefined;
+  const elements = Array.isArray(body?.elements) ? body.elements : undefined;
+  if (!body || !elements) {
+    return payload;
+  }
+  const index = elements.findIndex((element) => isRecord(element) && element.tag === 'markdown' && typeof element.content === 'string');
+  if (index === -1) {
+    return payload;
+  }
+  const nextElements = [...elements];
+  const element = nextElements[index] as Record<string, unknown>;
+  nextElements[index] = {
+    ...element,
+    content: `<at id="${escapeFeishuAttribute(userId)}"></at>\n${element.content}`,
+  };
+  return {
+    ...payload,
+    body: {
+      ...body,
+      elements: nextElements,
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function escapeFeishuAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+```
+
+Update `sendTextToTarget()`:
+
+```ts
+const sanitizedText = sanitizeFeishuText(this.textWithMention(target, text));
+```
+
+Update `sendOneToTarget()`:
+
+```ts
+const messageWithMention = this.renderedWithMention(target, message);
+if (messageWithMention.kind === 'text') {
+  await this.sendTextToTarget({ ...target, mentionUserId: undefined }, messageWithMention.text);
+  return;
+}
+await this.sendPayloadToTarget(target, {
+  msg_type: 'interactive',
+  content: JSON.stringify(messageWithMention.payload),
+});
+```
+
+Clearing `mentionUserId` when sending a text `RenderedFeishuMessage` avoids double-prefixing because `renderedWithMention()` already added the mention.
+
+- [ ] **Step 7: Run targeted tests**
+
+Run:
+
+```bash
+npm test -- tests/feishu/FeishuGateway.test.ts tests/session/SessionManager.test.ts
+```
+
+Expected: PASS.
+
+- [ ] **Step 8: Run build**
+
+Run:
+
+```bash
+npm run build
+```
+
+Expected: PASS.
+
+- [ ] **Step 9: Commit**
+
+Run:
+
+```bash
+git add src/feishu/FeishuGateway.ts src/session/SessionManager.ts tests/feishu/FeishuGateway.test.ts tests/session/SessionManager.test.ts
+git commit -m "feat: mention users in feishu threaded replies"
+```
+
 ## Task 4: Full Verification and PR Update
 
 **Files:**
@@ -693,6 +1028,7 @@ Spec coverage:
 - Card action replies: Task 2 updates card action expectations to reply to the card message id.
 - Context-free notifications: Task 1 keeps `sendText(chatId, text)` and Task 2 keeps `sendRenderedMessage(chatId, message)` as chat-level sends.
 - Fallback behavior: Task 1 covers missing message id; Task 2 covers reply API rejection.
+- Group/topic mention behavior: Task 5 covers text mention prefix, card markdown mention prefix, rendered text fallback mention prefix, private-chat no-mention guard, and pending-turn mention persistence.
 
 Placeholder scan:
 
@@ -700,4 +1036,4 @@ Placeholder scan:
 
 Type consistency:
 
-- `FeishuReplyTarget`, `sendTextToTarget`, and `sendRenderedMessageToTarget` are introduced in Task 1 and reused consistently in Tasks 2 and 3.
+- `FeishuReplyTarget`, `sendTextToTarget`, and `sendRenderedMessageToTarget` are introduced in Task 1 and reused consistently in Tasks 2, 3, and 5. `mentionUserId` is added in Task 5 and propagated through the same target type.
