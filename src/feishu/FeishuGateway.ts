@@ -19,7 +19,7 @@ export interface FeishuIncomingMessage {
   botOpenIdResolved?: boolean;
 }
 
-export type FeishuReactionType = 'Get' | string;
+export type FeishuReactionType = string;
 
 export interface FeishuReplyTarget {
   chatId: string;
@@ -43,7 +43,7 @@ export interface FeishuGateway {
     target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void>;
-  addReaction(messageId: string, emojiType: FeishuReactionType): Promise<void>;
+  addReaction?(messageId: string, emojiType: FeishuReactionType): Promise<void>;
 }
 
 export interface FeishuOutgoingReply {
