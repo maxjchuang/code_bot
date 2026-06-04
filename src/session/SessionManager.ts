@@ -236,6 +236,7 @@ export class SessionManager {
       chatType: input.chatType,
       currentProjectId: projectId,
       currentSessionId: currentSession && isActiveSession(currentSession) ? currentSession.id : undefined,
+      modelSelectionsByProject: existingChat?.modelSelectionsByProject,
     });
     return { reply: `Current project set to ${projectId}.` };
   }
@@ -942,6 +943,7 @@ export class SessionManager {
         chatType: input.chatType,
         currentProjectId: chat.currentProjectId,
         currentSessionId: undefined,
+        modelSelectionsByProject: chat.modelSelectionsByProject,
       });
       return { reply: 'No running session.' };
     }
@@ -1051,6 +1053,7 @@ export class SessionManager {
         chatType: chat.chatType,
         currentProjectId: chat.currentProjectId,
         currentSessionId: undefined,
+        modelSelectionsByProject: chat.modelSelectionsByProject,
       });
     }
     return { reply: `Stopped session ${sessionId}.` };

@@ -3212,6 +3212,76 @@ describe('SessionManager', () => {
     });
   });
 
+  it('preserves saved model selection when /use updates chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
+
+    expect(result.reply).toBe('Current project set to repo2.');
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBeUndefined();
+    expect(chat?.modelSelectionsByProject).toEqual({
+      repo: {
+        model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        updatedAt: '2026-06-04T01:02:03.000Z',
+      },
+    });
+  });
+
+  it('preserves saved model selection when /stop updates chat', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const chatBeforeStop = (await store.getChat('oc_1'))!;
+    await store.saveChat({
+      ...chatBeforeStop,
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: '2026-06-04T01:02:03.000Z',
+        },
+      },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
+
+    expect(result.reply).toBe(`Stopped session ${chatBeforeStop.currentSessionId}.`);
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentSessionId).toBeUndefined();
+    expect(chat?.modelSelectionsByProject).toEqual({
+      repo: {
+        model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        updatedAt: '2026-06-04T01:02:03.000Z',
+      },
+    });
+  });
+
   it('saves model selection and sends runtime switch to running session', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
