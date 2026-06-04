@@ -2949,6 +2949,58 @@ describe('SessionManager', () => {
     expect(projects.reply).toContain('repo2: Repo 2');
   });
 
+  it('returns an interactive project selector for /projects', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/projects',
+    });
+
+    expect(result.reply).toContain('repo: Repo');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    expect(result.renderedReply?.fallback).toEqual({ kind: 'text', text: result.reply });
+    if (result.renderedReply?.preferred.kind !== 'card') {
+      throw new Error('expected a card payload');
+    }
+    const payload = result.renderedReply.preferred.payload as {
+      schema: string;
+      header?: { title?: { content?: string } };
+      body?: { elements?: Array<Record<string, unknown>> };
+    };
+    expect(payload.schema).toBe('2.0');
+    expect(payload.header?.title?.content).toBe('Projects');
+    const form = payload.body?.elements?.find((element) => element.tag === 'form') as
+      | { name?: string; elements?: Array<Record<string, unknown>> }
+      | undefined;
+    expect(form?.name).toBe('project_select_form');
+    const formElements = form?.elements ?? [];
+    const projectSelect = formElements.find((element) => element.name === 'projectId') as
+      | { tag?: string; initial_option?: unknown; options?: Array<{ value: string }> }
+      | undefined;
+    const confirmButton = formElements.find((element) => element.name === 'confirm_project_select') as
+      | { action_type?: string; value?: Record<string, unknown> }
+      | undefined;
+
+    expect(projectSelect?.tag).toBe('select_static');
+    expect(projectSelect?.initial_option).toBe('repo');
+    expect(typeof projectSelect?.initial_option).toBe('string');
+    expect(projectSelect?.options?.map((option) => option.value)).toEqual(['repo', 'repo2']);
+
+    expect(confirmButton?.action_type).toBe('form_submit');
+    expect(confirmButton?.value).toEqual({
+      kind: 'project_select',
+      chatId: 'oc_1',
+      chatType: 'group',
+    });
+    expect(confirmButton?.value).not.toHaveProperty('projectId');
+  });
+
   it('silently ignores unmentioned group commands', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
@@ -3707,6 +3759,57 @@ describe('SessionManager', () => {
     expect((await store.getChat('oc_1'))?.modelSelectionsByProject?.repo.reasoningEffort).toBeUndefined();
   });
 
+  it('handles project_select card action like /use', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'project_select', projectId: 'repo2' },
+    });
+
+    expect(result.reply).toBe('Current project set to repo2.');
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo2',
+    });
+  });
+
+  it('project_select does not stop or replace a running session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'project_select', projectId: 'repo2' },
+    });
+
+    expect(result.reply).toContain('Current project set to repo2.');
+    expect(result.reply).toContain(`Running session remains ${sessionId}`);
+    expect(result.reply).toContain('use /new <project> to start selected project session');
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo2',
+      currentSessionId: sessionId,
+    });
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      id: sessionId,
+      projectId: 'repo',
+      status: 'running',
+    });
+  });
+
   it('rejects unsupported reasoning in model_select', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -3858,10 +3961,12 @@ describe('SessionManager', () => {
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
 
     const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
-    expect(switched.reply).toBe(`Current session ${sessionId} is still running. Run /stop before switching projects.`);
+    expect(switched.reply).toContain('Current project set to repo2.');
+    expect(switched.reply).toContain(`Running session remains ${sessionId}`);
+    expect(switched.reply).toContain('use /new <project> to start selected project session');
 
     const chat = await store.getChat('oc_1');
-    expect(chat?.currentProjectId).toBe('repo');
+    expect(chat?.currentProjectId).toBe('repo2');
     expect(chat?.currentSessionId).toBe(sessionId);
 
     const stopped = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });

@@ -20,8 +20,9 @@ import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLo
 import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
-import type { FeishuIncomingCardAction, ModelSelectCardAction } from '../feishu/FeishuCardActions.js';
+import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
+import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -188,7 +189,7 @@ export class SessionManager {
       case 'help':
         return { reply: this.helpText() };
       case 'projects':
-        return { reply: this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n') };
+        return this.projects(input);
       case 'use':
         return this.useProject(input, parsed.args[0]);
       case 'new':
@@ -227,7 +228,7 @@ export class SessionManager {
       case 'model_select':
         return this.selectModel(input.chatId, input.action);
       case 'project_select':
-        return { reply: 'Unsupported card action: project_select' };
+        return this.selectProject(input, input.action);
       default:
         return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
@@ -249,24 +250,50 @@ export class SessionManager {
   }
 
   private async useProject(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
+    return this.selectProject(input, { kind: 'project_select', projectId: projectId ?? '' });
+  }
+
+  private async projects(input: IncomingBotText): Promise<BotTextResult> {
+    const fallbackText = this.config.projects.map((project) => `${project.id}: ${project.name}`).join('\n');
+    const chat = await this.store.getChat(input.chatId);
+    const runningSession = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+
+    return {
+      reply: fallbackText,
+      renderedReply: renderProjectSelectorCard({
+        chatId: input.chatId,
+        chatType: input.chatType,
+        currentProjectId: chat?.currentProjectId,
+        runningProjectId: runningSession && isActiveSession(runningSession) ? runningSession.projectId : undefined,
+        projects: this.config.projects,
+        fallbackText,
+      }),
+    };
+  }
+
+  private async selectProject(
+    input: Pick<IncomingBotText, 'chatId' | 'chatType'>,
+    action: ProjectSelectCardAction,
+  ): Promise<BotTextResult> {
+    const projectId = action.projectId;
     if (!projectId || !resolveProject(this.config, projectId)) {
       return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
     }
     const existingChat = await this.store.getChat(input.chatId);
     const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
-    if (currentSession && isActiveSession(currentSession) && currentSession.projectId !== projectId) {
-      return {
-        reply: `Current session ${currentSession.id} is still running. Run /stop before switching projects.`,
-      };
-    }
+    const activeSession = currentSession && isActiveSession(currentSession) ? currentSession : undefined;
     await this.store.saveChat({
       chatId: input.chatId,
       chatType: input.chatType,
       currentProjectId: projectId,
-      currentSessionId: currentSession && isActiveSession(currentSession) ? currentSession.id : undefined,
+      currentSessionId: activeSession?.id,
       modelSelectionsByProject: existingChat?.modelSelectionsByProject,
     });
-    return { reply: `Current project set to ${projectId}.` };
+    const lines = [`Current project set to ${projectId}.`];
+    if (activeSession && activeSession.projectId !== projectId) {
+      lines.push(`Running session remains ${activeSession.id} on project ${activeSession.projectId}; use /new <project> to start selected project session.`);
+    }
+    return { reply: lines.join('\n') };
   }
 
   private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
