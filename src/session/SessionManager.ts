@@ -618,7 +618,12 @@ export class SessionManager {
         followUpToActiveTurn = true;
       } else {
         const replyTarget = input.messageId
-          ? { chatId: input.chatId, replyToMessageId: input.messageId, replyInThread: true }
+          ? {
+              chatId: input.chatId,
+              replyToMessageId: input.messageId,
+              replyInThread: true,
+              mentionUserId: input.chatType === 'group' ? input.userId : undefined,
+            }
           : undefined;
         const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt, replyTarget);
         await this.activatePendingTurn(turn);

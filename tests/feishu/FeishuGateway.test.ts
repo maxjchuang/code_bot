@@ -179,6 +179,58 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('prefixes group text replies with a mention for the triggering user', async () => {
+    const harness = createGatewayHarness();
+    await harness.gateway.start(async () => ({ text: 'bot reply' }));
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_group_1',
+        chat_id: 'oc_1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: '@bot hello' }),
+        mentions: [{ id: { open_id: 'ou_bot' } }],
+      },
+      sender: { sender_id: { open_id: 'ou_trigger' } },
+    });
+
+    expect(harness.sent).toEqual([]);
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_group_1',
+        msg_type: 'text',
+        content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> bot reply' }),
+        reply_in_thread: true,
+      },
+    ]);
+  });
+
+  it('does not prefix private text replies with a mention', async () => {
+    const harness = createGatewayHarness();
+    await harness.gateway.start(async () => ({ text: 'bot reply' }));
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_private_1',
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello' }),
+      },
+      sender: { sender_id: { open_id: 'ou_trigger' } },
+    });
+
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_private_1',
+        msg_type: 'text',
+        content: JSON.stringify({ text: 'bot reply' }),
+        reply_in_thread: true,
+      },
+    ]);
+  });
+
   it('ignores non-text message events', async () => {
     const harness = createGatewayHarness();
     const onMessage = vi.fn(async () => ({ text: 'reply' }));
@@ -745,6 +797,79 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('prefixes rendered card markdown replies with a card mention', async () => {
+    const harness = createGatewayHarness();
+    const preferred = { kind: 'card' as const, payload: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } } };
+
+    await harness.gateway.sendRenderedMessageToTarget(
+      { chatId: 'oc_1', replyToMessageId: 'om_123', replyInThread: true, mentionUserId: 'ou_trigger' },
+      {
+        preferred,
+        fallback: { kind: 'text', text: 'fallback' },
+      },
+    );
+
+    expect(preferred.payload.body.elements[0]?.content).toBe('**done**');
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_123',
+        msg_type: 'interactive',
+        content: JSON.stringify({
+          schema: '2.0',
+          body: { elements: [{ tag: 'markdown', content: '<at id="ou_trigger"></at>\n**done**' }] },
+        }),
+        reply_in_thread: true,
+      },
+    ]);
+  });
+
+  it('mentions rendered text fallback exactly once after preferred card reply failure', async () => {
+    const sent: Array<{ receive_id: string; msg_type: string; content: string }> = [];
+    let replyCalls = 0;
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        im: {
+          v1: {
+            message: {
+              create: async (payload: { data: { receive_id: string; msg_type: string; content: string } }) => {
+                if (payload.data.msg_type === 'interactive') {
+                  throw new Error('card fallback create failed');
+                }
+                sent.push({
+                  receive_id: payload.data.receive_id,
+                  msg_type: payload.data.msg_type,
+                  content: payload.data.content,
+                });
+              },
+              reply: async () => {
+                replyCalls += 1;
+                throw new Error('reply failed');
+              },
+            },
+          },
+        },
+      },
+      logger: { error: () => undefined },
+    } as any);
+
+    await gateway.sendRenderedMessageToTarget(
+      { chatId: 'oc_1', replyToMessageId: 'om_123', replyInThread: true, mentionUserId: 'ou_trigger' },
+      {
+        preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } } },
+        fallback: { kind: 'text', text: 'fallback text' },
+      },
+    );
+
+    expect(replyCalls).toBe(2);
+    expect(sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        msg_type: 'text',
+        content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> fallback text' }),
+      },
+    ]);
+  });
+
   it('logs reply failures and falls back to one chat create payload for text reply targets', async () => {
     const sent: Array<{ receive_id: string; msg_type: string; content: string }> = [];
     const errors: unknown[][] = [];
@@ -906,7 +1031,7 @@ describe('LarkLongConnectionGateway', () => {
       {
         message_id: 'om_card_1',
         msg_type: 'text',
-        content: JSON.stringify({ text: 'project updated' }),
+        content: JSON.stringify({ text: '<at user_id="ou_1"></at> project updated' }),
         reply_in_thread: true,
       },
     ]);

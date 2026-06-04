@@ -22,6 +22,7 @@ export interface FeishuReplyTarget {
   chatId: string;
   replyToMessageId?: string;
   replyInThread?: boolean;
+  mentionUserId?: string;
 }
 
 export interface FeishuGateway {
@@ -330,6 +331,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
       chatId,
       replyToMessageId: message.messageId,
       replyInThread: message.messageId ? true : undefined,
+      mentionUserId: message.chatType === 'group' ? message.userId : undefined,
     };
   }
 
@@ -338,7 +340,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   }
 
   async sendTextToTarget(target: FeishuReplyTarget, text: string): Promise<void> {
-    const sanitizedText = sanitizeFeishuText(text);
+    const sanitizedText = sanitizeFeishuText(textWithMention(target, text));
     for (const chunk of splitFeishuMessages(sanitizedText)) {
       await this.sendPayloadToTarget(target, {
         msg_type: 'text',
@@ -358,14 +360,15 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void> {
+    const rendered = renderedWithMention(target, message);
     try {
-      await this.sendOneToTarget(target, message.preferred);
+      await this.sendOneToTarget(rendered.target, rendered.message.preferred);
     } catch (error) {
       this.logger.debug('feishu.render_fallback', {
         chat: target.chatId,
         reason: error instanceof Error ? error.message : String(error),
       });
-      await this.sendOneToTarget(target, message.fallback);
+      await this.sendOneToTarget(rendered.target, rendered.message.fallback);
     }
   }
 
@@ -501,6 +504,101 @@ function splitFeishuMessages(text: string): string[] {
     chunks.push(text.slice(index, index + FEISHU_TEXT_MESSAGE_MAX_CHARS));
   }
   return chunks;
+}
+
+function textWithMention(target: FeishuReplyTarget, text: string): string {
+  if (!target.mentionUserId) {
+    return text;
+  }
+  return `<at user_id="${escapeFeishuAttribute(target.mentionUserId)}"></at> ${text}`;
+}
+
+function renderedWithMention(
+  target: FeishuReplyTarget,
+  message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
+): { target: FeishuReplyTarget; message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } } {
+  if (!target.mentionUserId) {
+    return { target, message };
+  }
+
+  return {
+    target: { ...target, mentionUserId: undefined },
+    message: {
+      preferred: renderedMessageWithMention(message.preferred, target.mentionUserId),
+      fallback: renderedMessageWithMention(message.fallback, target.mentionUserId),
+    },
+  };
+}
+
+function renderedMessageWithMention(message: RenderedFeishuMessage, userId: string): RenderedFeishuMessage {
+  if (message.kind === 'text') {
+    return { kind: 'text', text: textWithMention({ chatId: '', mentionUserId: userId }, message.text) };
+  }
+  return { kind: 'card', payload: mentionCardMarkdown(message.payload, userId) };
+}
+
+function mentionCardMarkdown(payload: Record<string, unknown>, userId: string): Record<string, unknown> {
+  const clone = cloneJsonObject(payload);
+  const mention = `<at id="${escapeFeishuAttribute(userId)}"></at>\n`;
+  prefixFirstMarkdownElement(clone, mention);
+  return clone;
+}
+
+function prefixFirstMarkdownElement(value: unknown, prefix: string): boolean {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (prefixFirstMarkdownElement(item, prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (value.tag === 'markdown' && typeof value.content === 'string') {
+    value.content = `${prefix}${value.content}`;
+    return true;
+  }
+
+  for (const child of Object.values(value)) {
+    if (prefixFirstMarkdownElement(child, prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function cloneJsonObject(value: Record<string, unknown>): Record<string, unknown> {
+  return cloneJsonValue(value) as Record<string, unknown>;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJsonValue(item));
+  }
+  if (isRecord(value)) {
+    const result: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      result[key] = cloneJsonValue(entry);
+    }
+    return result;
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function escapeFeishuAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function serializeError(error: unknown): Record<string, unknown> {

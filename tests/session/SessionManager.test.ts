@@ -1509,7 +1509,75 @@ describe('SessionManager', () => {
     await waitForAssertion(() => expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledTimes(1));
     const rendered = notifier.sendRenderedMessageToTarget.mock.calls[0][1];
     expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledWith(
-      { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true },
+      { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true, mentionUserId: 'ou_1' },
+      rendered,
+    );
+    expect(notifier.sendRenderedMessage).not.toHaveBeenCalled();
+    expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('preserves the original group trigger mention target for pending turn completion despite follow-ups', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessageToTarget: vi.fn().mockResolvedValue(undefined),
+    };
+    const observationStore = new FakeCodexObservationStore();
+    const baseConfig = sampleConfig(root);
+    const config = {
+      ...baseConfig,
+      allowedUsers: ['ou_original', 'ou_followup'],
+      notifications: { ...baseConfig.notifications, idleMs: 1 },
+    };
+    const manager = new SessionManager(config, store, runner, {
+      notifier: notifier as any,
+      codexObservationStore: observationStore,
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_original', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a4012';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_original',
+      messageId: 'om_original_1',
+      text: 'run tests',
+      wasMentioned: true,
+    });
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_followup',
+      messageId: 'om_followup_1',
+      text: 'also check lint',
+      wasMentioned: true,
+    });
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '**done**',
+      completedAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, 'tick\n');
+
+    await waitForAssertion(() => expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledTimes(1));
+    const rendered = notifier.sendRenderedMessageToTarget.mock.calls[0][1];
+    expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledWith(
+      {
+        chatId: 'oc_1',
+        replyToMessageId: 'om_original_1',
+        replyInThread: true,
+        mentionUserId: 'ou_original',
+      },
       rendered,
     );
     expect(notifier.sendRenderedMessage).not.toHaveBeenCalled();
@@ -1599,7 +1667,7 @@ describe('SessionManager', () => {
 
     await waitForAssertion(() => expect(notifier.sendTextToTarget).toHaveBeenCalledTimes(1));
     expect(notifier.sendTextToTarget).toHaveBeenCalledWith(
-      { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true },
+      { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true, mentionUserId: 'ou_1' },
       'done',
     );
     expect(notifier.sendText).not.toHaveBeenCalled();
