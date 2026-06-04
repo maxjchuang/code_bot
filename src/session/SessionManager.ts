@@ -97,6 +97,9 @@ const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
 const DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS = 100;
 const DEFAULT_CODEX_STATUS_LIVE_FETCH_TIMEOUT_MS = 2_000;
 const DEFAULT_CODEX_STATUS_QUIET_MS = 75;
+const MAX_LIVE_STATUS_CHARS = 32_768;
+const MAX_PTY_DEBUG_BUFFER_CHARS = 16_384;
+const PTY_DEBUG_TRUNCATION_MARKER = '\n[debug pty output truncated: terminal redraw exceeded buffer limit]\n';
 
 interface PendingTurn {
   id: string;
@@ -1317,7 +1320,7 @@ export class SessionManager {
     }
 
     for (const waiter of waiters) {
-      waiter.chunks.push(text);
+      this.pushBoundedLiveStatusChunk(waiter, text);
       if (waiter.quietTimer) {
         clearTimeout(waiter.quietTimer);
       }
@@ -1328,6 +1331,25 @@ export class SessionManager {
         }
         waiter.resolve(formatted);
       }, this.deps.codexStatus?.quietMs ?? DEFAULT_CODEX_STATUS_QUIET_MS);
+    }
+  }
+
+  private pushBoundedLiveStatusChunk(waiter: LiveStatusWaiter, text: string): void {
+    waiter.chunks.push(text);
+    let total = waiter.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    while (total > MAX_LIVE_STATUS_CHARS && waiter.chunks.length > 0) {
+      const first = waiter.chunks[0]!;
+      const overflow = total - MAX_LIVE_STATUS_CHARS;
+      if (overflow >= first.length) {
+        waiter.chunks.shift();
+        total -= first.length;
+        continue;
+      }
+      const suffix = first.slice(overflow);
+      const boundary = suffix.search(/[\r\n\u001b]/);
+      const safeSuffix = boundary === -1 ? '' : boundary > 0 ? suffix.slice(boundary) : suffix;
+      waiter.chunks[0] = safeSuffix;
+      total -= overflow + (suffix.length - safeSuffix.length);
     }
   }
 
@@ -1344,10 +1366,14 @@ export class SessionManager {
     if (this.logger.level !== 'debug' || text.length === 0) {
       return;
     }
-    const buffered = `${this.ptyDebugBuffers.get(sessionId) ?? ''}${text}`;
+    const previous = this.ptyDebugBuffers.get(sessionId) ?? '';
+    let buffered = `${previous}${text}`;
+    if (buffered.length > MAX_PTY_DEBUG_BUFFER_CHARS) {
+      buffered = `${PTY_DEBUG_TRUNCATION_MARKER}${buffered.slice(-MAX_PTY_DEBUG_BUFFER_CHARS)}`;
+    }
     const segments = buffered.split(/\r?\n/);
     const remainder = segments.pop() ?? '';
-    this.ptyDebugBuffers.set(sessionId, remainder);
+    this.ptyDebugBuffers.set(sessionId, remainder.slice(-MAX_PTY_DEBUG_BUFFER_CHARS));
     for (const segment of segments) {
       await this.emitPtyDebugSegment(sessionId, segment);
     }
