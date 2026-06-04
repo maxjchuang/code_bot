@@ -7,6 +7,7 @@ export type CommandName =
   | 'send'
   | 'status'
   | 'model'
+  | 'upgrade'
   | 'tail'
   | 'rawtail'
   | 'stop'
