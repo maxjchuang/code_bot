@@ -77,6 +77,7 @@ With completion notifications enabled, plain text messages receive an immediate 
 /new [project]
 /send <text>
 /status
+/model [model] [reasoning]
 /tail [n]
 /rawtail [n]
 /stop
@@ -91,6 +92,7 @@ Notes:
 - `/use <project>` selects a project without starting Codex.
 - `/new [project]` starts a new Codex session for the named project, or for the currently selected project. If the chat already has a running session, the bot stops it first and then starts the new one. The bot will try to capture the Codex native session ID so the session can be resumed later.
 - `/status` returns the local bot/session summary and a Codex-native status block. For running sessions it asks Codex for a fresh `status`; if that is unavailable, it falls back to the most recent cached Codex status or marks it unavailable.
+- `/model [model] [reasoning]` lists Codex-supported models from local `~/.codex/models_cache.json` when called without arguments. With arguments, it saves chat/project defaults and switches the running session when one is active. Saved selections override project model args for future `/new` and `/resume` commands.
 - On bot restart, the last running session for each chat is marked interrupted and automatically resumed when a Codex native session ID was captured.
 - `/sessions` lists recent sessions. Session status is shown as `current`, `resumable`, or `not-resumable`.
 - `/resume <session> [project]` resumes a Codex session. Prefer the code_bot session ID shown by `/sessions`. Codex native session IDs are also supported, but you must specify `project` or already have a current project selected in the chat.
