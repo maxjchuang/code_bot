@@ -24,6 +24,7 @@ import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCard
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import type { FeishuReplyTarget } from '../feishu/FeishuGateway.js';
+import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -86,6 +87,7 @@ export interface SessionManagerDeps {
     quietMs?: number;
   };
   modelCatalog?: ModelCatalogReader;
+  upgradeManager?: Pick<UpgradeManager, 'upgrade'>;
 }
 
 interface ModelCatalogView {
@@ -233,6 +235,8 @@ export class SessionManager {
         return this.resolveApproval(input.chatId, parsed.args[0], 'approved', input.userId);
       case 'reject':
         return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
+      case 'upgrade':
+        return this.upgrade(input);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -1931,9 +1935,23 @@ export class SessionManager {
     });
   }
 
+  private getUpgradeManager(): Pick<UpgradeManager, 'upgrade'> {
+    return this.deps.upgradeManager ?? new UpgradeManager({ projectRoot: process.cwd(), config: this.config.upgrade });
+  }
+
+  private async upgrade(input: IncomingBotText): Promise<BotTextResult> {
+    const result = await this.getUpgradeManager().upgrade({ userId: input.userId });
+    await this.store.appendEvent({
+      type: upgradeEventType(result.status),
+      at: new Date().toISOString(),
+      data: result.event,
+    });
+    return { reply: result.reply };
+  }
+
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade';
     const resumeHelp = [
       'Resume: /resume <session> [project]',
       '- session can be a code_bot session id from /sessions or a Codex native id',
@@ -1946,6 +1964,16 @@ export class SessionManager {
     ].join('\n');
     return `${commands}\n\n${resumeHelp}\n\n${restrictions}`;
   }
+}
+
+function upgradeEventType(status: UpgradeResult['status']): 'upgrade.completed' | 'upgrade.failed' | 'upgrade.skipped' {
+  if (status === 'restart-triggered') {
+    return 'upgrade.completed';
+  }
+  if (status === 'failed') {
+    return 'upgrade.failed';
+  }
+  return 'upgrade.skipped';
 }
 
 function isActiveSession(session: SessionRecord): boolean {

@@ -5,6 +5,7 @@ import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { SessionManager, type CodexSessionDiscovery, type Notifier } from '../session/SessionManager.js';
 import type { CodexObservationStore } from '../observations/CodexObservationStore.js';
 import { resolveProject } from '../security/guards.js';
+import { UpgradeManager } from '../upgrade/UpgradeManager.js';
 
 export interface AppDependencies {
   projectRoot: string;
@@ -28,6 +29,7 @@ export function createApp(deps: AppDependencies): {
     codexSessionRegistry: deps.codexSessionRegistry,
     codexSessionDiscovery: deps.codexSessionDiscovery,
     codexObservationStore: deps.codexObservationStore,
+    upgradeManager: new UpgradeManager({ projectRoot: deps.projectRoot, config: deps.config.upgrade }),
     sendConfirmation: deps.notifier ? { initialWaitMs: 3_000, retryWaitMs: 2_000, pollIntervalMs: 100 } : undefined,
   });
   return {
