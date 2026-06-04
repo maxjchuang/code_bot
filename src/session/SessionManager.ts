@@ -1774,7 +1774,11 @@ function removeModelSelectionArgs(codexArgs: string[]): string[] {
     if (arg.startsWith('--model=') || arg.startsWith('-m=')) {
       continue;
     }
-    if (arg === '-c' && isModelReasoningEffortArg(codexArgs[index + 1])) {
+    if (arg === '-c' && isSavedModelConfigArg(codexArgs[index + 1])) {
+      index += 1;
+      continue;
+    }
+    if (arg === '--config' && isModelConfigArg(codexArgs[index + 1])) {
       index += 1;
       continue;
     }
@@ -1783,8 +1787,12 @@ function removeModelSelectionArgs(codexArgs: string[]): string[] {
   return args;
 }
 
-function isModelReasoningEffortArg(arg: string | undefined): boolean {
-  return arg?.startsWith('model_reasoning_effort=') ?? false;
+function isSavedModelConfigArg(arg: string | undefined): boolean {
+  return isModelConfigArg(arg) || (arg?.startsWith('model_reasoning_effort=') ?? false);
+}
+
+function isModelConfigArg(arg: string | undefined): boolean {
+  return arg?.startsWith('model=') ?? false;
 }
 
 function isValidSessionTarget(target: string): boolean {
