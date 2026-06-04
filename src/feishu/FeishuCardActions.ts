@@ -18,6 +18,7 @@ export interface FeishuIncomingCardAction {
   chatType: ChatType;
   userId: string;
   messageId?: string;
+  threadId?: string;
   action: FeishuCardActionPayload;
 }
 

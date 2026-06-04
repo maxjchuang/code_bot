@@ -30,6 +30,7 @@ export interface IncomingBotText {
   chatType: ChatType;
   userId: string;
   messageId?: string;
+  threadId?: string;
   text: string;
   wasMentioned?: boolean;
 }
@@ -157,6 +158,7 @@ export class SessionManager {
   private readonly pendingTurns = new Map<string, PendingTurn>();
   private readonly queuedTurns = new Map<string, PendingTurn[]>();
   private readonly ptyDebugBuffers = new Map<string, string>();
+  private readonly ptyDebugTruncatedSessions = new Set<string>();
   private readonly liveStatusWaiters = new Map<string, Set<LiveStatusWaiter>>();
   private readonly outputObservationStates = new Map<string, OutputObservationState>();
 
@@ -621,7 +623,7 @@ export class SessionManager {
           ? {
               chatId: input.chatId,
               replyToMessageId: input.messageId,
-              replyInThread: true,
+              replyInThread: input.chatType === 'group' && input.threadId ? true : undefined,
               mentionUserId: input.chatType === 'group' ? input.userId : undefined,
             }
           : undefined;
@@ -1419,7 +1421,9 @@ export class SessionManager {
     const previous = this.ptyDebugBuffers.get(sessionId) ?? '';
     let buffered = `${previous}${text}`;
     if (buffered.length > MAX_PTY_DEBUG_BUFFER_CHARS) {
-      buffered = `${PTY_DEBUG_TRUNCATION_MARKER}${buffered.slice(-MAX_PTY_DEBUG_BUFFER_CHARS)}`;
+      const marker = this.ptyDebugTruncatedSessions.has(sessionId) ? '' : PTY_DEBUG_TRUNCATION_MARKER;
+      this.ptyDebugTruncatedSessions.add(sessionId);
+      buffered = `${marker}${buffered.slice(-MAX_PTY_DEBUG_BUFFER_CHARS)}`;
     }
     const segments = buffered.split(/\r?\n/);
     const remainder = segments.pop() ?? '';
@@ -1432,10 +1436,12 @@ export class SessionManager {
   private async flushPendingPtyDebugOutput(sessionId: string): Promise<void> {
     if (this.logger.level !== 'debug') {
       this.ptyDebugBuffers.delete(sessionId);
+      this.ptyDebugTruncatedSessions.delete(sessionId);
       return;
     }
     const remainder = this.ptyDebugBuffers.get(sessionId);
     this.ptyDebugBuffers.delete(sessionId);
+    this.ptyDebugTruncatedSessions.delete(sessionId);
     if (!remainder) {
       return;
     }

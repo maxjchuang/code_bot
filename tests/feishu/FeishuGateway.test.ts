@@ -4,6 +4,7 @@ import { LarkLongConnectionGateway } from '../../src/feishu/FeishuGateway.js';
 type ReceiveHandler = (data: {
   message?: {
     message_id?: string;
+    thread_id?: string;
     chat_id?: string;
     chat_type?: string;
     message_type?: string;
@@ -150,6 +151,61 @@ describe('LarkLongConnectionGateway', () => {
         message_id: 'om_123',
         msg_type: 'text',
         content: JSON.stringify({ text: 'bot reply' }),
+        reply_in_thread: undefined,
+      },
+    ]);
+  });
+
+  it('does not use topic replies for ordinary group messages outside a topic', async () => {
+    const harness = createGatewayHarness();
+    await harness.gateway.start(async () => ({ text: 'bot reply' }));
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_group_plain_1',
+        chat_id: 'oc_1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: '@bot hello' }),
+        mentions: [{ id: { open_id: 'ou_bot' } }],
+      },
+      sender: { sender_id: { open_id: 'ou_trigger' } },
+    });
+
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_group_plain_1',
+        msg_type: 'text',
+        content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> bot reply' }),
+        reply_in_thread: undefined,
+      },
+    ]);
+  });
+
+  it('uses topic replies for group messages that mention the bot inside a topic', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => ({ text: 'bot reply' }));
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_group_topic_1',
+        thread_id: 'omt_topic_1',
+        chat_id: 'oc_1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: '@bot hello' }),
+        mentions: [{ id: { open_id: 'ou_bot' } }],
+      },
+      sender: { sender_id: { open_id: 'ou_trigger' } },
+    });
+
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'omt_topic_1' }));
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_group_topic_1',
+        msg_type: 'text',
+        content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> bot reply' }),
         reply_in_thread: true,
       },
     ]);
@@ -201,7 +257,7 @@ describe('LarkLongConnectionGateway', () => {
         message_id: 'om_group_1',
         msg_type: 'text',
         content: JSON.stringify({ text: '<at user_id="ou_trigger"></at> bot reply' }),
-        reply_in_thread: true,
+        reply_in_thread: undefined,
       },
     ]);
   });
@@ -226,7 +282,7 @@ describe('LarkLongConnectionGateway', () => {
         message_id: 'om_private_1',
         msg_type: 'text',
         content: JSON.stringify({ text: 'bot reply' }),
-        reply_in_thread: true,
+        reply_in_thread: undefined,
       },
     ]);
   });
@@ -770,7 +826,7 @@ describe('LarkLongConnectionGateway', () => {
         message_id: 'om_rendered_1',
         msg_type: 'interactive',
         content: JSON.stringify({ schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } }),
-        reply_in_thread: true,
+        reply_in_thread: undefined,
       },
     ]);
   });
@@ -982,7 +1038,7 @@ describe('LarkLongConnectionGateway', () => {
         message_id: 'om_card_1',
         msg_type: 'text',
         content: JSON.stringify({ text: 'model updated' }),
-        reply_in_thread: true,
+        reply_in_thread: undefined,
       },
     ]);
   });
@@ -1032,7 +1088,7 @@ describe('LarkLongConnectionGateway', () => {
         message_id: 'om_card_1',
         msg_type: 'text',
         content: JSON.stringify({ text: '<at user_id="ou_1"></at> project updated' }),
-        reply_in_thread: true,
+        reply_in_thread: undefined,
       },
     ]);
   });
