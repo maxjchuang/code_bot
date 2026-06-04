@@ -23,11 +23,13 @@ import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } fr
 import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
+import type { FeishuReplyTarget } from '../feishu/FeishuGateway.js';
 
 export interface IncomingBotText {
   chatId: string;
   chatType: ChatType;
   userId: string;
+  messageId?: string;
   text: string;
   wasMentioned?: boolean;
 }
@@ -46,8 +48,13 @@ export interface CodexSessionDiscovery {
 
 export interface Notifier {
   sendText(chatId: string, text: string): Promise<void>;
+  sendTextToTarget?(target: FeishuReplyTarget, text: string): Promise<void>;
   sendRenderedMessage?(
     chatId: string,
+    message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
+  ): Promise<void>;
+  sendRenderedMessageToTarget?(
+    target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void>;
 }
@@ -105,6 +112,7 @@ interface PendingTurn {
   id: string;
   sessionId: string;
   chatId: string;
+  replyTarget?: FeishuReplyTarget;
   projectId: string;
   prompt: string;
   startedAt: string;
@@ -609,7 +617,10 @@ export class SessionManager {
       if (this.pendingTurns.has(chat.currentSessionId)) {
         followUpToActiveTurn = true;
       } else {
-        const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt);
+        const replyTarget = input.messageId
+          ? { chatId: input.chatId, replyToMessageId: input.messageId, replyInThread: true }
+          : undefined;
+        const turn = this.createPendingTurn(chat.currentSessionId, input.chatId, session.projectId, text, notificationStartedAt, replyTarget);
         await this.activatePendingTurn(turn);
         createdPendingTurn = true;
       }
@@ -1542,8 +1553,15 @@ export class SessionManager {
       }
       const message = this.completionBotMessage(turn.projectId, sessionId, extraction);
       const rendered = renderFeishuMessage(message, { verbosity: this.uiVerbosity() });
-      if (this.deps.notifier!.sendRenderedMessage) {
+      if (turn.replyTarget && this.deps.notifier!.sendRenderedMessageToTarget) {
+        await this.deps.notifier!.sendRenderedMessageToTarget(turn.replyTarget, rendered);
+      } else if (this.deps.notifier!.sendRenderedMessage) {
         await this.deps.notifier!.sendRenderedMessage(turn.chatId, rendered);
+      } else if (turn.replyTarget && this.deps.notifier!.sendTextToTarget) {
+        await this.deps.notifier!.sendTextToTarget(
+          turn.replyTarget,
+          rendered.fallback.kind === 'text' ? rendered.fallback.text : message.fallbackText,
+        );
       } else {
         await this.deps.notifier!.sendText(
           turn.chatId,
@@ -1813,11 +1831,19 @@ export class SessionManager {
     return lines.slice(turn.outputStartIndex);
   }
 
-  private createPendingTurn(sessionId: string, chatId: string, projectId: string, prompt: string, startedAt: string): PendingTurn {
+  private createPendingTurn(
+    sessionId: string,
+    chatId: string,
+    projectId: string,
+    prompt: string,
+    startedAt: string,
+    replyTarget?: FeishuReplyTarget,
+  ): PendingTurn {
     return {
       id: `${sessionId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
       sessionId,
       chatId,
+      replyTarget,
       projectId,
       prompt,
       startedAt,

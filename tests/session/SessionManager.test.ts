@@ -1467,6 +1467,144 @@ describe('SessionManager', () => {
     expect(notifier.sendText).not.toHaveBeenCalled();
   });
 
+  it('routes completion notifications through reply-aware rendered notifier when inbound message has messageId', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessageToTarget: vi.fn().mockResolvedValue(undefined),
+    };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier: notifier as any,
+      codexObservationStore: observationStore,
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a4002';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_original_1',
+      text: 'run tests',
+      wasMentioned: true,
+    });
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '**done**',
+      completedAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, 'tick\n');
+
+    await waitForAssertion(() => expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledTimes(1));
+    const rendered = notifier.sendRenderedMessageToTarget.mock.calls[0][1];
+    expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledWith(
+      { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true },
+      rendered,
+    );
+    expect(notifier.sendRenderedMessage).not.toHaveBeenCalled();
+    expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('falls back to legacy rendered notifier when reply-aware rendered notifier is unavailable', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+    };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier: notifier as any,
+      codexObservationStore: observationStore,
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a4003';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_original_1',
+      text: 'run tests',
+      wasMentioned: true,
+    });
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '**done**',
+      completedAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, 'tick\n');
+
+    await waitForAssertion(() => expect(notifier.sendRenderedMessage).toHaveBeenCalledTimes(1));
+    expect(notifier.sendRenderedMessage).toHaveBeenCalledWith('oc_1', notifier.sendRenderedMessage.mock.calls[0][1]);
+    expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('routes text fallback completion notifications through reply-aware text notifier when inbound message has messageId', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendTextToTarget: vi.fn().mockResolvedValue(undefined),
+    };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier: notifier as any,
+      codexObservationStore: observationStore,
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a4004';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_original_1',
+      text: 'run tests',
+      wasMentioned: true,
+    });
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: 'done',
+      completedAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, 'tick\n');
+
+    await waitForAssertion(() => expect(notifier.sendTextToTarget).toHaveBeenCalledTimes(1));
+    expect(notifier.sendTextToTarget).toHaveBeenCalledWith(
+      { chatId: 'oc_1', replyToMessageId: 'om_original_1', replyInThread: true },
+      'done',
+    );
+    expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
   it('adds a rendered reply for ordinary synchronous responses', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
