@@ -723,6 +723,74 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('sends rendered card messages to reply targets through the reply API', async () => {
+    const harness = createGatewayHarness();
+
+    await harness.gateway.sendRenderedMessageToTarget(
+      { chatId: 'oc_1', replyToMessageId: 'om_123', replyInThread: true },
+      {
+        preferred: { kind: 'card', payload: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } } },
+        fallback: { kind: 'text', text: 'fallback' },
+      },
+    );
+
+    expect(harness.sent).toEqual([]);
+    expect(harness.replies).toEqual([
+      {
+        message_id: 'om_123',
+        msg_type: 'interactive',
+        content: JSON.stringify({ schema: '2.0', body: { elements: [{ tag: 'markdown', content: '**done**' }] } }),
+        reply_in_thread: true,
+      },
+    ]);
+  });
+
+  it('logs reply failures and falls back to one chat create payload for text reply targets', async () => {
+    const sent: Array<{ receive_id: string; msg_type: string; content: string }> = [];
+    const errors: unknown[][] = [];
+    const gateway = new LarkLongConnectionGateway('app', 'secret', {
+      client: {
+        im: {
+          v1: {
+            message: {
+              create: async (payload: { data: { receive_id: string; msg_type: string; content: string } }) => {
+                sent.push({
+                  receive_id: payload.data.receive_id,
+                  msg_type: payload.data.msg_type,
+                  content: payload.data.content,
+                });
+              },
+              reply: async () => {
+                throw new Error('reply rejected');
+              },
+            },
+          },
+        },
+      },
+      logger: {
+        error: (...args: unknown[]) => {
+          errors.push(args);
+        },
+      },
+    } as any);
+
+    await gateway.sendTextToTarget(
+      { chatId: 'oc_1', replyToMessageId: 'om_123', replyInThread: true },
+      'fallback text',
+    );
+
+    expect(errors).toContainEqual([
+      expect.stringContaining('feishu.reply_message_failed chat=oc_1 messageId=om_123 reason="reply rejected"'),
+    ]);
+    expect(sent).toEqual([
+      {
+        receive_id: 'oc_1',
+        msg_type: 'text',
+        content: JSON.stringify({ text: 'fallback text' }),
+      },
+    ]);
+  });
+
   it('does not send an empty reply payload back to Feishu', async () => {
     const harness = createGatewayHarness();
     await harness.gateway.start(async () => ({ text: '' }));
