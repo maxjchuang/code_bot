@@ -204,9 +204,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
 
           const incomingAction: FeishuIncomingCardAction = {
             chatId: originChatId,
-            // Treat origin-chat card actions conservatively as group chats until
-            // the gateway has an authoritative chat type on the event itself.
-            chatType: 'group',
+            chatType: parsedAction.chatType,
             userId,
             messageId: event?.context?.open_message_id ?? event?.open_message_id,
             action: parsedAction.action,

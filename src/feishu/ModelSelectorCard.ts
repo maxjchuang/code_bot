@@ -23,7 +23,7 @@ export function renderModelSelectorCard(
   input: RenderModelSelectorCardInput,
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
   const selectedModel = selectModel(input.models, input.current?.model, input.saved?.model);
-  const reasoningOptions = selectedModel?.supportedReasoningLevels ?? [];
+  const reasoningOptions = sharedReasoningOptions(input.models);
   const selectedReasoning = selectReasoning(reasoningOptions, [
     input.current?.reasoningEffort,
     input.saved?.reasoningEffort,
@@ -145,6 +145,18 @@ function selectModel(models: CodexModelInfo[], currentModel?: string, savedModel
     models.find((model) => model.slug === savedModel) ??
     models[0]
   );
+}
+
+function sharedReasoningOptions(models: CodexModelInfo[]): string[] {
+  const first = models[0]?.supportedReasoningLevels ?? [];
+  if (first.length === 0) {
+    return [];
+  }
+  return models.every((model) => sameValues(model.supportedReasoningLevels, first)) ? first : [];
+}
+
+function sameValues(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function selectReasoning(options: string[], preferredValues: Array<string | undefined>): string | undefined {

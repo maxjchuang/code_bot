@@ -704,7 +704,7 @@ describe('LarkLongConnectionGateway', () => {
     expect(onCardAction).toHaveBeenCalledTimes(1);
     expect(onCardAction).toHaveBeenCalledWith({
       chatId: 'oc_1',
-      chatType: 'group',
+      chatType: 'private',
       userId: 'ou_1',
       messageId: 'om_card_1',
       action: {
@@ -831,7 +831,7 @@ describe('LarkLongConnectionGateway', () => {
 
     expect(onCardAction).toHaveBeenCalledWith({
       chatId: 'oc_1',
-      chatType: 'group',
+      chatType: 'private',
       userId: 'ou_1',
       messageId: 'om_card_top_level',
       action: {

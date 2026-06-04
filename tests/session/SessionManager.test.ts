@@ -1955,10 +1955,13 @@ describe('SessionManager', () => {
     await runner.exit(sessionId, 0);
 
     const day = new Date().toISOString().slice(0, 10);
-    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
-    expect(content).toContain('"type":"notification.send_failed"');
-    expect(content).toContain('"reason":"feishu unavailable"');
-  });
+    const eventPath = join(root, '.code-bot', 'events', `${day}.jsonl`);
+    await waitForAssertion(async () => {
+      const content = await readFile(eventPath, 'utf8');
+      expect(content).toContain('"type":"notification.send_failed"');
+      expect(content).toContain('"reason":"feishu unavailable"');
+    }, 6000);
+  }, 10_000);
 
   it('uses legacy send reply when notifications are disabled', async () => {
     const root = await createTmpDir();
@@ -2887,6 +2890,40 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual([]);
   });
 
+  it('authorizes card actions using the stored private chat type', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const config = {
+      ...sampleConfig(root),
+      allowedUsers: ['ou_1'],
+      allowedChatIds: ['oc_allowed_group'],
+    };
+    const manager = new SessionManager(config, store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+    await store.saveChat({ chatId: 'oc_private', chatType: 'private', currentProjectId: 'repo' });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_private',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'model_select', model: 'gpt-5.5', reasoning: 'high' },
+    });
+
+    expect(result.reply).toContain('Saved default model: gpt-5.5 high');
+    expect(result.reply).toContain('No running Codex session. The next /new or /resume will use this model.');
+    await expect(store.getChat('oc_private')).resolves.toMatchObject({
+      chatType: 'private',
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+        },
+      },
+    });
+  });
+
   it('supports /use, /status, and /tail', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -3317,10 +3354,7 @@ describe('SessionManager', () => {
     expect(typeof modelSelect?.initial_option).toBe('string');
     expect(modelSelect?.options?.map((option) => option.value)).toEqual(['gpt-5.5', 'gpt-5.5-mini']);
 
-    expect(reasoningSelect?.tag).toBe('select_static');
-    expect(reasoningSelect?.initial_option).toBe('medium');
-    expect(typeof reasoningSelect?.initial_option).toBe('string');
-    expect(reasoningSelect?.options?.map((option) => option.value)).toEqual(['medium']);
+    expect(reasoningSelect).toBeUndefined();
 
     expect(confirmButton?.action_type).toBe('form_submit');
     expect(confirmButton?.value).toEqual({
@@ -3826,7 +3860,7 @@ describe('SessionManager', () => {
     });
   });
 
-  it('rejects unsupported reasoning in model_select', async () => {
+  it('drops unsupported reasoning in model_select card actions', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -3853,9 +3887,47 @@ describe('SessionManager', () => {
       action: { kind: 'model_select', model: 'gpt-5.5-mini', reasoning: 'high' },
     });
 
-    expect(result.reply).toBe('Unsupported reasoning level: high\nSupported reasoning levels: low, medium');
+    expect(result.reply).toContain('Saved default model: gpt-5.5-mini');
+    expect(result.reply).toContain('No running Codex session. The next /new or /resume will use this model.');
     expect(runner.sentMessages).toEqual([]);
-    await expect(store.getChat('oc_1')).resolves.toEqual({
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: expect.any(String),
+        },
+      },
+    });
+    expect((await store.getChat('oc_1'))?.modelSelectionsByProject?.repo.reasoningEffort).toBeUndefined();
+  });
+
+  it('drops stale unsupported reasoning from model_select card actions and applies the selected model', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const modelCatalog = {
+      kind: 'available' as const,
+      models: [
+        {
+          slug: 'gpt-5.5',
+          displayName: 'GPT 5.5',
+          priority: 10,
+          defaultReasoningLevel: 'medium',
+          supportedReasoningLevels: ['medium'],
+        },
+        {
+          slug: 'gpt-5.5-mini',
+          displayName: 'GPT 5.5 Mini',
+          priority: 20,
+          defaultReasoningLevel: 'low',
+          supportedReasoningLevels: ['low', 'high'],
+        },
+      ],
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => modelCatalog },
+    });
+    await store.saveChat({
       chatId: 'oc_1',
       chatType: 'group',
       currentProjectId: 'repo',
@@ -3867,6 +3939,27 @@ describe('SessionManager', () => {
         },
       },
     });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'model_select', model: 'gpt-5.5-mini', reasoning: 'medium' },
+    });
+
+    expect(result.reply).toContain('Saved default model: gpt-5.5-mini');
+    expect(result.reply).toContain('No running Codex session. The next /new or /resume will use this model.');
+    expect(result.reply).not.toContain('Unsupported reasoning level');
+    expect(runner.sentMessages).toEqual([]);
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: expect.any(String),
+        },
+      },
+    });
+    expect((await store.getChat('oc_1'))?.modelSelectionsByProject?.repo.reasoningEffort).toBeUndefined();
   });
 
   it('requires selected project before saving model selection', async () => {

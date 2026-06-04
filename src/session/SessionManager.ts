@@ -220,15 +220,18 @@ export class SessionManager {
   }
 
   private async handleCardActionQueued(input: FeishuIncomingCardAction): Promise<BotTextResult> {
-    if (!isAuthorizedMessage(this.config, { chatId: input.chatId, chatType: 'group', userId: input.userId })) {
+    const existingChat = await this.store.getChat(input.chatId);
+    const authoritativeChatType = existingChat?.chatType ?? input.chatType;
+    if (!isAuthorizedMessage(this.config, { chatId: input.chatId, chatType: authoritativeChatType, userId: input.userId })) {
       return { reply: 'Not authorized.' };
     }
+    const authorizedInput = { ...input, chatType: authoritativeChatType };
 
     switch (input.action.kind) {
       case 'model_select':
-        return this.selectModel(input.chatId, input.action);
+        return this.selectModel(input.chatId, input.action, { unsupportedReasoning: 'drop' });
       case 'project_select':
-        return this.selectProject(input, input.action);
+        return this.selectProject(authorizedInput, input.action);
       default:
         return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
@@ -809,7 +812,11 @@ export class SessionManager {
     });
   }
 
-  private async selectModel(chatId: string, action: ModelSelectCardAction): Promise<BotTextResult> {
+  private async selectModel(
+    chatId: string,
+    action: ModelSelectCardAction,
+    options: { unsupportedReasoning?: 'reject' | 'drop' } = {},
+  ): Promise<BotTextResult> {
     const catalog = await this.modelCatalog().read();
     if (catalog.kind === 'unavailable') {
       return { reply: catalog.message };
@@ -820,7 +827,11 @@ export class SessionManager {
       return { reply: `Unknown model: ${action.model}\nAvailable models: ${formatModelSlugs(catalog.models)}` };
     }
 
-    if (action.reasoning && !selected.supportedReasoningLevels.includes(action.reasoning)) {
+    const selectedReasoning =
+      action.reasoning && selected.supportedReasoningLevels.includes(action.reasoning)
+        ? action.reasoning
+        : undefined;
+    if (action.reasoning && !selectedReasoning && options.unsupportedReasoning !== 'drop') {
       return {
         reply: `Unsupported reasoning level: ${action.reasoning}\nSupported reasoning levels: ${formatReasoningLevels(selected)}`,
       };
@@ -831,14 +842,14 @@ export class SessionManager {
       return { reply: 'No project selected. Run /use <project> or /new <project> first.' };
     }
 
-    const savedModelText = action.reasoning ? `${selected.slug} ${action.reasoning}` : selected.slug;
+    const savedModelText = selectedReasoning ? `${selected.slug} ${selectedReasoning}` : selected.slug;
     await this.store.saveChat({
       ...chat,
       modelSelectionsByProject: {
         ...chat.modelSelectionsByProject,
         [chat.currentProjectId]: {
           model: selected.slug,
-          reasoningEffort: action.reasoning,
+          reasoningEffort: selectedReasoning,
           updatedAt: new Date().toISOString(),
         },
       },
@@ -851,7 +862,7 @@ export class SessionManager {
       return { reply: lines.join('\n') };
     }
 
-    const nativeCommand = action.reasoning ? `/model ${selected.slug} ${action.reasoning}` : `/model ${selected.slug}`;
+    const nativeCommand = selectedReasoning ? `/model ${selected.slug} ${selectedReasoning}` : `/model ${selected.slug}`;
     try {
       await this.runner.send(runningSession.id, nativeCommand);
       lines.push('Sent runtime switch to current Codex session. Use /status to confirm the observed model.');
