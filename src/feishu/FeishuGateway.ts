@@ -19,6 +19,8 @@ export interface FeishuIncomingMessage {
   botOpenIdResolved?: boolean;
 }
 
+export type FeishuReactionType = string;
+
 export interface FeishuReplyTarget {
   chatId: string;
   replyToMessageId?: string;
@@ -41,6 +43,7 @@ export interface FeishuGateway {
     target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void>;
+  addReaction?(messageId: string, emojiType: FeishuReactionType): Promise<void>;
 }
 
 export interface FeishuOutgoingReply {
@@ -89,7 +92,12 @@ interface LarkCardActionEvent {
 }
 
 interface LarkClientLike {
-  request?: (payload: { url: string; method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; [key: string]: unknown }) => Promise<unknown>;
+  request?: (payload: {
+    url: string;
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    data?: unknown;
+    [key: string]: unknown;
+  }) => Promise<unknown>;
   im: {
     v1: {
       message: {
@@ -375,6 +383,22 @@ export class LarkLongConnectionGateway implements FeishuGateway {
       });
       await this.sendOneToTarget(rendered.target, rendered.message.fallback);
     }
+  }
+
+  async addReaction(messageId: string, emojiType: FeishuReactionType): Promise<void> {
+    if (!this.client.request) {
+      throw new Error('Feishu reaction API is unavailable');
+    }
+
+    await this.client.request({
+      url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+      method: 'POST',
+      data: {
+        reaction_type: {
+          emoji_type: emojiType,
+        },
+      },
+    });
   }
 
   private async sendOneToTarget(target: FeishuReplyTarget, message: RenderedFeishuMessage): Promise<void> {

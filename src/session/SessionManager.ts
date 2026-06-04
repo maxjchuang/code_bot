@@ -23,7 +23,7 @@ import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } fr
 import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
-import type { FeishuReplyTarget } from '../feishu/FeishuGateway.js';
+import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
 import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
 
 export interface IncomingBotText {
@@ -59,6 +59,7 @@ export interface Notifier {
     target: FeishuReplyTarget,
     message: { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage },
   ): Promise<void>;
+  addReaction?(messageId: string, emojiType: FeishuReactionType): Promise<void>;
 }
 
 export interface ModelCatalogReader {
@@ -110,6 +111,7 @@ const DEFAULT_CODEX_STATUS_QUIET_MS = 75;
 const MAX_LIVE_STATUS_CHARS = 32_768;
 const MAX_PTY_DEBUG_BUFFER_CHARS = 16_384;
 const PTY_DEBUG_TRUNCATION_MARKER = '\n[debug pty output truncated: terminal redraw exceeded buffer limit]\n';
+const CODEX_PROCESSING_REACTION: FeishuReactionType = 'Get';
 
 interface PendingTurn {
   id: string;
@@ -731,6 +733,14 @@ export class SessionManager {
         }).catch(() => undefined),
       );
     }
+    if (notificationEnabled && followUpToActiveTurn) {
+      this.queueProcessingReaction({
+        messageId: input.messageId,
+        chatId: input.chatId,
+        sessionId: chat.currentSessionId,
+        projectId: session.projectId,
+      });
+    }
     if (notificationEnabled) {
       if (followUpToActiveTurn) {
         return { reply: this.isDebugUi() ? `补充消息已发送给 Codex。\nsession: ${chat.currentSessionId}` : '' };
@@ -740,6 +750,12 @@ export class SessionManager {
         if (!confirmation.confirmed) {
           return { reply: this.isDebugUi() ? `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` : '' };
         }
+        this.queueProcessingReaction({
+          messageId: input.messageId,
+          chatId: input.chatId,
+          sessionId: chat.currentSessionId,
+          projectId: session.projectId,
+        });
       }
       return { reply: this.isDebugUi() ? `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` : '' };
     }
@@ -1924,6 +1940,74 @@ export class SessionManager {
       return;
     }
     this.pendingTurns.delete(sessionId);
+  }
+
+  private queueProcessingReaction(input: {
+    messageId?: string;
+    chatId: string;
+    sessionId: string;
+    projectId: string;
+  }): void {
+    if (!input.messageId || !this.deps.notifier?.addReaction) {
+      return;
+    }
+
+    void this.addProcessingReaction(input).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error('feishu.reaction_failed', {
+        chat: input.chatId,
+        session: input.sessionId,
+        messageId: input.messageId,
+        emojiType: CODEX_PROCESSING_REACTION,
+        reason: message,
+      });
+    });
+  }
+
+  private async addProcessingReaction(input: {
+    messageId?: string;
+    chatId: string;
+    sessionId: string;
+    projectId: string;
+  }): Promise<void> {
+    if (!input.messageId || !this.deps.notifier?.addReaction) {
+      return;
+    }
+
+    try {
+      await this.deps.notifier.addReaction(input.messageId, CODEX_PROCESSING_REACTION);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.store
+        .appendEvent({
+          type: 'feishu.reaction_failed',
+          at: new Date().toISOString(),
+          data: {
+            messageId: input.messageId,
+            chatId: input.chatId,
+            sessionId: input.sessionId,
+            projectId: input.projectId,
+            emojiType: CODEX_PROCESSING_REACTION,
+            reason: message,
+          },
+        })
+        .catch((persistError) =>
+          this.recordBackgroundError('feishu.reaction_failed_persist_failed', persistError, {
+            messageId: input.messageId,
+            chatId: input.chatId,
+            sessionId: input.sessionId,
+            projectId: input.projectId,
+            emojiType: CODEX_PROCESSING_REACTION,
+          }).catch(() => undefined),
+        );
+      this.logger.error('feishu.reaction_failed', {
+        chat: input.chatId,
+        session: input.sessionId,
+        messageId: input.messageId,
+        emojiType: CODEX_PROCESSING_REACTION,
+        reason: message,
+      });
+    }
   }
 
   private async recordBackgroundError(type: string, error: unknown, data: Record<string, unknown>): Promise<void> {
