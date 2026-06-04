@@ -3146,7 +3146,65 @@ describe('SessionManager', () => {
     expect(result.reply).toBe('Usage: /model [model] [reasoning]');
   });
 
-  it('returns a placeholder reply for a valid model selection', async () => {
+  it('saves model selection without running session', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const manager = new SessionManager(sampleConfig(root), store, runner, {
+        modelCatalog: { read: async () => sampleModelCatalog },
+      });
+      await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+      vi.setSystemTime(new Date('2026-06-04T01:02:03.000Z'));
+
+      const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model gpt-5.5 high' });
+
+      expect(result.reply).toContain('Saved default model: gpt-5.5 high');
+      expect(result.reply).toContain('No running Codex session. The next /new or /resume will use this model.');
+      expect(runner.sentMessages).toEqual([]);
+      await expect(store.getChat('oc_1')).resolves.toMatchObject({
+        modelSelectionsByProject: {
+          repo: {
+            model: 'gpt-5.5',
+            reasoningEffort: 'high',
+            updatedAt: '2026-06-04T01:02:03.000Z',
+          },
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('saves model selection and sends runtime switch to running session', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model gpt-5.5 high' });
+
+    expect(result.reply).toContain('Saved default model: gpt-5.5 high');
+    expect(result.reply).toContain('Sent runtime switch to current Codex session. Use /status to confirm the observed model.');
+    expect(runner.sentMessages).toEqual(['/model gpt-5.5 high']);
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      currentSessionId: sessionId,
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          updatedAt: expect.any(String),
+        },
+      },
+    });
+  });
+
+  it('requires selected project before saving model selection', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -3156,7 +3214,35 @@ describe('SessionManager', () => {
 
     const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model gpt-5.5 high' });
 
-    expect(result.reply).toBe('Selected model: gpt-5.5 (reasoning: high)');
+    expect(result.reply).toBe('No project selected. Run /use <project> or /new <project> first.');
+    expect(await store.getChat('oc_1')).toBeUndefined();
+    expect(runner.sentMessages).toEqual([]);
+  });
+
+  it('keeps saved default when runtime switch fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      modelCatalog: { read: async () => sampleModelCatalog },
+    });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    runner.dropSession(sessionId);
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/model gpt-5.5-mini' });
+
+    expect(result.reply).toContain('Saved default model: gpt-5.5-mini');
+    expect(result.reply).toContain(`Runtime switch failed: Unknown fake session: ${sessionId}`);
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      modelSelectionsByProject: {
+        repo: {
+          model: 'gpt-5.5-mini',
+          updatedAt: expect.any(String),
+        },
+      },
+    });
+    expect((await store.getChat('oc_1'))?.modelSelectionsByProject?.repo.reasoningEffort).toBeUndefined();
   });
 
   it('returns a custom rendered markdown reply for /status', async () => {

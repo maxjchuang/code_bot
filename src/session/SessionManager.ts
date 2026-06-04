@@ -734,11 +734,40 @@ export class SessionManager {
       };
     }
 
-    return {
-      reply: requestedReasoning
-        ? `Selected model: ${selected.slug} (reasoning: ${requestedReasoning})`
-        : `Selected model: ${selected.slug}`,
-    };
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentProjectId) {
+      return { reply: 'No project selected. Run /use <project> or /new <project> first.' };
+    }
+
+    const savedModelText = requestedReasoning ? `${selected.slug} ${requestedReasoning}` : selected.slug;
+    await this.store.saveChat({
+      ...chat,
+      modelSelectionsByProject: {
+        ...chat.modelSelectionsByProject,
+        [chat.currentProjectId]: {
+          model: selected.slug,
+          reasoningEffort: requestedReasoning,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    const runningSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    const lines = [`Saved default model: ${savedModelText}`];
+    if (!runningSession || !isActiveSession(runningSession)) {
+      lines.push('No running Codex session. The next /new or /resume will use this model.');
+      return { reply: lines.join('\n') };
+    }
+
+    const nativeCommand = requestedReasoning ? `/model ${selected.slug} ${requestedReasoning}` : `/model ${selected.slug}`;
+    try {
+      await this.runner.send(runningSession.id, nativeCommand);
+      lines.push('Sent runtime switch to current Codex session. Use /status to confirm the observed model.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lines.push(`Runtime switch failed: ${message}`);
+    }
+    return { reply: lines.join('\n') };
   }
 
   private async formatModelCatalog(chatId: string, catalog: Extract<CodexModelCatalog, { kind: 'available' }>): Promise<string> {
