@@ -1876,7 +1876,10 @@ describe('SessionManager', () => {
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
-    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+    });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
@@ -1904,7 +1907,10 @@ describe('SessionManager', () => {
     const store = new ObservingStore(root);
     const runner = new FakeCodexRunner();
     const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
-    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+    });
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
