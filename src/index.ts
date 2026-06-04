@@ -85,6 +85,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
       chat: message.chatId,
       type: message.chatType,
       messageId: message.messageId,
+      threadId: message.threadId,
       text: message.text,
     });
     const receivedAt = new Date().toISOString();
@@ -96,6 +97,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
         chatType: message.chatType,
         userId: message.userId,
         messageId: message.messageId,
+        threadId: message.threadId,
         text: message.text,
         wasMentioned: message.wasMentioned,
         mentionsOpenIds: message.mentionsOpenIds,

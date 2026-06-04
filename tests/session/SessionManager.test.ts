@@ -417,6 +417,32 @@ describe('SessionManager', () => {
     expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining(redraw));
   });
 
+  it('logs the debug PTY truncation marker only once for repeated terminal redraw bursts', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { logger, logLevel: 'debug' });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const redraw = '\u001b[?2026h\u001b[35;1H•Working\u001b[35;1H'.repeat(10_000);
+
+    await runner.emitOutput(sessionId, redraw);
+    await runner.emitOutput(sessionId, redraw);
+
+    const truncationLogs = logger.info.mock.calls.filter(([message]) =>
+      message.includes('[debug pty output truncated: terminal redraw exceeded buffer limit]'),
+    );
+    expect(truncationLogs).toHaveLength(1);
+  });
+
   it('does not log PTY output to the console outside debug mode', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -1491,6 +1517,7 @@ describe('SessionManager', () => {
       chatType: 'group',
       userId: 'ou_1',
       messageId: 'om_original_1',
+      threadId: 'omt_original_1',
       text: 'run tests',
       wasMentioned: true,
     });
@@ -1514,6 +1541,52 @@ describe('SessionManager', () => {
     );
     expect(notifier.sendRenderedMessage).not.toHaveBeenCalled();
     expect(notifier.sendText).not.toHaveBeenCalled();
+  });
+
+  it('does not use topic replies for private completion notification targets', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessage: vi.fn().mockResolvedValue(undefined),
+      sendRenderedMessageToTarget: vi.fn().mockResolvedValue(undefined),
+    };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier: notifier as any,
+      codexObservationStore: observationStore,
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'private', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    const codexSessionId = '019e86b4-12ed-7731-9639-c128626a4013';
+    await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'private',
+      userId: 'ou_1',
+      messageId: 'om_private_1',
+      text: 'run tests',
+    });
+
+    observationStore.snapshots.set(codexSessionId, {
+      availability: { kind: 'ready' },
+      codexSessionId,
+      status: 'completed',
+      finalAnswer: '**done**',
+      completedAt: '2099-01-01T00:00:00.000Z',
+      recentToolEvents: [],
+    });
+
+    await runner.emitOutput(sessionId, 'tick\n');
+
+    await waitForAssertion(() => expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledTimes(1));
+    const rendered = notifier.sendRenderedMessageToTarget.mock.calls[0][1];
+    expect(notifier.sendRenderedMessageToTarget).toHaveBeenCalledWith(
+      { chatId: 'oc_1', replyToMessageId: 'om_private_1', replyInThread: undefined, mentionUserId: undefined },
+      rendered,
+    );
   });
 
   it('preserves the original group trigger mention target for pending turn completion despite follow-ups', async () => {
@@ -1546,6 +1619,7 @@ describe('SessionManager', () => {
       chatType: 'group',
       userId: 'ou_original',
       messageId: 'om_original_1',
+      threadId: 'omt_original_1',
       text: 'run tests',
       wasMentioned: true,
     });
@@ -1607,6 +1681,7 @@ describe('SessionManager', () => {
       chatType: 'group',
       userId: 'ou_1',
       messageId: 'om_original_1',
+      threadId: 'omt_original_1',
       text: 'run tests',
       wasMentioned: true,
     });
@@ -1650,6 +1725,7 @@ describe('SessionManager', () => {
       chatType: 'group',
       userId: 'ou_1',
       messageId: 'om_original_1',
+      threadId: 'omt_original_1',
       text: 'run tests',
       wasMentioned: true,
     });

@@ -12,6 +12,7 @@ export interface FeishuIncomingMessage {
   chatType: ChatType;
   userId: string;
   messageId?: string;
+  threadId?: string;
   text: string;
   wasMentioned?: boolean;
   mentionsOpenIds?: string[];
@@ -50,6 +51,7 @@ export interface FeishuOutgoingReply {
 interface LarkReceiveMessageEvent {
   message?: {
     message_id?: string;
+    thread_id?: string;
     chat_id?: string;
     chat_type?: string;
     message_type?: string;
@@ -72,6 +74,7 @@ interface LarkCardActionEvent {
     context?: {
       open_chat_id?: string;
       open_message_id?: string;
+      open_thread_id?: string;
     };
     open_chat_id?: string;
     open_message_id?: string;
@@ -173,6 +176,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             chatType: message.chat_type === 'group' ? 'group' : 'private',
             userId: sender.open_id,
             messageId: message.message_id,
+            ...(message.thread_id ? { threadId: message.thread_id } : {}),
             text,
             wasMentioned: message.chat_type === 'group' ? this.isMentioningBot(message) : false,
             mentionsOpenIds: message.mentions?.flatMap((mention) => (mention.id?.open_id ? [mention.id.open_id] : [])) ?? [],
@@ -223,6 +227,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             chatType: parsedAction.chatType,
             userId,
             messageId: event?.context?.open_message_id ?? event?.open_message_id,
+            ...(event?.context?.open_thread_id ? { threadId: event.context.open_thread_id } : {}),
             action: parsedAction.action,
           };
 
@@ -330,7 +335,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
     return {
       chatId,
       replyToMessageId: message.messageId,
-      replyInThread: message.messageId ? true : undefined,
+      replyInThread: message.chatType === 'group' && message.threadId ? true : undefined,
       mentionUserId: message.chatType === 'group' ? message.userId : undefined,
     };
   }
