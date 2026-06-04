@@ -1778,8 +1778,11 @@ function removeModelSelectionArgs(codexArgs: string[]): string[] {
       index += 1;
       continue;
     }
-    if (arg === '--config' && isModelConfigArg(codexArgs[index + 1])) {
+    if (arg === '--config' && isSavedModelConfigArg(codexArgs[index + 1])) {
       index += 1;
+      continue;
+    }
+    if (isInlineSavedModelConfigArg(arg)) {
       continue;
     }
     args.push(arg);
@@ -1793,6 +1796,24 @@ function isSavedModelConfigArg(arg: string | undefined): boolean {
 
 function isModelConfigArg(arg: string | undefined): boolean {
   return arg?.startsWith('model=') ?? false;
+}
+
+function isInlineSavedModelConfigArg(arg: string): boolean {
+  const configValue = inlineConfigValue(arg);
+  return configValue ? isSavedModelConfigArg(configValue) : false;
+}
+
+function inlineConfigValue(arg: string): string | undefined {
+  if (arg.startsWith('--config=')) {
+    return arg.slice('--config='.length);
+  }
+  if (arg.startsWith('-c=')) {
+    return arg.slice('-c='.length);
+  }
+  if (arg.startsWith('-c')) {
+    return arg.slice('-c'.length);
+  }
+  return undefined;
 }
 
 function isValidSessionTarget(target: string): boolean {
