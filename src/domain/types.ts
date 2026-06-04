@@ -24,6 +24,14 @@ export interface NotificationConfig {
   failureTailChars: number;
 }
 
+export interface UpgradeConfig {
+  enabled: boolean;
+  adminUsers: string[];
+  pm2ProcessName: string;
+  remote: string;
+  branch: string;
+}
+
 export interface BotConfig {
   feishu: {
     appId: string;
@@ -47,6 +55,7 @@ export interface BotConfig {
     verbosity: 'normal' | 'debug';
   };
   notifications: NotificationConfig;
+  upgrade: UpgradeConfig;
 }
 
 export interface ChatContext {

@@ -125,6 +125,58 @@ describe('loadConfig', () => {
     });
   });
 
+  it('defaults upgrade config to disabled with safe defaults', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig());
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      upgrade: {
+        enabled: false,
+        adminUsers: [],
+        pm2ProcessName: 'code-bot',
+        remote: 'origin',
+        branch: 'main',
+      },
+    });
+  });
+
+  it('loads explicit upgrade config', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({
+      upgrade: {
+        enabled: true,
+        adminUsers: ['ou_admin_1'],
+        pm2ProcessName: 'code-bot-prod',
+        remote: 'upstream',
+        branch: 'develop',
+      },
+    }));
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      upgrade: {
+        enabled: true,
+        adminUsers: ['ou_admin_1'],
+        pm2ProcessName: 'code-bot-prod',
+        remote: 'upstream',
+        branch: 'develop',
+      },
+    });
+  });
+
+  it('rejects enabled upgrade config without admin users', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ upgrade: { enabled: true } }));
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config field: upgrade.adminUsers');
+  });
+
+  it('rejects malformed upgrade container', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ upgrade: true }));
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config field: upgrade');
+  });
+
   it('defaults user and chat restrictions to disabled when omitted', async () => {
     const root = await createTmpDir();
     await writeConfig(root, {

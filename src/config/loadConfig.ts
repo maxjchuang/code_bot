@@ -24,6 +24,13 @@ function optionalStringArray(value: unknown, field: string): string[] {
   return requireStringArray(value, field);
 }
 
+function optionalString(value: unknown, defaultValue: string, field: string): string {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  return requireString(value, field);
+}
+
 function requirePositiveNumber(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new Error(`Invalid config field: ${field}`);
@@ -96,6 +103,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
   const codex = record.codex as Record<string, unknown> | undefined;
   const ui = optionalRecord(record.ui, 'ui');
   const notifications = optionalRecord(record.notifications, 'notifications');
+  const upgrade = optionalRecord(record.upgrade, 'upgrade');
   if (!feishu || !output || !codex || !Array.isArray(record.projects)) {
     throw new Error('Invalid config structure');
   }
@@ -137,6 +145,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
       maxFinalChars: optionalPositiveNumber(notifications.maxFinalChars, 8000, 'notifications.maxFinalChars'),
       failureTailChars: optionalPositiveNumber(notifications.failureTailChars, 2000, 'notifications.failureTailChars'),
     },
+    upgrade: normalizeUpgrade(upgrade),
   };
 }
 
@@ -145,4 +154,18 @@ function requireUiVerbosity(value: unknown, field: string): 'normal' | 'debug' {
     return value;
   }
   throw new Error(`Invalid config field: ${field}`);
+}
+
+function normalizeUpgrade(value: Record<string, unknown>): BotConfig['upgrade'] {
+  const upgrade = {
+    enabled: optionalBoolean(value.enabled, false, 'upgrade.enabled'),
+    adminUsers: optionalStringArray(value.adminUsers, 'upgrade.adminUsers'),
+    pm2ProcessName: optionalString(value.pm2ProcessName, 'code-bot', 'upgrade.pm2ProcessName'),
+    remote: optionalString(value.remote, 'origin', 'upgrade.remote'),
+    branch: optionalString(value.branch, 'main', 'upgrade.branch'),
+  };
+  if (upgrade.enabled && upgrade.adminUsers.length === 0) {
+    throw new Error('Invalid config field: upgrade.adminUsers');
+  }
+  return upgrade;
 }

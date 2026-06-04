@@ -30,5 +30,12 @@
     "command": "codex",
     "defaultArgs": []
   },
+  "upgrade": {
+    "enabled": false,
+    "adminUsers": [],
+    "pm2ProcessName": "code-bot",
+    "remote": "origin",
+    "branch": "main"
+  },
   "logLevel": "info"
 }
