@@ -72,23 +72,25 @@ interface LarkReceiveMessageEvent {
   };
 }
 
-interface LarkCardActionEvent {
-  event?: {
-    context?: {
-      open_chat_id?: string;
-      open_message_id?: string;
-      open_thread_id?: string;
-    };
+interface LarkCardActionPayload {
+  context?: {
     open_chat_id?: string;
     open_message_id?: string;
-    operator?: {
-      open_id?: string;
-    };
-    action?: {
-      value?: unknown;
-      form_value?: unknown;
-    };
+    open_thread_id?: string;
   };
+  open_chat_id?: string;
+  open_message_id?: string;
+  operator?: {
+    open_id?: string;
+  };
+  action?: {
+    value?: unknown;
+    form_value?: unknown;
+  };
+}
+
+interface LarkCardActionEvent extends LarkCardActionPayload {
+  event?: LarkCardActionPayload;
 }
 
 interface LarkClientLike {
@@ -211,7 +213,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
             return;
           }
 
-          const event = data.event;
+          const event = data.event ?? data;
           const userId = event?.operator?.open_id;
           if (!userId) {
             return;
