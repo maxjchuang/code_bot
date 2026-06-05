@@ -61,4 +61,12 @@ describe('TerminalScreenBuffer', () => {
     expect(text).not.toContain('old line');
     expect(snapshot.truncated).toBe(true);
   });
+
+  it('throws a clear wrapper error when synchronous xterm write is unavailable', () => {
+    const buffer = new TerminalScreenBuffer(config);
+    const internals = buffer as unknown as { terminal: { _core?: unknown } };
+    internals.terminal._core = undefined;
+
+    expect(() => buffer.write('text')).toThrow('Synchronous xterm write API is unavailable');
+  });
 });

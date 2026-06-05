@@ -36,12 +36,6 @@ interface HeadlessModule {
   }) => XtermTerminal;
 }
 
-interface SyncWritableTerminal extends XtermTerminal {
-  _core: {
-    writeSync(data: string | Uint8Array): void;
-  };
-}
-
 interface BoundedReplayInput {
   text: string;
   truncated: boolean;
@@ -51,14 +45,14 @@ const require = createRequire(import.meta.url);
 const { Terminal } = require('@xterm/headless') as HeadlessModule;
 
 export class TerminalScreenBuffer {
-  private terminal: SyncWritableTerminal;
+  private terminal: XtermTerminal;
 
   constructor(private readonly config: TerminalSnapshotConfig) {
     this.terminal = this.createTerminal();
   }
 
   write(chunk: string): void {
-    this.terminal._core.writeSync(chunk);
+    writeSyncToTerminal(this.terminal, chunk);
   }
 
   snapshot(source: TerminalSnapshot['source'] = 'live', notes: string[] = []): TerminalSnapshot {
@@ -77,7 +71,7 @@ export class TerminalScreenBuffer {
     );
   }
 
-  private createTerminal(): SyncWritableTerminal {
+  private createTerminal(): XtermTerminal {
     return new Terminal({
       allowProposedApi: true,
       cols: this.config.cols,
@@ -85,7 +79,7 @@ export class TerminalScreenBuffer {
       logLevel: 'off',
       rows: this.config.rows,
       scrollback: this.config.scrollback,
-    }) as SyncWritableTerminal;
+    });
   }
 
   private createSnapshot(source: TerminalSnapshot['source'], truncated: boolean, notes: string[]): TerminalSnapshot {
@@ -111,6 +105,17 @@ export class TerminalScreenBuffer {
 
 export function replayTerminalSnapshot(input: string | string[], config: TerminalSnapshotConfig): TerminalSnapshot {
   return new TerminalScreenBuffer(config).resetAndReplay(input);
+}
+
+function writeSyncToTerminal(terminal: XtermTerminal, chunk: string): void {
+  const maybeTerminal = terminal as unknown as { _core?: { writeSync?: unknown } };
+  const writeSync = maybeTerminal._core?.writeSync;
+
+  if (typeof writeSync !== 'function') {
+    throw new Error('Synchronous xterm write API is unavailable');
+  }
+
+  writeSync.call(maybeTerminal._core, chunk);
 }
 
 function extractRow(
