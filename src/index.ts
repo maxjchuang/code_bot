@@ -213,7 +213,22 @@ async function main(): Promise<void> {
   await bootstrap();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export function isDirectEntrypoint(input: {
+  argv1?: string;
+  moduleUrl: string;
+  forceMain?: string;
+}): boolean {
+  if (input.forceMain === '1' || input.forceMain === 'true') {
+    return true;
+  }
+  return Boolean(input.argv1 && input.moduleUrl === pathToFileURL(input.argv1).href);
+}
+
+if (isDirectEntrypoint({
+  argv1: process.argv[1],
+  moduleUrl: import.meta.url,
+  forceMain: process.env.CODE_BOT_FORCE_MAIN,
+})) {
   main().catch((error: unknown) => {
     console.error(error);
     process.exitCode = 1;

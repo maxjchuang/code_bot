@@ -733,8 +733,8 @@ export class SessionManager {
         }).catch(() => undefined),
       );
     }
-    if (notificationEnabled && followUpToActiveTurn) {
-      this.queueProcessingReaction({
+    if (notificationEnabled) {
+      await this.queueProcessingReaction({
         messageId: input.messageId,
         chatId: input.chatId,
         sessionId: chat.currentSessionId,
@@ -750,12 +750,6 @@ export class SessionManager {
         if (!confirmation.confirmed) {
           return { reply: this.isDebugUi() ? `消息已写入会话，但 3 秒内尚未确认 Codex 开始处理。可稍后用 /tail 查看。\nsession: ${chat.currentSessionId}` : '' };
         }
-        this.queueProcessingReaction({
-          messageId: input.messageId,
-          chatId: input.chatId,
-          sessionId: chat.currentSessionId,
-          projectId: session.projectId,
-        });
       }
       return { reply: this.isDebugUi() ? `已发送给 Codex，完成后我会主动通知你。\nsession: ${chat.currentSessionId}` : '' };
     }
@@ -1942,16 +1936,47 @@ export class SessionManager {
     this.pendingTurns.delete(sessionId);
   }
 
-  private queueProcessingReaction(input: {
+  private async queueProcessingReaction(input: {
     messageId?: string;
     chatId: string;
     sessionId: string;
     projectId: string;
-  }): void {
-    if (!input.messageId || !this.deps.notifier?.addReaction) {
+  }): Promise<void> {
+    const baseData = {
+      messageId: input.messageId,
+      chatId: input.chatId,
+      sessionId: input.sessionId,
+      projectId: input.projectId,
+      emojiType: CODEX_PROCESSING_REACTION,
+    };
+    if (!input.messageId) {
+      await this.store.appendEvent({
+        type: 'feishu.reaction_skipped',
+        at: new Date().toISOString(),
+        data: { ...baseData, reason: 'missing_message_id' },
+      }).catch((error) =>
+        this.recordBackgroundError('feishu.reaction_skipped_persist_failed', error, baseData).catch(() => undefined),
+      );
+      return;
+    }
+    if (!this.deps.notifier?.addReaction) {
+      await this.store.appendEvent({
+        type: 'feishu.reaction_skipped',
+        at: new Date().toISOString(),
+        data: { ...baseData, reason: 'notifier_reaction_unavailable' },
+      }).catch((error) =>
+        this.recordBackgroundError('feishu.reaction_skipped_persist_failed', error, baseData).catch(() => undefined),
+      );
       return;
     }
 
+    await this.store.appendEvent({
+      type: 'feishu.reaction_queued',
+      at: new Date().toISOString(),
+      data: baseData,
+    }).catch((error) =>
+      this.recordBackgroundError('feishu.reaction_queued_persist_failed', error, baseData).catch(() => undefined),
+    );
     void this.addProcessingReaction(input).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error('feishu.reaction_failed', {
@@ -1976,6 +2001,25 @@ export class SessionManager {
 
     try {
       await this.deps.notifier.addReaction(input.messageId, CODEX_PROCESSING_REACTION);
+      await this.store.appendEvent({
+        type: 'feishu.reaction_added',
+        at: new Date().toISOString(),
+        data: {
+          messageId: input.messageId,
+          chatId: input.chatId,
+          sessionId: input.sessionId,
+          projectId: input.projectId,
+          emojiType: CODEX_PROCESSING_REACTION,
+        },
+      }).catch((persistError) =>
+        this.recordBackgroundError('feishu.reaction_added_persist_failed', persistError, {
+          messageId: input.messageId,
+          chatId: input.chatId,
+          sessionId: input.sessionId,
+          projectId: input.projectId,
+          emojiType: CODEX_PROCESSING_REACTION,
+        }).catch(() => undefined),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.store

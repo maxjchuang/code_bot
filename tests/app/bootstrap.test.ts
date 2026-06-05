@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { bootstrap } from '../../src/index.js';
+import { bootstrap, isDirectEntrypoint } from '../../src/index.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import type { BotConfig } from '../../src/domain/types.js';
 import type { FeishuIncomingMessage } from '../../src/feishu/FeishuGateway.js';
@@ -36,6 +36,58 @@ const gatewayTargetMethods = {
 };
 
 describe('bootstrap', () => {
+  it('does not treat PM2 environment alone as direct execution', () => {
+    expect(isDirectEntrypoint({
+      argv1: '/app/node_modules/tinypool/dist/entry/process.js',
+      moduleUrl: 'file:///app/dist/index.js',
+      forceMain: undefined,
+    })).toBe(false);
+    expect(isDirectEntrypoint({
+      argv1: '/app/dist/index.js',
+      moduleUrl: 'file:///app/dist/index.js',
+      forceMain: undefined,
+    })).toBe(true);
+    expect(isDirectEntrypoint({
+      argv1: '/app/node_modules/pm2/lib/ProcessContainerFork.js',
+      moduleUrl: 'file:///app/dist/index.js',
+      forceMain: '1',
+    })).toBe(true);
+  });
+
+  it('does not write startup probe logs directly to console during bootstrap', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const gatewayStart = vi.fn(async () => undefined);
+    const createGateway = vi.fn(() => ({
+      start: gatewayStart,
+      sendText: async () => undefined,
+      sendRenderedMessage: async () => undefined,
+      ...gatewayTargetMethods,
+    }));
+
+    let error: unknown;
+    try {
+      await bootstrap({
+        projectRoot: root,
+        loadConfig: async () => config,
+        createStore: () => store,
+        createCodexRunner: () => ({ healthCheck: async () => ({ ok: true }), start: async () => undefined, send: async () => undefined, stop: async () => undefined }),
+        createGateway,
+        logger: { info: vi.fn(), error: vi.fn() },
+      });
+      expect(consoleLog).not.toHaveBeenCalled();
+      expect(gatewayStart).toHaveBeenCalledOnce();
+    } catch (caught) {
+      error = caught;
+    } finally {
+      consoleLog.mockRestore();
+    }
+    if (error) {
+      throw error;
+    }
+  });
+
   it('records health check failure and still starts gateway', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
