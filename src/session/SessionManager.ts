@@ -1090,9 +1090,13 @@ export class SessionManager {
   }
 
   private async currentSnapshot(sessionId: string): Promise<TerminalSnapshot> {
-    const live = this.terminalObserver.snapshot(sessionId);
-    if (live) {
-      return live;
+    try {
+      const live = this.terminalObserver.snapshot(sessionId);
+      if (live) {
+        return live;
+      }
+    } catch (error) {
+      await this.recordBackgroundError('session.terminal_observer_snapshot_failed', error, { sessionId }).catch(() => undefined);
     }
 
     const raw = await this.store.tailSessionLogBytes(sessionId, this.config.output.terminalSnapshot.replayMaxBytes);

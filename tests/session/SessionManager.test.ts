@@ -5011,6 +5011,31 @@ describe('SessionManager', () => {
     expect(JSON.stringify(result.renderedReply?.preferred)).not.toContain('replay');
   });
 
+  it('falls back to replay when the live /current snapshot read fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await runner.emitOutput(sessionId, 'persisted replay after snapshot failure\n');
+    const observer = (manager as unknown as { terminalObserver: { snapshot: (sessionId: string) => unknown } }).terminalObserver;
+    vi.spyOn(observer, 'snapshot').mockImplementation(() => {
+      throw new Error('snapshot unavailable');
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('persisted replay after snapshot failure');
+    expect(result.reply).toContain('Source: replay');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"session.terminal_observer_snapshot_failed"');
+    expect(content).toContain(`"sessionId":"${sessionId}"`);
+  });
+
   it('includes /current in help', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
