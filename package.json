@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.49.0",
+    "@xterm/headless": "^6.0.0",
     "node-pty": "1.0.0"
   },
   "devDependencies": {

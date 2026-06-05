@@ -24,7 +24,16 @@
   ],
   "output": {
     "directMaxChars": 1800,
-    "chunkSize": 1500
+    "chunkSize": 1500,
+    "terminalSnapshot": {
+      "cols": 120,
+      "rows": 40,
+      "scrollback": 200,
+      "replayMaxBytes": 262144,
+      "cardMaxRows": 40,
+      "cardMaxLineChars": 160,
+      "maxStyledSegmentsPerLine": 8
+    }
   },
   "codex": {
     "command": "codex",

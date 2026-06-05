@@ -32,6 +32,16 @@ export interface UpgradeConfig {
   branch: string;
 }
 
+export interface TerminalSnapshotConfig {
+  cols: number;
+  rows: number;
+  scrollback: number;
+  replayMaxBytes: number;
+  cardMaxRows: number;
+  cardMaxLineChars: number;
+  maxStyledSegmentsPerLine: number;
+}
+
 export interface BotConfig {
   feishu: {
     appId: string;
@@ -45,6 +55,7 @@ export interface BotConfig {
   output: {
     directMaxChars: number;
     chunkSize: number;
+    terminalSnapshot: TerminalSnapshotConfig;
   };
   codex: {
     command: string;
