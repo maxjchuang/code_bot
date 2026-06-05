@@ -15,6 +15,19 @@ type ReceiveHandler = (data: {
 }) => Promise<void>;
 
 type CardActionHandler = (data: {
+  context?: {
+    open_chat_id?: string;
+    open_message_id?: string;
+  };
+  open_chat_id?: string;
+  open_message_id?: string;
+  operator?: {
+    open_id?: string;
+  };
+  action?: {
+    value?: unknown;
+    form_value?: unknown;
+  };
   event?: {
     context?: {
       open_chat_id?: string;
@@ -1121,6 +1134,45 @@ describe('LarkLongConnectionGateway', () => {
         reply_in_thread: undefined,
       },
     ]);
+  });
+
+  it('routes top-level SDK card action payloads to onCardAction', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'project updated' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await harness.getCardActionHandler()({
+      context: {
+        open_chat_id: 'oc_1',
+        open_message_id: 'om_card_1',
+      },
+      operator: {
+        open_id: 'ou_1',
+      },
+      action: {
+        value: {
+          kind: 'project_select',
+          chatId: 'oc_1',
+          chatType: 'group',
+        },
+        form_value: {
+          projectId: 'repo2',
+        },
+      },
+    });
+
+    expect(onCardAction).toHaveBeenCalledTimes(1);
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_card_1',
+      action: {
+        kind: 'project_select',
+        projectId: 'repo2',
+      },
+    });
   });
 
   it('ignores card actions when origin chat differs from embedded payload chat', async () => {
