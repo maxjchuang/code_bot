@@ -486,12 +486,7 @@ export class SessionManager {
         args: codexArgs,
         mode: options.mode,
         onOutput: (text) => {
-          try {
-            this.terminalObserver.write(sessionId, text);
-          } catch (error) {
-            void this.recordBackgroundError('session.terminal_observer_write_failed', error, { sessionId }).catch(() => undefined);
-          }
-          return this.appendSessionOutput(sessionId, text).catch((error) =>
+          return this.recordSessionOutput(sessionId, text).catch((error) =>
             this.recordBackgroundError('session.output_persist_failed', error, { sessionId }),
           );
         },
@@ -1322,6 +1317,15 @@ export class SessionManager {
   }
 
   async handleRunnerOutput(sessionId: string, text: string): Promise<void> {
+    await this.recordSessionOutput(sessionId, text);
+  }
+
+  private async recordSessionOutput(sessionId: string, text: string): Promise<void> {
+    try {
+      this.terminalObserver.write(sessionId, text);
+    } catch (error) {
+      void this.recordBackgroundError('session.terminal_observer_write_failed', error, { sessionId }).catch(() => undefined);
+    }
     await this.appendSessionOutput(sessionId, text);
   }
 

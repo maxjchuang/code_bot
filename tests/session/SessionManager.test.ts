@@ -4993,6 +4993,24 @@ describe('SessionManager', () => {
     expect(JSON.stringify(result.renderedReply?.preferred)).toContain('replay');
   });
 
+  it('keeps /current live when recovered session output arrives through handleRunnerOutput', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await manager.handleRunnerOutput(sessionId, 'recovered live screen\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('recovered live screen');
+    expect(result.reply).toContain('Source: live');
+    expect(JSON.stringify(result.renderedReply?.preferred)).toContain('live');
+    expect(JSON.stringify(result.renderedReply?.preferred)).not.toContain('replay');
+  });
+
   it('includes /current in help', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
