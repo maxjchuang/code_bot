@@ -96,21 +96,20 @@ export async function recoverStartupState(
     });
   }
 
-  if (recoveredSessions.size === 0) {
-    return;
-  }
-
   const chats = await store.listChats();
   for (const chat of chats) {
-    if (chat.currentSessionId && recoveredSessions.has(chat.currentSessionId)) {
-      const recoveredSession = recoveredSessions.get(chat.currentSessionId)!;
+    if (chat.currentSessionId) {
+      const currentSession = recoveredSessions.get(chat.currentSessionId) ?? (await store.getSession(chat.currentSessionId));
+      if (!currentSession || !isStartupRecoverableSession(currentSession, recoveredSessions.has(chat.currentSessionId))) {
+        continue;
+      }
       const resumedSessionId =
-        config && codexRunner ? await autoResumeRecoveredSession(store, config, codexRunner, recoveredSession, hooks).catch(() => undefined) : undefined;
+        config && codexRunner ? await autoResumeRecoveredSession(store, config, codexRunner, currentSession, hooks).catch(() => undefined) : undefined;
       const fallbackProject = config ? singleConfiguredProject(config) : undefined;
       const replacementSessionId =
         resumedSessionId ||
         (fallbackProject && codexRunner
-          ? await autoStartSingleProjectSession(store, codexRunner, recoveredSession, fallbackProject, hooks).catch(() => undefined)
+          ? await autoStartSingleProjectSession(store, codexRunner, currentSession, fallbackProject, hooks).catch(() => undefined)
           : undefined);
       await store.saveChat({
         chatId: chat.chatId,
@@ -120,6 +119,13 @@ export async function recoverStartupState(
       });
     }
   }
+}
+
+function isStartupRecoverableSession(session: SessionRecord, recoveredThisStartup: boolean): boolean {
+  if (recoveredThisStartup) {
+    return true;
+  }
+  return session.status === 'interrupted' && Boolean(session.codexSessionId);
 }
 
 async function autoResumeRecoveredSession(
