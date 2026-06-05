@@ -84,10 +84,6 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
     notes.add('Rows were truncated to fit the Feishu card.');
   }
 
-  while (limitedRows.length > 0 && limitedRows[limitedRows.length - 1]?.text.trim() === '') {
-    limitedRows.pop();
-  }
-
   return {
     rows: limitedRows.map((row) => prepareRow(row, config, notes)),
     notes: [...notes],
@@ -96,6 +92,7 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
 
 function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, notes: Set<string>): PreparedRow {
   const truncation = truncateText(row.text, config.cardMaxLineChars);
+  const renderedText = truncation.text === '' ? ' ' : truncation.text;
   if (truncation.truncated) {
     notes.add('Rows were truncated to fit the Feishu card.');
   }
@@ -103,17 +100,17 @@ function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, no
   if (row.spans.length > config.maxStyledSegmentsPerLine) {
     notes.add('Some rows were rendered as plain text because they had too many styled spans.');
     return {
-      text: truncation.text,
-      markdown: terminalMarkdownLine(truncation.text),
+      text: renderedText,
+      markdown: terminalMarkdownLine(renderedText),
     };
   }
 
   const markdown = canRenderStyledRow(row, truncation)
     ? row.spans.map(renderStyledSpan).join('')
-    : terminalMarkdownLine(truncation.text);
+    : terminalMarkdownLine(renderedText);
 
   return {
-    text: truncation.text,
+    text: renderedText,
     markdown,
   };
 }
@@ -126,7 +123,7 @@ function truncateText(text: string, maxChars: number): { text: string; truncated
     return { text, truncated: false };
   }
   return {
-    text: `${text.slice(0, maxChars)}…`,
+    text: maxChars === 1 ? '…' : `${text.slice(0, maxChars - 1)}…`,
     truncated: true,
   };
 }
@@ -210,5 +207,5 @@ function renderFallback(input: RenderCurrentScreenCardInput, rows: PreparedRow[]
     lines.push('', 'Notes:', ...notes.map((note) => `- ${note}`));
   }
 
-  return lines.join('\n').trim();
+  return lines.join('\n');
 }

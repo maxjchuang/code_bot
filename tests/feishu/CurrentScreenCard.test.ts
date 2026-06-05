@@ -74,8 +74,38 @@ describe('renderCurrentScreenCard', () => {
       status: 'running',
     });
 
-    expect(JSON.stringify(rendered.preferred)).toContain('this line is much lo…');
+    const fallbackText = rendered.fallback.kind === 'text' ? rendered.fallback.text : '';
+    const truncatedRow = fallbackText.split('\n').find((line) => line.startsWith('this line'));
+    expect(truncatedRow).toBe('this line is much l…');
+    expect(truncatedRow?.length).toBeLessThanOrEqual(config.cardMaxLineChars);
+    expect(JSON.stringify(rendered.preferred)).toContain('this line is much l…');
     expect(JSON.stringify(rendered.preferred)).toContain('Rows were truncated');
+  });
+
+  it('preserves blank rows within the rendered cardMaxRows window', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: 'top', spans: [] },
+          { text: '', spans: [] },
+          { text: 'middle', spans: [] },
+          { text: '', spans: [] },
+        ],
+      }),
+      config,
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    expect(cardBodyElements(rendered.preferred)).toHaveLength(5);
+    expect(cardBodyElements(rendered.preferred).slice(1).map((element) => element.content)).toEqual([
+      '`top`',
+      '` `',
+      '`middle`',
+      '` `',
+    ]);
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('top\n \nmiddle\n ');
   });
 
   it('degrades rows with more than maxStyledSegmentsPerLine spans to plain text and records a footer note', () => {
@@ -102,3 +132,12 @@ describe('renderCurrentScreenCard', () => {
     expect(JSON.stringify(rendered.preferred)).toContain('Some rows were rendered as plain text');
   });
 });
+
+function cardBodyElements(message: ReturnType<typeof renderCurrentScreenCard>['preferred']): Array<{ content?: string }> {
+  if (message.kind !== 'card') {
+    throw new Error('expected card');
+  }
+
+  const body = message.payload.body as { elements?: Array<{ content?: string }> } | undefined;
+  return body?.elements ?? [];
+}
