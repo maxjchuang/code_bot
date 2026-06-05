@@ -221,6 +221,9 @@ export function isDirectEntrypoint(input: {
   if (input.forceMain === '1' || input.forceMain === 'true') {
     return true;
   }
+  if (input.argv1?.replace(/\\/g, '/').endsWith('/pm2/lib/ProcessContainerFork.js')) {
+    return true;
+  }
   return Boolean(input.argv1 && input.moduleUrl === pathToFileURL(input.argv1).href);
 }
 
