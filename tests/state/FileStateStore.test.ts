@@ -111,6 +111,23 @@ describe('FileStateStore', () => {
     await expect(store.tailSessionLog('session_1', 2)).resolves.toEqual(['two', 'three']);
   });
 
+  it('tails bounded raw session log bytes for terminal replay', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await store.appendSessionLog('session_bytes', 'old line\n');
+    await store.appendSessionLog('session_bytes', 'new line\n');
+
+    await expect(store.tailSessionLogBytes('session_bytes', 9)).resolves.toBe('new line\n');
+  });
+
+  it('returns empty replay bytes when session log is missing', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+
+    await expect(store.tailSessionLogBytes('missing', 128)).resolves.toBe('');
+  });
+
   it('rejects unsafe state ids and prevents path traversal', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

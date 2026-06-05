@@ -231,6 +231,28 @@ export class FileStateStore {
     }
   }
 
+  async tailSessionLogBytes(sessionId: string, maxBytes: number): Promise<string> {
+    const normalizedMaxBytes = Math.floor(maxBytes);
+    if (!Number.isFinite(maxBytes) || normalizedMaxBytes <= 0) {
+      return '';
+    }
+
+    await this.waitForPendingWrites();
+    const filePath = this.sessionLogPath(sessionId);
+    try {
+      const { size } = await stat(filePath);
+      const bytesToRead = Math.min(size, normalizedMaxBytes);
+      const start = size - bytesToRead;
+      const buffer = await readFileWindow(filePath, start, bytesToRead);
+      return buffer.toString('utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return '';
+      }
+      throw error;
+    }
+  }
+
   async sessionLogSize(sessionId: string): Promise<number> {
     await this.waitForPendingWrites();
     try {
