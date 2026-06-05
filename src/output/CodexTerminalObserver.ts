@@ -26,7 +26,7 @@ export class CodexTerminalObserver {
     if (!buffer) {
       return;
     }
-    this.finalSnapshots.set(sessionId, buffer.snapshot('live', ['Session has exited.']));
+    this.finalSnapshots.set(sessionId, buffer.snapshot('final', ['Session has exited.']));
     this.buffers.delete(sessionId);
   }
 

@@ -20,7 +20,7 @@ export interface TerminalSnapshot {
   cols: number;
   rows: TerminalSnapshotRow[];
   capturedAt: string;
-  source: 'live' | 'replay' | 'fallback';
+  source: 'live' | 'replay' | 'fallback' | 'final';
   truncated: boolean;
   notes: string[];
 }

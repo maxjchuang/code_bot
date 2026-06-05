@@ -28,9 +28,23 @@ describe('CodexTerminalObserver', () => {
     observer.write('sess_1', 'final screen\n');
     observer.end('sess_1');
 
-    expect(observer.snapshot('sess_1')?.rows.map((row) => row.text).join('\n')).toContain('final screen');
+    const finalSnapshot = observer.snapshot('sess_1');
+    expect(finalSnapshot?.source).toBe('final');
+    expect(finalSnapshot?.rows.map((row) => row.text).join('\n')).toContain('final screen');
 
     observer.forget('sess_1');
     expect(observer.snapshot('sess_1')).toBeUndefined();
+  });
+
+  it('starts a live buffer when writing after session end', () => {
+    const observer = new CodexTerminalObserver(config);
+
+    observer.write('sess_1', 'final screen\n');
+    observer.end('sess_1');
+    observer.write('sess_1', 'new live screen\n');
+
+    const liveSnapshot = observer.snapshot('sess_1');
+    expect(liveSnapshot?.source).toBe('live');
+    expect(liveSnapshot?.rows.map((row) => row.text).join('\n')).toContain('new live screen');
   });
 });
