@@ -36,7 +36,7 @@ const gatewayTargetMethods = {
 };
 
 describe('bootstrap', () => {
-  it('does not treat PM2 environment alone as direct execution', () => {
+  it('treats PM2 fork container execution as direct without host env configuration', () => {
     expect(isDirectEntrypoint({
       argv1: '/app/node_modules/tinypool/dist/entry/process.js',
       moduleUrl: 'file:///app/dist/index.js',
@@ -50,7 +50,7 @@ describe('bootstrap', () => {
     expect(isDirectEntrypoint({
       argv1: '/app/node_modules/pm2/lib/ProcessContainerFork.js',
       moduleUrl: 'file:///app/dist/index.js',
-      forceMain: '1',
+      forceMain: undefined,
     })).toBe(true);
   });
 
