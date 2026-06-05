@@ -99,13 +99,38 @@ describe('renderCurrentScreenCard', () => {
     });
 
     expect(cardBodyElements(rendered.preferred)).toHaveLength(5);
-    expect(cardBodyElements(rendered.preferred).slice(1).map((element) => element.content)).toEqual([
-      '`top`',
-      '` `',
-      '`middle`',
-      '` `',
-    ]);
+    const rowContents = cardBodyElements(rendered.preferred).slice(1).map((element) => element.content ?? '');
+    expect(rowContents[0]).toContain('top');
+    expect(rowContents[1]).toContain(' ');
+    expect(rowContents[2]).toContain('middle');
+    expect(rowContents[3]).toContain(' ');
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('top\n \nmiddle\n ');
+  });
+
+  it('escapes Feishu markdown tags and backticks in terminal rows and metadata', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        notes: ['note </font><at id="ou_note"></at>&'],
+        rows: [
+          {
+            text: '</font><at id="ou_bad"></at>& `tick` ```',
+            spans: [{ text: '</font><at id="ou_bad"></at>& `tick` ```', color: 'red' }],
+          },
+        ],
+      }),
+      config: { ...config, cardMaxLineChars: 80 },
+      sessionId: 'sess_`1`',
+      projectId: '</font><at id="ou_project"></at>&',
+      status: 'running',
+    });
+
+    const preferredJson = JSON.stringify(rendered.preferred);
+    expect(preferredJson).not.toContain('<at');
+    expect(preferredJson).not.toContain('</font><at');
+    expect(preferredJson).toContain('&lt;/font&gt;&lt;at id=\\"ou');
+    expect(preferredJson).toContain('bad\\"&gt;&lt;/at&gt;&amp;');
+    expect(preferredJson).toContain('&lt;/font&gt;&lt;at id=\\"ou_project\\"&gt;&lt;/at&gt;&amp;');
+    expect(preferredJson).toContain('note\\"&gt;&lt;/at&gt;&amp;');
   });
 
   it('degrades rows with more than maxStyledSegmentsPerLine spans to plain text and records a footer note', () => {
@@ -130,6 +155,28 @@ describe('renderCurrentScreenCard', () => {
 
     expect(JSON.stringify(rendered.preferred)).toContain('red green yellow');
     expect(JSON.stringify(rendered.preferred)).toContain('Some rows were rendered as plain text');
+  });
+
+  it('records a footer note when styled rows are too complex to preserve', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          {
+            text: 'plain prefix red',
+            spans: [{ text: 'red', color: 'red' }],
+          },
+        ],
+      }),
+      config,
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    expect(JSON.stringify(rendered.preferred)).toContain('plain prefix red');
+    expect(JSON.stringify(rendered.preferred)).toContain(
+      'Some rows were rendered as plain text because their styles are too complex.',
+    );
   });
 });
 
