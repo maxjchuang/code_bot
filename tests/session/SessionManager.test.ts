@@ -666,54 +666,46 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).toEqual(['inspect status']);
   });
 
-  it('adds Get reaction to first task after processing is confirmed', async () => {
-    vi.useFakeTimers();
-    try {
-      const root = await createTmpDir();
-      const store = new FileStateStore(root);
-      const runner = new FakeCodexRunner();
-      const notifier = createNotifierWithReactions();
-      const observationStore = new FakeCodexObservationStore();
-      const manager = new SessionManager(sampleConfig(root), store, runner, {
-        notifier,
-        codexObservationStore: observationStore,
-        sendConfirmation: { initialWaitMs: 1, retryWaitMs: 1, pollIntervalMs: 1 },
-      });
+  it('adds Get reaction to first task after dispatch', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = createNotifierWithReactions();
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier });
 
-      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
-      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
-      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3601';
-      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
 
-      const pendingReply = manager.handleText({
-        chatId: 'oc_1',
-        chatType: 'group',
-        userId: 'ou_1',
-        messageId: 'om_first_confirmed',
-        text: 'inspect status',
-      });
-      await vi.advanceTimersByTimeAsync(1);
-      expect(notifier.addReaction).not.toHaveBeenCalled();
+    const sent = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_first_confirmed',
+      text: 'inspect status',
+    });
 
-      observationStore.snapshots.set(codexSessionId, {
-        availability: { kind: 'ready' },
-        codexSessionId,
-        status: 'running',
-        latestCommentary: '我先检查当前状态。',
-        latestActivityAt: '2099-01-01T00:00:00.000Z',
-        recentToolEvents: [],
-      });
-      await vi.advanceTimersByTimeAsync(1);
-
-      await expect(pendingReply).resolves.toEqual({ reply: '' });
+    expect(sent.reply).toBe('');
+    expect(runner.sentMessages).toEqual(['inspect status']);
+    await waitForAssertion(() => {
       expect(notifier.addReaction).toHaveBeenCalledWith('om_first_confirmed', 'Get');
-      expect(notifier.addReaction).toHaveBeenCalledTimes(1);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
+    expect(notifier.addReaction).toHaveBeenCalledTimes(1);
+    const day = new Date().toISOString().slice(0, 10);
+    await waitForAssertion(async () => {
+      const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+      const events = content.trim().split('\n').map((line) => JSON.parse(line) as BotEvent);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'feishu.reaction_queued',
+        data: expect.objectContaining({ messageId: 'om_first_confirmed', sessionId, emojiType: 'Get' }),
+      }));
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'feishu.reaction_added',
+        data: expect.objectContaining({ messageId: 'om_first_confirmed', sessionId, emojiType: 'Get' }),
+      }));
+    });
   });
 
-  it('does not add Get reaction to first task when processing is unconfirmed', async () => {
+  it('adds Get reaction to first task even when processing confirmation is unconfirmed', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -738,10 +730,10 @@ describe('SessionManager', () => {
     });
 
     expect(sent.reply).toBe('');
-    expect(notifier.addReaction).not.toHaveBeenCalled();
+    expect(notifier.addReaction).toHaveBeenCalledWith('om_first_unconfirmed', 'Get');
   });
 
-  it('does not add Get reaction for a first task without send confirmation', async () => {
+  it('adds Get reaction for a first task without send confirmation', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -758,7 +750,7 @@ describe('SessionManager', () => {
     });
 
     expect(sent.reply).toBe('');
-    expect(notifier.addReaction).not.toHaveBeenCalled();
+    expect(notifier.addReaction).toHaveBeenCalledWith('om_no_confirmation', 'Get');
   });
 
   it('adds Get reaction to follow-up after dispatch while a pending turn is active', async () => {
