@@ -102,12 +102,17 @@ export function renderModelSelectorCard(
       content: 'Apply model',
     },
     type: 'primary',
-    action_type: 'form_submit',
-    value: {
-      kind: 'model_select',
-      chatId: input.chatId,
-      chatType: input.chatType,
-    },
+    form_action_type: 'submit',
+    behaviors: [
+      {
+        type: 'callback',
+        value: {
+          kind: 'model_select',
+          chatId: input.chatId,
+          chatType: input.chatType,
+        },
+      },
+    ],
   });
 
   const payload = {

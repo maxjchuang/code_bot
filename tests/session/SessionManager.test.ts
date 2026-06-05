@@ -3681,7 +3681,7 @@ describe('SessionManager', () => {
       | { tag?: string; initial_option?: unknown; options?: Array<{ value: string }> }
       | undefined;
     const confirmButton = formElements.find((element) => element.name === 'confirm_project_select') as
-      | { action_type?: string; value?: Record<string, unknown> }
+      | { form_action_type?: string; behaviors?: Array<{ type?: string; value?: Record<string, unknown> }> }
       | undefined;
 
     expect(projectSelect?.tag).toBe('select_static');
@@ -3689,13 +3689,18 @@ describe('SessionManager', () => {
     expect(typeof projectSelect?.initial_option).toBe('string');
     expect(projectSelect?.options?.map((option) => option.value)).toEqual(['repo', 'repo2']);
 
-    expect(confirmButton?.action_type).toBe('form_submit');
-    expect(confirmButton?.value).toEqual({
-      kind: 'project_select',
-      chatId: 'oc_1',
-      chatType: 'group',
-    });
-    expect(confirmButton?.value).not.toHaveProperty('projectId');
+    expect(confirmButton?.form_action_type).toBe('submit');
+    expect(confirmButton?.behaviors).toEqual([
+      {
+        type: 'callback',
+        value: {
+          kind: 'project_select',
+          chatId: 'oc_1',
+          chatType: 'group',
+        },
+      },
+    ]);
+    expect(confirmButton?.behaviors?.[0]?.value).not.toHaveProperty('projectId');
   });
 
   it('returns text only for /projects when no projects are configured', async () => {
@@ -4127,7 +4132,7 @@ describe('SessionManager', () => {
       | { tag?: string; initial_option?: unknown; options?: Array<{ value: string }> }
       | undefined;
     const confirmButton = formElements.find((element) => element.name === 'confirm_model_select') as
-      | { action_type?: string; value?: Record<string, unknown> }
+      | { form_action_type?: string; behaviors?: Array<{ type?: string; value?: Record<string, unknown> }> }
       | undefined;
 
     expect(modelSelect?.tag).toBe('select_static');
@@ -4137,14 +4142,19 @@ describe('SessionManager', () => {
 
     expect(reasoningSelect).toBeUndefined();
 
-    expect(confirmButton?.action_type).toBe('form_submit');
-    expect(confirmButton?.value).toEqual({
-      kind: 'model_select',
-      chatId: 'oc_1',
-      chatType: 'group',
-    });
-    expect(confirmButton?.value).not.toHaveProperty('model');
-    expect(confirmButton?.value).not.toHaveProperty('reasoning');
+    expect(confirmButton?.form_action_type).toBe('submit');
+    expect(confirmButton?.behaviors).toEqual([
+      {
+        type: 'callback',
+        value: {
+          kind: 'model_select',
+          chatId: 'oc_1',
+          chatType: 'group',
+        },
+      },
+    ]);
+    expect(confirmButton?.behaviors?.[0]?.value).not.toHaveProperty('model');
+    expect(confirmButton?.behaviors?.[0]?.value).not.toHaveProperty('reasoning');
     expect(runner.sentMessages.filter((message) => message === 'status')).toHaveLength(1);
   });
 
