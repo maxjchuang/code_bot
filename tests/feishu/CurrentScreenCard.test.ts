@@ -45,6 +45,26 @@ describe('renderCurrentScreenCard', () => {
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('› 只读查看当前目录');
   });
 
+  it('renders terminal rows as one continuous fixed-width text canvas', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: 'top', spans: [] },
+          { text: '', spans: [] },
+          { text: 'bottom', spans: [] },
+        ],
+      }),
+      config,
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const bodyElements = cardBodyElements(rendered.preferred);
+    expect(bodyElements).toHaveLength(2);
+    expect(bodyElements[1].content).toContain('```\ntop\n\nbottom\n```');
+  });
+
   it('includes title, session/project/status/source/capture metadata, and terminal row text', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot(),
@@ -98,13 +118,9 @@ describe('renderCurrentScreenCard', () => {
       status: 'running',
     });
 
-    expect(cardBodyElements(rendered.preferred)).toHaveLength(5);
-    const rowContents = cardBodyElements(rendered.preferred).slice(1).map((element) => element.content ?? '');
-    expect(rowContents[0]).toContain('top');
-    expect(rowContents[1]).toContain(' ');
-    expect(rowContents[2]).toContain('middle');
-    expect(rowContents[3]).toContain(' ');
-    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('top\n \nmiddle\n ');
+    expect(cardBodyElements(rendered.preferred)).toHaveLength(2);
+    expect(cardBodyElements(rendered.preferred)[1].content).toContain('```\ntop\n\nmiddle\n\n```');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('top\n\nmiddle\n');
   });
 
   it('escapes Feishu markdown tags and backticks in terminal rows and metadata', () => {

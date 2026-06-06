@@ -1,9 +1,5 @@
 import type { SessionStatus, TerminalSnapshotConfig } from '../domain/types.js';
-import type {
-  TerminalSnapshot,
-  TerminalSnapshotRow,
-  TerminalSnapshotSpan,
-} from '../output/TerminalScreenBuffer.js';
+import type { TerminalSnapshot, TerminalSnapshotRow } from '../output/TerminalScreenBuffer.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
 
 export interface RenderCurrentScreenCardInput {
@@ -16,11 +12,11 @@ export interface RenderCurrentScreenCardInput {
 
 interface PreparedRow {
   text: string;
-  markdown: string;
 }
 
 interface PreparedRows {
   rows: PreparedRow[];
+  markdown: string;
   notes: string[];
 }
 
@@ -41,10 +37,10 @@ export function renderCurrentScreenCard(
       tag: 'markdown',
       content: metadata.join('\n'),
     },
-    ...prepared.rows.map((row) => ({
+    {
       tag: 'markdown',
-      content: row.markdown,
-    })),
+      content: prepared.markdown,
+    },
   ];
 
   if (notes.length > 0) {
@@ -84,15 +80,17 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
     notes.add('Rows were truncated to fit the Feishu card.');
   }
 
+  const preparedRows = limitedRows.map((row) => prepareRow(row, config, notes));
+
   return {
-    rows: limitedRows.map((row) => prepareRow(row, config, notes)),
+    rows: preparedRows,
+    markdown: terminalMarkdownBlock(preparedRows.map((row) => row.text)),
     notes: [...notes],
   };
 }
 
 function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, notes: Set<string>): PreparedRow {
   const truncation = truncateText(row.text, config.cardMaxLineChars);
-  const renderedText = truncation.text === '' ? ' ' : truncation.text;
   if (truncation.truncated) {
     notes.add('Rows were truncated to fit the Feishu card.');
   }
@@ -100,8 +98,7 @@ function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, no
   if (row.spans.length > config.maxStyledSegmentsPerLine) {
     notes.add('Some rows were rendered as plain text because they had too many styled spans.');
     return {
-      text: renderedText,
-      markdown: terminalMarkdownLine(renderedText),
+      text: truncation.text,
     };
   }
 
@@ -110,11 +107,8 @@ function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, no
     notes.add('Some rows were rendered as plain text because their styles are too complex.');
   }
 
-  const markdown = canRenderStyled ? row.spans.map(renderStyledSpan).join('') : terminalMarkdownLine(renderedText);
-
   return {
-    text: renderedText,
-    markdown,
+    text: truncation.text,
   };
 }
 
@@ -142,32 +136,8 @@ function canRenderStyledRow(row: TerminalSnapshotRow, truncation: { text: string
   return styledText === row.text && truncation.text === row.text;
 }
 
-function renderStyledSpan(span: TerminalSnapshotSpan): string {
-  let content = escapeFeishuMarkdownText(span.text);
-
-  if (span.bold) {
-    content = `**${content}**`;
-  }
-  if (span.dim && !span.color) {
-    content = `<font color='grey'>${content}</font>`;
-  }
-
-  switch (span.color) {
-    case 'red':
-      return `<font color='red'>${content}</font>`;
-    case 'green':
-      return `<font color='green'>${content}</font>`;
-    case 'yellow':
-      return `<font color='orange'>${content}</font>`;
-    case 'gray':
-      return `<font color='grey'>${content}</font>`;
-    default:
-      return content;
-  }
-}
-
-function terminalMarkdownLine(text: string): string {
-  const escaped = escapeFeishuTagText(text);
+function terminalMarkdownBlock(lines: string[]): string {
+  const escaped = escapeFeishuTagText(lines.join('\n'));
   const fence = '`'.repeat(Math.max(3, longestBacktickRun(escaped) + 1));
   return `${fence}\n${escaped}\n${fence}`;
 }
