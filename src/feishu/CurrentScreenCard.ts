@@ -43,13 +43,6 @@ export function renderCurrentScreenCard(
     },
   ];
 
-  if (notes.length > 0) {
-    elements.push({
-      tag: 'markdown',
-      content: `**Notes**\n${notes.map((note) => `- ${escapeFeishuMarkdownText(note)}`).join('\n')}`,
-    });
-  }
-
   return {
     preferred: {
       kind: 'card',

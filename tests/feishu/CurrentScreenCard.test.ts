@@ -169,7 +169,8 @@ describe('renderCurrentScreenCard', () => {
     expect(truncatedRow).toBe('this line is much l…');
     expect(truncatedRow?.length).toBeLessThanOrEqual(config.cardMaxLineChars);
     expect(JSON.stringify(rendered.preferred)).toContain('this line is much l…');
-    expect(JSON.stringify(rendered.preferred)).toContain('Rows were truncated');
+    expect(JSON.stringify(rendered.preferred)).not.toContain('Rows were truncated');
+    expect(fallbackText).toContain('Rows were truncated');
   });
 
   it('preserves blank rows within the rendered cardMaxRows window', () => {
@@ -216,7 +217,10 @@ describe('renderCurrentScreenCard', () => {
     expect(preferredJson).toContain('&lt;/font&gt;&lt;at id=\\"ou');
     expect(preferredJson).toContain('bad\\"&gt;&lt;/at&gt;&amp;');
     expect(preferredJson).toContain('&lt;/font&gt;&lt;at id=\\"ou_project\\"&gt;&lt;/at&gt;&amp;');
-    expect(preferredJson).toContain('note\\"&gt;&lt;/at&gt;&amp;');
+    expect(preferredJson).not.toContain('note\\"&gt;&lt;/at&gt;&amp;');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain(
+      'note </font><at id="ou_note"></at>&',
+    );
   });
 
   it('degrades rows with more than maxStyledSegmentsPerLine spans to plain text and records a footer note', () => {
@@ -240,7 +244,10 @@ describe('renderCurrentScreenCard', () => {
     });
 
     expect(JSON.stringify(rendered.preferred)).toContain('red green yellow');
-    expect(JSON.stringify(rendered.preferred)).toContain('Some rows were rendered as plain text');
+    expect(JSON.stringify(rendered.preferred)).not.toContain('Some rows were rendered as plain text');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain(
+      'Some rows were rendered as plain text',
+    );
   });
 
   it('records a footer note when styled rows are too complex to preserve', () => {
@@ -260,7 +267,10 @@ describe('renderCurrentScreenCard', () => {
     });
 
     expect(JSON.stringify(rendered.preferred)).toContain('plain prefix red');
-    expect(JSON.stringify(rendered.preferred)).toContain(
+    expect(JSON.stringify(rendered.preferred)).not.toContain(
+      'Some rows were rendered as plain text because their styles are too complex.',
+    );
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain(
       'Some rows were rendered as plain text because their styles are too complex.',
     );
   });
