@@ -6,6 +6,7 @@ export type CommandName =
   | 'resume'
   | 'send'
   | 'status'
+  | 'current'
   | 'model'
   | 'upgrade'
   | 'tail'

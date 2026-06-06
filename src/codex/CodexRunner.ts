@@ -45,7 +45,11 @@ export class PtyCodexRunner implements CodexRunner {
   private versionPromise?: Promise<string | undefined>;
 
   constructor(
-    private readonly config: { command: string; defaultArgs: string[] },
+    private readonly config: {
+      command: string;
+      defaultArgs: string[];
+      terminal?: { cols: number; rows: number };
+    },
     private readonly ptyModule: Pick<typeof pty, 'spawn'> = pty,
   ) {}
 
@@ -73,8 +77,8 @@ export class PtyCodexRunner implements CodexRunner {
         : [...defaultArgs, ...options.args, ...CODEX_TUI_KEYMAP_ARGS];
     const term = this.ptyModule.spawn(this.config.command, args, {
       name: 'xterm-256color',
-      cols: 120,
-      rows: 40,
+      cols: this.config.terminal?.cols ?? 120,
+      rows: this.config.terminal?.rows ?? 40,
       cwd: options.cwd,
       env: process.env,
     });

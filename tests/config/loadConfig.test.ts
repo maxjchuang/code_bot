@@ -177,6 +177,77 @@ describe('loadConfig', () => {
     await expect(loadConfig(root)).rejects.toThrow('Invalid config field: upgrade');
   });
 
+  it('defaults terminal snapshot config when omitted', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig());
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      output: {
+        terminalSnapshot: {
+          cols: 120,
+          rows: 40,
+          scrollback: 200,
+          replayMaxBytes: 262144,
+          cardMaxRows: 40,
+          cardMaxLineChars: 160,
+          maxStyledSegmentsPerLine: 8,
+        },
+      },
+    });
+  });
+
+  it('loads terminal snapshot config overrides', async () => {
+    const root = await createTmpDir();
+    await writeConfig(
+      root,
+      validConfig({
+        output: {
+          directMaxChars: 1800,
+          chunkSize: 1500,
+          terminalSnapshot: {
+            cols: 100,
+            rows: 30,
+            scrollback: 50,
+            replayMaxBytes: 4096,
+            cardMaxRows: 20,
+            cardMaxLineChars: 80,
+            maxStyledSegmentsPerLine: 4,
+          },
+        },
+      }),
+    );
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      output: {
+        terminalSnapshot: {
+          cols: 100,
+          rows: 30,
+          scrollback: 50,
+          replayMaxBytes: 4096,
+          cardMaxRows: 20,
+          cardMaxLineChars: 80,
+          maxStyledSegmentsPerLine: 4,
+        },
+      },
+    });
+  });
+
+  it('rejects invalid terminal snapshot config values', async () => {
+    const root = await createTmpDir();
+    await writeConfig(
+      root,
+      validConfig({
+        output: {
+          directMaxChars: 1800,
+          chunkSize: 1500,
+          terminalSnapshot: { cols: 0 },
+        },
+      }),
+    );
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config field: output.terminalSnapshot.cols');
+  });
+
   it('defaults user and chat restrictions to disabled when omitted', async () => {
     const root = await createTmpDir();
     await writeConfig(root, {

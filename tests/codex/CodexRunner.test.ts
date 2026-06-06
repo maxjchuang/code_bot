@@ -128,6 +128,29 @@ describe('PtyCodexRunner', () => {
     await expect(runner.send('sess-1', 'ignored')).rejects.toThrow('Codex session is not running: sess-1');
   });
 
+  it('uses configured terminal dimensions when spawning Codex', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner(
+      { command: 'codex', defaultArgs: [], terminal: { cols: 100, rows: 30 } },
+      { spawn } as any,
+    );
+
+    await runner.start({
+      sessionId: 'sess_1',
+      cwd: '/repo',
+      args: [],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      expect.any(Array),
+      expect.objectContaining({ cols: 100, rows: 30 }),
+    );
+  });
+
   it('starts resumed session with codex resume and target after options', async () => {
     const fake = createFakeTerm();
     const spawn = vi.fn(() => fake.term as any);

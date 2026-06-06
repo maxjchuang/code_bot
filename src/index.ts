@@ -44,7 +44,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const projectRoot = deps.projectRoot ?? cwd();
   const loadConfigFn = deps.loadConfig ?? loadConfig;
   const createStoreFn = deps.createStore ?? ((root: string) => new FileStateStore(root));
-  const createCodexRunnerFn = deps.createCodexRunner ?? ((config: BotConfig['codex']) => new PtyCodexRunner(config));
+  const createCodexRunnerFn = deps.createCodexRunner;
   const createAppFn = deps.createApp ?? createApp;
   const createGatewayFn =
     deps.createGateway ??
@@ -54,7 +54,15 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const config = await loadConfigFn(projectRoot);
   const logger = createAppLogger({ level: config.logLevel, sink: deps.logger ?? console });
   const store = createStoreFn(projectRoot);
-  const codexRunner = createCodexRunnerFn(config.codex);
+  const codexRunner =
+    createCodexRunnerFn?.(config.codex) ??
+    new PtyCodexRunner({
+      ...config.codex,
+      terminal: {
+        cols: config.output.terminalSnapshot.cols,
+        rows: config.output.terminalSnapshot.rows,
+      },
+    });
   const gateway = createGatewayFn(config.feishu.appId, config.feishu.appSecret, {
     logLevel: config.logLevel,
     recordEvent: (event) => store.appendEvent(event),

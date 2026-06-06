@@ -92,6 +92,23 @@ function normalizeProject(value: unknown, projectRoot: string): ProjectConfig {
   };
 }
 
+function normalizeTerminalSnapshot(value: unknown): BotConfig['output']['terminalSnapshot'] {
+  const record = optionalRecord(value, 'output.terminalSnapshot');
+  return {
+    cols: optionalPositiveNumber(record.cols, 120, 'output.terminalSnapshot.cols'),
+    rows: optionalPositiveNumber(record.rows, 40, 'output.terminalSnapshot.rows'),
+    scrollback: optionalPositiveNumber(record.scrollback, 200, 'output.terminalSnapshot.scrollback'),
+    replayMaxBytes: optionalPositiveNumber(record.replayMaxBytes, 262144, 'output.terminalSnapshot.replayMaxBytes'),
+    cardMaxRows: optionalPositiveNumber(record.cardMaxRows, 40, 'output.terminalSnapshot.cardMaxRows'),
+    cardMaxLineChars: optionalPositiveNumber(record.cardMaxLineChars, 160, 'output.terminalSnapshot.cardMaxLineChars'),
+    maxStyledSegmentsPerLine: optionalPositiveNumber(
+      record.maxStyledSegmentsPerLine,
+      8,
+      'output.terminalSnapshot.maxStyledSegmentsPerLine',
+    ),
+  };
+}
+
 export async function loadConfig(projectRoot: string): Promise<BotConfig> {
   const raw = JSON.parse(await readFile(resolve(projectRoot, '.code-bot/config.json'), 'utf8')) as unknown;
   if (typeof raw !== 'object' || raw === null) {
@@ -130,6 +147,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
     output: {
       directMaxChars: requirePositiveNumber(output.directMaxChars, 'output.directMaxChars'),
       chunkSize: requirePositiveNumber(output.chunkSize, 'output.chunkSize'),
+      terminalSnapshot: normalizeTerminalSnapshot(output.terminalSnapshot),
     },
     codex: {
       command: requireString(codex.command, 'codex.command'),

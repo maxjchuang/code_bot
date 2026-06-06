@@ -3768,6 +3768,15 @@ describe('SessionManager', () => {
     }
   });
 
+  it('returns no active session for /current before a session exists', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    await expect(
+      manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' }),
+    ).resolves.toEqual({ reply: 'No active session.' });
+  });
+
   it('returns help command listing', async () => {
     const root = await createTmpDir();
     const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
@@ -3777,6 +3786,7 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
     expect(help.reply).toContain('/resume <session> [project]');
+    expect(help.reply).toContain('/current');
     expect(help.reply).toContain('/tail [n]');
     expect(help.reply).toContain('/rawtail [n]');
     expect(help.reply).toContain('/upgrade');
@@ -4944,6 +4954,95 @@ describe('SessionManager', () => {
     const tail = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/tail 20' });
 
     expect(tail.reply).toBe('No readable output yet. Use /rawtail 80 for raw terminal logs.');
+  });
+
+  it('returns a rendered current screen card from live PTY output', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await runner.emitOutput(sessionId, '╭──── Codex ────╮\n');
+    await runner.emitOutput(sessionId, '› 只读查看当前目录\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('Codex Current');
+    expect(result.reply).toContain('› 只读查看当前目录');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    expect(JSON.stringify(result.renderedReply?.preferred)).toContain('Codex Current');
+  });
+
+  it('falls back to raw log replay for /current when live terminal state is unavailable', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await runner.emitOutput(sessionId, 'replayed screen\n');
+
+    const restarted = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    const result = await restarted.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('replayed screen');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    expect(JSON.stringify(result.renderedReply?.preferred)).toContain('replay');
+  });
+
+  it('keeps /current live when recovered session output arrives through handleRunnerOutput', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await manager.handleRunnerOutput(sessionId, 'recovered live screen\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('recovered live screen');
+    expect(result.reply).toContain('Source: live');
+    expect(JSON.stringify(result.renderedReply?.preferred)).toContain('live');
+    expect(JSON.stringify(result.renderedReply?.preferred)).not.toContain('replay');
+  });
+
+  it('falls back to replay when the live /current snapshot read fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await runner.emitOutput(sessionId, 'persisted replay after snapshot failure\n');
+    const observer = (manager as unknown as { terminalObserver: { snapshot: (sessionId: string) => unknown } }).terminalObserver;
+    vi.spyOn(observer, 'snapshot').mockImplementation(() => {
+      throw new Error('snapshot unavailable');
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('persisted replay after snapshot failure');
+    expect(result.reply).toContain('Source: replay');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"session.terminal_observer_snapshot_failed"');
+    expect(content).toContain(`"sessionId":"${sessionId}"`);
+  });
+
+  it('includes /current in help', async () => {
+    const root = await createTmpDir();
+    const manager = new SessionManager(sampleConfig(root), new FileStateStore(root), new FakeCodexRunner());
+
+    const help = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/help' });
+
+    expect(help.reply).toContain('/current');
   });
 
   it('uses sanitized PTY output for /tail even when a structured snapshot is available', async () => {

@@ -13,6 +13,8 @@ import {
 } from '../notifications/FinalAnswerExtractor.js';
 import { FileCodexObservationStore, type CodexObservationStore } from '../observations/CodexObservationStore.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
+import { CodexTerminalObserver } from '../output/CodexTerminalObserver.js';
+import { replayTerminalSnapshot, type TerminalSnapshot } from '../output/TerminalScreenBuffer.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { isAuthorizedMessage, resolveProject } from '../security/guards.js';
@@ -21,6 +23,7 @@ import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
 import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
+import { renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
@@ -165,6 +168,7 @@ export class SessionManager {
   private readonly ptyDebugTruncatedSessions = new Set<string>();
   private readonly liveStatusWaiters = new Map<string, Set<LiveStatusWaiter>>();
   private readonly outputObservationStates = new Map<string, OutputObservationState>();
+  private readonly terminalObserver: CodexTerminalObserver;
 
   constructor(
     private readonly config: BotConfig,
@@ -174,6 +178,7 @@ export class SessionManager {
   ) {
     this.approvalManager = new ApprovalManager(store);
     this.logger = createAppLogger({ level: deps.logLevel, sink: deps.logger ?? console });
+    this.terminalObserver = new CodexTerminalObserver(this.config.output.terminalSnapshot);
     this.observationStore =
       deps.codexObservationStore ??
       new FileCodexObservationStore({
@@ -223,6 +228,8 @@ export class SessionManager {
         return this.sendToCurrentSession(input, parsed.args[0] ?? '');
       case 'status':
         return this.status(input.chatId);
+      case 'current':
+        return this.current(input.chatId);
       case 'model':
         return this.model(input, parsed.args);
       case 'tail':
@@ -479,7 +486,7 @@ export class SessionManager {
         args: codexArgs,
         mode: options.mode,
         onOutput: (text) => {
-          return this.appendSessionOutput(sessionId, text).catch((error) =>
+          return this.recordSessionOutput(sessionId, text).catch((error) =>
             this.recordBackgroundError('session.output_persist_failed', error, { sessionId }),
           );
         },
@@ -992,7 +999,7 @@ export class SessionManager {
     const parsed = parseIncomingText(rawInputText);
     if (
       parsed.kind === 'command' &&
-      ((parsed.name === 'tail' || parsed.name === 'rawtail') ||
+      ((parsed.name === 'tail' || parsed.name === 'rawtail' || parsed.name === 'current') ||
         (parsed.name === 'projects' && result.reply === 'No projects configured.'))
     ) {
       return result;
@@ -1054,6 +1061,62 @@ export class SessionManager {
     }
 
     return { reply: formatReadableTail(sanitized.readableLines) };
+  }
+
+  private async current(chatId: string): Promise<BotTextResult> {
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentSessionId) {
+      return { reply: 'No active session.' };
+    }
+
+    const session = await this.store.getSession(chat.currentSessionId);
+    if (!session) {
+      return { reply: 'No active session.' };
+    }
+
+    const snapshot = await this.currentSnapshot(session.id);
+    const renderedReply = renderCurrentScreenCard({
+      snapshot,
+      config: this.config.output.terminalSnapshot,
+      sessionId: session.id,
+      projectId: session.projectId,
+      status: session.status,
+    });
+
+    return {
+      reply: renderedReply.fallback.kind === 'text' ? renderedReply.fallback.text : 'Codex Current',
+      renderedReply,
+    };
+  }
+
+  private async currentSnapshot(sessionId: string): Promise<TerminalSnapshot> {
+    try {
+      const live = this.terminalObserver.snapshot(sessionId);
+      if (live) {
+        return live;
+      }
+    } catch (error) {
+      await this.recordBackgroundError('session.terminal_observer_snapshot_failed', error, { sessionId }).catch(() => undefined);
+    }
+
+    const raw = await this.store.tailSessionLogBytes(sessionId, this.config.output.terminalSnapshot.replayMaxBytes);
+    if (raw) {
+      try {
+        return replayTerminalSnapshot(raw, this.config.output.terminalSnapshot);
+      } catch (error) {
+        await this.recordBackgroundError('session.terminal_snapshot_replay_failed', error, { sessionId }).catch(() => undefined);
+      }
+    }
+
+    const sanitized = sanitizeTerminalOutput(raw ? raw.split(/\r?\n/) : []);
+    return {
+      cols: this.config.output.terminalSnapshot.cols,
+      rows: sanitized.readableLines.map((line) => ({ text: line, spans: [] })),
+      capturedAt: new Date().toISOString(),
+      source: 'fallback',
+      truncated: false,
+      notes: raw ? ['Terminal replay failed; showing sanitized raw log text.'] : ['No terminal output captured yet.'],
+    };
   }
 
   private async rawTail(chatId: string, requestedCount?: string): Promise<BotTextResult> {
@@ -1223,6 +1286,11 @@ export class SessionManager {
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
     await this.flushPendingPtyDebugOutput(sessionId);
+    try {
+      this.terminalObserver.end(sessionId);
+    } catch (error) {
+      void this.recordBackgroundError('session.terminal_observer_end_failed', error, { sessionId }).catch(() => undefined);
+    }
     const exitedAt = new Date().toISOString();
     const updated = await this.store.updateSession(sessionId, (latest) => {
       const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
@@ -1253,6 +1321,15 @@ export class SessionManager {
   }
 
   async handleRunnerOutput(sessionId: string, text: string): Promise<void> {
+    await this.recordSessionOutput(sessionId, text);
+  }
+
+  private async recordSessionOutput(sessionId: string, text: string): Promise<void> {
+    try {
+      this.terminalObserver.write(sessionId, text);
+    } catch (error) {
+      void this.recordBackgroundError('session.terminal_observer_write_failed', error, { sessionId }).catch(() => undefined);
+    }
     await this.appendSessionOutput(sessionId, text);
   }
 
@@ -2079,7 +2156,7 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade';
     const resumeHelp = [
       'Resume: /resume <session> [project]',
       '- session can be a code_bot session id from /sessions or a Codex native id',

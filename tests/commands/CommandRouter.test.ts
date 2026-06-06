@@ -35,6 +35,15 @@ describe('parseIncomingText', () => {
     });
   });
 
+  it('parses current commands', () => {
+    expect(parseIncomingText('/current')).toEqual({
+      kind: 'command',
+      name: 'current',
+      args: [],
+      raw: '/current',
+    });
+  });
+
   it('parses /model with model and reasoning args as a command', () => {
     expect(parseIncomingText('/model gpt-5.5 high')).toEqual({
       kind: 'command',
