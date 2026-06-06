@@ -91,7 +91,7 @@ export interface SessionManagerDeps {
     quietMs?: number;
   };
   modelCatalog?: ModelCatalogReader;
-  upgradeManager?: Pick<UpgradeManager, 'upgrade'>;
+  upgradeManager?: Pick<UpgradeManager, 'upgrade' | 'restart'>;
 }
 
 interface ModelCatalogView {
@@ -246,6 +246,8 @@ export class SessionManager {
         return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
       case 'upgrade':
         return this.upgrade(input);
+      case 'restart':
+        return this.restart(input);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -2140,7 +2142,7 @@ export class SessionManager {
     });
   }
 
-  private getUpgradeManager(): Pick<UpgradeManager, 'upgrade'> {
+  private getUpgradeManager(): Pick<UpgradeManager, 'upgrade' | 'restart'> {
     return this.deps.upgradeManager ?? new UpgradeManager({ projectRoot: process.cwd(), config: this.config.upgrade });
   }
 
@@ -2154,9 +2156,19 @@ export class SessionManager {
     return { reply: result.reply };
   }
 
+  private async restart(input: IncomingBotText): Promise<BotTextResult> {
+    const result = await this.getUpgradeManager().restart({ userId: input.userId });
+    await this.store.appendEvent({
+      type: upgradeEventType(result.status),
+      at: new Date().toISOString(),
+      data: result.event,
+    });
+    return { reply: result.reply };
+  }
+
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
     const resumeHelp = [
       'Resume: /resume <session> [project]',
       '- session can be a code_bot session id from /sessions or a Codex native id',

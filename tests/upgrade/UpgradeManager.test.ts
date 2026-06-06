@@ -78,6 +78,69 @@ describe('UpgradeManager', () => {
     expect(commandRunner.calls).toEqual([]);
   });
 
+  it('restarts local worktree without checking cleanliness or fetching remote state', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'local123\n',
+    });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+
+    await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'restart-triggered',
+      oldCommit: 'local123',
+      newCommit: 'local123',
+      reply: 'Restarted local code at local12. Restarting code-bot with pm2.',
+      event: { status: 'restart-triggered', oldCommit: 'local123', newCommit: 'local123', pm2ProcessName: 'code-bot' },
+    });
+    expect(commandLines(commandRunner.calls)).toEqual([
+      'git rev-parse HEAD',
+      'npm install',
+      'npm run build',
+      'pm2 restart code-bot',
+    ]);
+    expect(state.writes).toHaveLength(1);
+    expect(state.writes[0].deployedCommit).toBe('local123');
+  });
+
+  it('uses the same restart authorization and disabled checks as upgrade', async () => {
+    const disabledRunner = runner();
+    const disabled = new UpgradeManager({ projectRoot: '/repo', config: config({ enabled: false }), runner: disabledRunner });
+
+    await expect(disabled.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'disabled',
+      reply: 'Self-upgrade is disabled.',
+    });
+    expect(disabledRunner.calls).toEqual([]);
+
+    const unauthorizedRunner = runner();
+    const unauthorized = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: unauthorizedRunner });
+
+    await expect(unauthorized.restart({ userId: 'ou_other' })).resolves.toMatchObject({
+      status: 'unauthorized',
+      reply: 'You are not allowed to run /restart.',
+    });
+    expect(unauthorizedRunner.calls).toEqual([]);
+  });
+
+  it('stops local restart before pm2 restart when build fails', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'local123\n',
+      'npm run build': new Error('build failed'),
+    });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+
+    await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'failed',
+      failedStep: 'npm-build',
+      error: 'build failed',
+      oldCommit: 'local123',
+      newCommit: 'local123',
+    });
+    expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart code-bot');
+    expect(state.writes).toEqual([]);
+  });
+
   it('rejects dirty worktrees before fetch', async () => {
     const commandRunner = runner({ 'git status --porcelain': ' M src/index.ts\n' });
     const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner });

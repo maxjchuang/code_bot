@@ -9,6 +9,7 @@ export type CommandName =
   | 'current'
   | 'model'
   | 'upgrade'
+  | 'restart'
   | 'tail'
   | 'rawtail'
   | 'stop'

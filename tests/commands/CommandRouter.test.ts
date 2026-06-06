@@ -8,6 +8,11 @@ describe('parseIncomingText', () => {
     expect(commandName).toBe('upgrade');
   });
 
+  it('includes restart in known command names', () => {
+    const commandName: CommandName = 'restart';
+    expect(commandName).toBe('restart');
+  });
+
   it('treats a leading group mention before a slash command as a command', () => {
     expect(parseIncomingText('@_user_1 /projects')).toEqual({
       kind: 'command',
@@ -32,6 +37,15 @@ describe('parseIncomingText', () => {
       name: 'upgrade',
       args: [],
       raw: '/upgrade',
+    });
+  });
+
+  it('parses /restart as a command', () => {
+    expect(parseIncomingText('/restart')).toEqual({
+      kind: 'command',
+      name: 'restart',
+      args: [],
+      raw: '/restart',
     });
   });
 

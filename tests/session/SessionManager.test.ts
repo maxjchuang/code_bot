@@ -312,6 +312,7 @@ describe('SessionManager', () => {
         newCommit: 'abc1234',
         event: { status: 'restart-triggered', oldCommit: 'old', newCommit: 'abc1234' },
       }),
+      restart: vi.fn(),
     };
     const manager = new SessionManager(config, store, runner, { upgradeManager });
 
@@ -330,6 +331,50 @@ describe('SessionManager', () => {
     expect(event).toMatchObject({
       type: 'upgrade.completed',
       data: { status: 'restart-triggered', oldCommit: 'old', newCommit: 'abc1234' },
+    });
+  });
+
+  it('routes /restart to the upgrade manager and records the result event', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-04T00:00:00.000Z'));
+    const runner = new FakeCodexRunner();
+    const baseConfig = sampleConfig(root);
+    const config = {
+      ...baseConfig,
+      upgrade: {
+        ...baseConfig.upgrade,
+        enabled: true,
+        adminUsers: ['ou_1'],
+      },
+    };
+    const upgradeManager = {
+      upgrade: vi.fn(),
+      restart: vi.fn().mockResolvedValue({
+        status: 'restart-triggered',
+        reply: 'Restarted local code at abc1234. Restarting code-bot with pm2.',
+        oldCommit: 'abc1234',
+        newCommit: 'abc1234',
+        event: { status: 'restart-triggered', oldCommit: 'abc1234', newCommit: 'abc1234' },
+      }),
+    };
+    const manager = new SessionManager(config, store, runner, { upgradeManager });
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/restart',
+      wasMentioned: true,
+    });
+
+    expect(result.reply).toBe('Restarted local code at abc1234. Restarting code-bot with pm2.');
+    expect(upgradeManager.restart).toHaveBeenCalledWith({ userId: 'ou_1' });
+    expect(upgradeManager.upgrade).not.toHaveBeenCalled();
+    const content = await readFile(join(root, '.code-bot/events/2026-06-04.jsonl'), 'utf8');
+    const event = JSON.parse(content.trim());
+    expect(event).toMatchObject({
+      type: 'upgrade.completed',
+      data: { status: 'restart-triggered', oldCommit: 'abc1234', newCommit: 'abc1234' },
     });
   });
 
