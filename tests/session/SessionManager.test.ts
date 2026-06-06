@@ -5038,6 +5038,36 @@ describe('SessionManager', () => {
     expect(JSON.stringify(result.renderedReply?.preferred)).toContain('replay');
   });
 
+  it('falls back to raw log replay for /current when live terminal state has no renderable body', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await runner.emitOutput(sessionId, 'raw replay body\n');
+    const observer = (manager as unknown as { terminalObserver: { snapshot: (sessionId: string) => unknown } }).terminalObserver;
+    vi.spyOn(observer, 'snapshot').mockReturnValue({
+      cols: 120,
+      rows: [
+        { text: '', spans: [] },
+        { text: 'gpt-5.5 medium · Context 16% used · 864K used', spans: [] },
+      ],
+      capturedAt: '2026-06-05T10:00:00.000Z',
+      source: 'live',
+      truncated: false,
+      notes: [],
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    expect(result.reply).toContain('raw replay body');
+    expect(result.reply).toContain('Source: replay');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    expect(JSON.stringify(result.renderedReply?.preferred)).toContain('raw replay body');
+  });
+
   it('keeps /current live when recovered session output arrives through handleRunnerOutput', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

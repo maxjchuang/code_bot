@@ -23,7 +23,7 @@ import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
 import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
-import { renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
+import { hasRenderableCurrentScreenBody, renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
@@ -1094,7 +1094,7 @@ export class SessionManager {
   private async currentSnapshot(sessionId: string): Promise<TerminalSnapshot> {
     try {
       const live = this.terminalObserver.snapshot(sessionId);
-      if (live) {
+      if (live && hasRenderableCurrentScreenBody(live)) {
         return live;
       }
     } catch (error) {

@@ -62,6 +62,10 @@ export function renderCurrentScreenCard(
   };
 }
 
+export function hasRenderableCurrentScreenBody(snapshot: TerminalSnapshot): boolean {
+  return snapshot.rows.some((row) => isRenderableCurrentBodyRow(row.text));
+}
+
 function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig): PreparedRows {
   const notes = new Set<string>();
   const limitedRows = rows.slice(0, Math.max(0, config.cardMaxRows));
@@ -81,6 +85,11 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
     footerStatus,
     notes: [...notes],
   };
+}
+
+function isRenderableCurrentBodyRow(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length > 0 && !isCodexFooterStatusLine(trimmed) && !isVisualDividerRow(trimmed);
 }
 
 function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, notes: Set<string>): PreparedRow {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderCurrentScreenCard } from '../../src/feishu/CurrentScreenCard.js';
+import { hasRenderableCurrentScreenBody, renderCurrentScreenCard } from '../../src/feishu/CurrentScreenCard.js';
 import type { TerminalSnapshot } from '../../src/output/TerminalScreenBuffer.js';
 
 const config = {
@@ -322,6 +322,35 @@ describe('renderCurrentScreenCard', () => {
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain(
       'Some rows were rendered as plain text because their styles are too complex.',
     );
+  });
+});
+
+describe('hasRenderableCurrentScreenBody', () => {
+  it('treats snapshots with only blank rows, visual dividers, and model status as empty', () => {
+    expect(
+      hasRenderableCurrentScreenBody(
+        snapshot({
+          rows: [
+            { text: '', spans: [] },
+            { text: '╭────────────────────╮', spans: [] },
+            { text: 'gpt-5.5 medium · Context 16% used · 864K used', spans: [] },
+          ],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('treats snapshots with prompt or output text as renderable', () => {
+    expect(
+      hasRenderableCurrentScreenBody(
+        snapshot({
+          rows: [
+            { text: '╭────────────────────╮', spans: [] },
+            { text: '› 只读查看当前目录', spans: [] },
+          ],
+        }),
+      ),
+    ).toBe(true);
   });
 });
 
