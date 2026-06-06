@@ -26,10 +26,11 @@ export function renderCurrentScreenCard(
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
   const prepared = prepareRows(input.snapshot.rows, input.config);
   const notes = collectNotes(input.snapshot, prepared.notes);
+  const bodyMarkdown = prepared.markdown.trim() ? prepared.markdown : '_Current screen is empty._';
   const elements: Array<Record<string, unknown>> = [
     {
       tag: 'markdown',
-      content: prepared.markdown,
+      content: bodyMarkdown,
     },
     {
       tag: 'markdown',

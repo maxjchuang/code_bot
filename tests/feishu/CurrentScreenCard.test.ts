@@ -165,6 +165,25 @@ describe('renderCurrentScreenCard', () => {
     expect(footer).not.toContain('Source');
   });
 
+  it('shows an explicit empty-screen message when no terminal rows render into the main body', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: '', spans: [] },
+          { text: '   ', spans: [] },
+        ],
+      }),
+      config: { ...config, cardMaxLineChars: 80 },
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const elements = cardBodyElements(rendered.preferred);
+    expect(elements[0].content).toContain('_Current screen is empty._');
+    expect(elements[1].content).toContain('Session: `sess_1`');
+  });
+
   it('includes title and terminal row text', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot(),
