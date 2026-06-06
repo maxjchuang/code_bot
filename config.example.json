@@ -39,6 +39,10 @@
     "command": "codex",
     "defaultArgs": []
   },
+  "ui": {
+    "verbosity": "normal",
+    "currentRenderMode": "markdown"
+  },
   "upgrade": {
     "enabled": false,
     "adminUsers": [],

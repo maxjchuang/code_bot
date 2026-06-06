@@ -1005,7 +1005,8 @@ describe('SessionManager', () => {
       const runner = new FakeCodexRunner();
       const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
       const observationStore = new FakeCodexObservationStore();
-      const config = { ...sampleConfig(root), ui: { verbosity: 'debug' as const } };
+      const baseConfig = sampleConfig(root);
+      const config = { ...baseConfig, ui: { ...baseConfig.ui, verbosity: 'debug' as const } };
       const manager = new SessionManager(config, store, runner, {
         notifier,
         codexObservationStore: observationStore,
@@ -2556,12 +2557,14 @@ describe('SessionManager', () => {
     await runner.emitOutput(sessionId, 'tick\n');
     await runner.exit(sessionId, 0);
 
-    expect(notifier.sendRenderedMessage).toHaveBeenCalledWith(
-      'oc_1',
-      expect.objectContaining({
-        preferred: expect.objectContaining({ kind: 'card' }),
-        fallback: expect.objectContaining({ kind: 'text', text: '最终结果' }),
-      }),
+    await waitForAssertion(() =>
+      expect(notifier.sendRenderedMessage).toHaveBeenCalledWith(
+        'oc_1',
+        expect.objectContaining({
+          preferred: expect.objectContaining({ kind: 'card' }),
+          fallback: expect.objectContaining({ kind: 'text', text: '最终结果' }),
+        }),
+      ),
     );
     const day = new Date().toISOString().slice(0, 10);
     const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
@@ -5018,6 +5021,29 @@ describe('SessionManager', () => {
     expect(result.reply).toContain('› 只读查看当前目录');
     expect(result.renderedReply?.preferred.kind).toBe('card');
     expect(JSON.stringify(result.renderedReply?.preferred)).toContain('Codex Current');
+  });
+
+  it('renders /current as a code block when configured', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const baseConfig = sampleConfig(root);
+    const manager = new SessionManager(
+      { ...baseConfig, ui: { ...baseConfig.ui, currentRenderMode: 'code' } },
+      store,
+      runner,
+    );
+
+    const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = created.reply.match(/sess_[^\s.]+/)![0]!;
+    await runner.emitOutput(sessionId, '╭──── Codex ────╮\n');
+    await runner.emitOutput(sessionId, '│ fixed width   │\n');
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/current' });
+
+    const preferredJson = JSON.stringify(result.renderedReply?.preferred);
+    expect(preferredJson).toContain('```text');
+    expect(preferredJson).toContain('│ fixed width   │');
   });
 
   it('falls back to raw log replay for /current when live terminal state is unavailable', async () => {

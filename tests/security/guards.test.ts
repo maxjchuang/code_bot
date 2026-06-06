@@ -24,7 +24,7 @@ const config: BotConfig = {
   },
   codex: { command: 'codex', defaultArgs: [] },
   logLevel: 'info',
-  ui: { verbosity: 'normal' },
+  ui: { verbosity: 'normal', currentRenderMode: 'markdown' },
   notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
   upgrade: {
     enabled: false,

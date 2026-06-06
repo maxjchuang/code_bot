@@ -156,6 +156,10 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
     logLevel: optionalLogLevel(record.logLevel, 'info', 'logLevel'),
     ui: {
       verbosity: ui.verbosity === undefined ? 'normal' : requireUiVerbosity(ui.verbosity, 'ui.verbosity'),
+      currentRenderMode:
+        ui.currentRenderMode === undefined
+          ? 'markdown'
+          : requireCurrentRenderMode(ui.currentRenderMode, 'ui.currentRenderMode'),
     },
     notifications: {
       enabled: optionalBoolean(notifications.enabled, true, 'notifications.enabled'),
@@ -169,6 +173,13 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
 
 function requireUiVerbosity(value: unknown, field: string): 'normal' | 'debug' {
   if (value === 'normal' || value === 'debug') {
+    return value;
+  }
+  throw new Error(`Invalid config field: ${field}`);
+}
+
+function requireCurrentRenderMode(value: unknown, field: string): 'markdown' | 'code' {
+  if (value === 'markdown' || value === 'code') {
     return value;
   }
   throw new Error(`Invalid config field: ${field}`);

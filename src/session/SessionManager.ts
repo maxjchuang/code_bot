@@ -1080,6 +1080,7 @@ export class SessionManager {
     const renderedReply = renderCurrentScreenCard({
       snapshot,
       config: this.config.output.terminalSnapshot,
+      renderMode: this.config.ui.currentRenderMode,
       sessionId: session.id,
       projectId: session.projectId,
       status: session.status,

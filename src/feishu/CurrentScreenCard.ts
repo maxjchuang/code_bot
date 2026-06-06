@@ -5,6 +5,7 @@ import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
 export interface RenderCurrentScreenCardInput {
   snapshot: TerminalSnapshot;
   config: TerminalSnapshotConfig;
+  renderMode?: 'markdown' | 'code';
   sessionId: string;
   projectId: string;
   status: SessionStatus;
@@ -16,6 +17,7 @@ interface PreparedRow {
 
 interface PreparedRows {
   rows: PreparedRow[];
+  bodyRows: PreparedRow[];
   markdown: string;
   footerStatus?: string;
   notes: string[];
@@ -26,7 +28,8 @@ export function renderCurrentScreenCard(
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
   const prepared = prepareRows(input.snapshot.rows, input.config);
   const notes = collectNotes(input.snapshot, prepared.notes);
-  const bodyMarkdown = prepared.markdown.trim() ? prepared.markdown : '_Current screen is empty._';
+  const renderedBody = input.renderMode === 'code' ? renderCodeBlock(prepared.bodyRows) : prepared.markdown;
+  const bodyMarkdown = renderedBody.trim() ? renderedBody : '_Current screen is empty._';
   const elements: Array<Record<string, unknown>> = [
     {
       tag: 'markdown',
@@ -81,6 +84,7 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
 
   return {
     rows: preparedRows,
+    bodyRows: markdownRows,
     markdown: renderMarkdownRows(markdownRows),
     footerStatus,
     notes: [...notes],
@@ -164,6 +168,12 @@ function renderMarkdownRows(rows: PreparedRow[]): string {
   }
 
   return rendered.join('\n');
+}
+
+function renderCodeBlock(rows: PreparedRow[]): string {
+  const text = rows.map((row) => row.text).join('\n');
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1));
+  return `${fence}text\n${text}\n${fence}`;
 }
 
 function collectTableBlock(rows: PreparedRow[], startIndex: number): { rows: string[][]; endIndex: number } | undefined {

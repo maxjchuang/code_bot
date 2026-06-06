@@ -135,6 +135,28 @@ describe('renderCurrentScreenCard', () => {
     expect(canvas).toContain('stdout \\| pipe remains text');
   });
 
+  it('renders terminal rows as a fenced code block in code mode', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: '╭──── Codex ────╮', spans: [] },
+          { text: '│ fixed width   │', spans: [] },
+          { text: '╰────────────────╯', spans: [] },
+        ],
+      }),
+      config: { ...config, cardMaxLineChars: 80 },
+      renderMode: 'code',
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const elements = cardBodyElements(rendered.preferred);
+    expect(elements[0].content).toContain('```text\n╭──── Codex ────╮\n│ fixed width   │\n╰────────────────╯\n```');
+    expect(elements[0].content).not.toContain('---');
+    expect(elements[1].content).toContain('Session: `sess_1`');
+  });
+
   it('moves compact session metadata and model status to a bottom quote block', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot({
