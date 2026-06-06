@@ -17,6 +17,7 @@ interface PreparedRow {
 interface PreparedRows {
   rows: PreparedRow[];
   markdown: string;
+  footerStatus?: string;
   notes: string[];
 }
 
@@ -25,21 +26,15 @@ export function renderCurrentScreenCard(
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
   const prepared = prepareRows(input.snapshot.rows, input.config);
   const notes = collectNotes(input.snapshot, prepared.notes);
-  const metadata = [
-    `- **Session**: ${markdownCodeSpan(input.sessionId)}`,
-    `- **Project**: ${markdownCodeSpan(input.projectId)}`,
-    `- **Status**: ${markdownCodeSpan(input.status)}`,
-    `- **Source**: ${markdownCodeSpan(input.snapshot.source)}`,
-    `- **Captured**: ${markdownCodeSpan(input.snapshot.capturedAt)}`,
-  ];
   const elements: Array<Record<string, unknown>> = [
     {
       tag: 'markdown',
-      content: metadata.join('\n'),
+      content: prepared.markdown,
     },
     {
       tag: 'markdown',
-      content: prepared.markdown,
+      content: renderFooterQuote(input, prepared.footerStatus),
+      text_size: 'notation',
     },
   ];
 
@@ -74,10 +69,15 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
   }
 
   const preparedRows = limitedRows.map((row) => prepareRow(row, config, notes));
+  const footerStatus = preparedRows.find((row) => isCodexFooterStatusLine(row.text))?.text;
+  const markdownRows = footerStatus
+    ? preparedRows.filter((row) => row.text !== footerStatus)
+    : preparedRows;
 
   return {
     rows: preparedRows,
-    markdown: renderMarkdownRows(preparedRows),
+    markdown: renderMarkdownRows(markdownRows),
+    footerStatus,
     notes: [...notes],
   };
 }
@@ -236,6 +236,22 @@ function markdownCodeSpan(text: string): string {
   const escaped = escapeFeishuTagText(text);
   const delimiter = '`'.repeat(longestBacktickRun(escaped) + 1);
   return `${delimiter}${escaped}${delimiter}`;
+}
+
+function renderFooterQuote(input: RenderCurrentScreenCardInput, footerStatus: string | undefined): string {
+  return [
+    footerQuoteLine(`Session: ${markdownCodeSpan(input.sessionId)}`),
+    footerQuoteLine(`Captured: ${markdownCodeSpan(input.snapshot.capturedAt)}`),
+    ...(footerStatus ? [footerQuoteLine(escapeFeishuMarkdownText(footerStatus))] : []),
+  ].join('\n');
+}
+
+function footerQuoteLine(content: string): string {
+  return `> <font color='grey'>${content}</font>`;
+}
+
+function isCodexFooterStatusLine(text: string): boolean {
+  return /^gpt-[^\n]+ · Context \d+% used · .+ used$/i.test(text.trim());
 }
 
 function escapeFeishuTagText(text: string): string {

@@ -62,7 +62,7 @@ describe('renderCurrentScreenCard', () => {
 
     const bodyElements = cardBodyElements(rendered.preferred);
     expect(bodyElements).toHaveLength(2);
-    expect(bodyElements[1].content).toContain('- top\n\n> bottom');
+    expect(bodyElements[0].content).toContain('- top\n\n> bottom');
   });
 
   it('renders visual divider rows as markdown dividers', () => {
@@ -82,7 +82,7 @@ describe('renderCurrentScreenCard', () => {
       status: 'running',
     });
 
-    const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
+    const canvas = cardBodyElements(rendered.preferred)[0].content ?? '';
     expect(canvas).toContain('---\nuseful content\n---\nmore content\n---');
     expect(canvas).not.toContain('────────────────');
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('---');
@@ -105,7 +105,7 @@ describe('renderCurrentScreenCard', () => {
       status: 'running',
     });
 
-    const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
+    const canvas = cardBodyElements(rendered.preferred)[0].content ?? '';
     expect(canvas).toContain('| id | name | status |');
     expect(canvas).toContain('| --- | --- | --- |');
     expect(canvas).toContain('| 1 | code-bot | online |');
@@ -128,14 +128,44 @@ describe('renderCurrentScreenCard', () => {
       status: 'running',
     });
 
-    const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
+    const canvas = cardBodyElements(rendered.preferred)[0].content ?? '';
     expect(canvas).toContain('codex --approval-mode never');
     expect(canvas).toContain('feature/current-tui-snapshot');
     expect(canvas).toContain('- markdown bullet remains');
     expect(canvas).toContain('stdout \\| pipe remains text');
   });
 
-  it('includes title, session/project/status/source/capture metadata, and terminal row text', () => {
+  it('moves compact session metadata and model status to a bottom quote block', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: '• useful answer', spans: [] },
+          { text: 'gpt-5.5 medium · Context 16% used · 864K used', spans: [] },
+        ],
+      }),
+      config: { ...config, cardMaxLineChars: 80 },
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const elements = cardBodyElements(rendered.preferred);
+    expect(elements).toHaveLength(2);
+    expect(elements[0].content).toContain('- useful answer');
+    expect(elements[0].content).not.toContain('gpt-5.5 medium');
+
+    const footer = elements[1].content ?? '';
+    expect(elements[1].text_size).toBe('notation');
+    expect(footer).toContain('> ');
+    expect(footer).toContain('Session: `sess_1`');
+    expect(footer).toContain('Captured: `2026-06-05T10:00:00.000Z`');
+    expect(footer).toContain('gpt-5.5 medium · Context 16% used · 864K used');
+    expect(footer).not.toContain('Project');
+    expect(footer).not.toContain('Status');
+    expect(footer).not.toContain('Source');
+  });
+
+  it('includes title and terminal row text', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot(),
       config,
@@ -147,12 +177,12 @@ describe('renderCurrentScreenCard', () => {
     const preferredJson = JSON.stringify(rendered.preferred);
     expect(preferredJson).toContain('Codex Current');
     expect(preferredJson).toContain('sess_1');
-    expect(preferredJson).toContain('repo');
-    expect(preferredJson).toContain('running');
-    expect(preferredJson).toContain('live');
     expect(preferredJson).toContain('2026-06-05T10:00:00.000Z');
     expect(preferredJson).toContain('╭──── Codex ────╮');
     expect(preferredJson).toContain('> 只读查看当前目录');
+    expect(preferredJson).not.toContain('repo');
+    expect(preferredJson).not.toContain('running');
+    expect(preferredJson).not.toContain('live');
   });
 
   it('truncates long rows and records a footer note', () => {
@@ -190,7 +220,7 @@ describe('renderCurrentScreenCard', () => {
     });
 
     expect(cardBodyElements(rendered.preferred)).toHaveLength(2);
-    expect(cardBodyElements(rendered.preferred)[1].content).toContain('top\n\nmiddle\n');
+    expect(cardBodyElements(rendered.preferred)[0].content).toContain('top\n\nmiddle\n');
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('top\n\nmiddle\n');
   });
 
@@ -216,7 +246,7 @@ describe('renderCurrentScreenCard', () => {
     expect(preferredJson).not.toContain('</font><at');
     expect(preferredJson).toContain('&lt;/font&gt;&lt;at id=\\"ou');
     expect(preferredJson).toContain('bad\\"&gt;&lt;/at&gt;&amp;');
-    expect(preferredJson).toContain('&lt;/font&gt;&lt;at id=\\"ou_project\\"&gt;&lt;/at&gt;&amp;');
+    expect(preferredJson).not.toContain('&lt;/font&gt;&lt;at id=\\"ou_project\\"&gt;&lt;/at&gt;&amp;');
     expect(preferredJson).not.toContain('note\\"&gt;&lt;/at&gt;&amp;');
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain(
       'note </font><at id="ou_note"></at>&',
@@ -276,7 +306,9 @@ describe('renderCurrentScreenCard', () => {
   });
 });
 
-function cardBodyElements(message: ReturnType<typeof renderCurrentScreenCard>['preferred']): Array<{ content?: string }> {
+function cardBodyElements(
+  message: ReturnType<typeof renderCurrentScreenCard>['preferred'],
+): Array<{ content?: string; text_size?: string }> {
   if (message.kind !== 'card') {
     throw new Error('expected card');
   }
