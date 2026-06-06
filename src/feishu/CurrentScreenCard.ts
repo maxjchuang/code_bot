@@ -80,13 +80,11 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
     notes.add('Rows were truncated to fit the Feishu card.');
   }
 
-  const preparedRows = limitedRows
-    .map((row) => prepareRow(row, config, notes))
-    .filter((row) => !isVisualDividerRow(row.text));
+  const preparedRows = limitedRows.map((row) => prepareRow(row, config, notes));
 
   return {
     rows: preparedRows,
-    markdown: terminalMarkdownBlock(preparedRows.map((row) => row.text)),
+    markdown: renderMarkdownRows(preparedRows),
     notes: [...notes],
   };
 }
@@ -148,10 +146,97 @@ function canRenderStyledRow(row: TerminalSnapshotRow, truncation: { text: string
   return styledText === row.text && truncation.text === row.text;
 }
 
-function terminalMarkdownBlock(lines: string[]): string {
-  const escaped = escapeFeishuTagText(lines.join('\n'));
-  const fence = '`'.repeat(Math.max(3, longestBacktickRun(escaped) + 1));
-  return `${fence}\n${escaped}\n${fence}`;
+function renderMarkdownRows(rows: PreparedRow[]): string {
+  const rendered: string[] = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const tableBlock = collectTableBlock(rows, index);
+    if (tableBlock) {
+      rendered.push(...renderMarkdownTable(tableBlock.rows));
+      index = tableBlock.endIndex;
+      continue;
+    }
+
+    rendered.push(renderMarkdownLine(rows[index].text));
+  }
+
+  return rendered.join('\n');
+}
+
+function collectTableBlock(rows: PreparedRow[], startIndex: number): { rows: string[][]; endIndex: number } | undefined {
+  if (!isBoxTableLine(rows[startIndex].text)) {
+    return undefined;
+  }
+
+  const tableRows: string[][] = [];
+  let endIndex = startIndex;
+
+  for (let index = startIndex; index < rows.length && isBoxTableLine(rows[index].text); index += 1) {
+    endIndex = index;
+    const cells = parseBoxTableCells(rows[index].text);
+    if (cells.length > 0) {
+      tableRows.push(cells);
+    }
+  }
+
+  return tableRows.length >= 2 ? { rows: tableRows, endIndex } : undefined;
+}
+
+function renderMarkdownTable(rows: string[][]): string[] {
+  const columnCount = Math.max(...rows.map((row) => row.length));
+  const normalizedRows = rows.map((row) => normalizeTableRow(row, columnCount));
+  const [header, ...bodyRows] = normalizedRows;
+
+  return [
+    renderMarkdownTableRow(header),
+    renderMarkdownTableRow(Array.from({ length: columnCount }, () => '---')),
+    ...bodyRows.map(renderMarkdownTableRow),
+  ];
+}
+
+function normalizeTableRow(row: string[], columnCount: number): string[] {
+  return Array.from({ length: columnCount }, (_, index) => row[index] ?? '');
+}
+
+function renderMarkdownTableRow(row: string[]): string {
+  return `| ${row.map(escapeMarkdownTableCell).join(' | ')} |`;
+}
+
+function escapeMarkdownTableCell(text: string): string {
+  return escapeFeishuMarkdownText(text.trim());
+}
+
+function renderMarkdownLine(text: string): string {
+  if (isVisualDividerRow(text)) {
+    return '---';
+  }
+
+  if (text.startsWith('• ')) {
+    return `- ${escapeFeishuMarkdownText(text.slice(2))}`;
+  }
+
+  if (text.startsWith('› ')) {
+    return `> ${escapeFeishuMarkdownText(text.slice(2))}`;
+  }
+
+  return escapeFeishuMarkdownText(text);
+}
+
+function isBoxTableLine(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.includes('│') || /^[┌┬┐├┼┤└┴┘─━═\s]+$/.test(trimmed);
+}
+
+function parseBoxTableCells(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('│') || !trimmed.endsWith('│')) {
+    return [];
+  }
+
+  return trimmed
+    .slice(1, -1)
+    .split('│')
+    .map((cell) => cell.trim());
 }
 
 function markdownCodeSpan(text: string): string {
@@ -197,7 +282,7 @@ function renderFallback(input: RenderCurrentScreenCardInput, rows: PreparedRow[]
     `Source: ${input.snapshot.source}`,
     `Captured: ${input.snapshot.capturedAt}`,
     '',
-    ...rows.map((row) => row.text),
+    ...renderFallbackRows(rows),
   ];
 
   if (notes.length > 0) {
@@ -205,4 +290,8 @@ function renderFallback(input: RenderCurrentScreenCardInput, rows: PreparedRow[]
   }
 
   return lines.join('\n');
+}
+
+function renderFallbackRows(rows: PreparedRow[]): string[] {
+  return rows.map((row) => (isVisualDividerRow(row.text) ? '---' : row.text));
 }

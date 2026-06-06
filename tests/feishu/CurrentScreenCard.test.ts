@@ -45,13 +45,13 @@ describe('renderCurrentScreenCard', () => {
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('› 只读查看当前目录');
   });
 
-  it('renders terminal rows as one continuous fixed-width text canvas', () => {
+  it('renders terminal rows as markdown content with preserved paragraph breaks', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot({
         rows: [
-          { text: 'top', spans: [] },
+          { text: '• top', spans: [] },
           { text: '', spans: [] },
-          { text: 'bottom', spans: [] },
+          { text: '› bottom', spans: [] },
         ],
       }),
       config,
@@ -62,10 +62,10 @@ describe('renderCurrentScreenCard', () => {
 
     const bodyElements = cardBodyElements(rendered.preferred);
     expect(bodyElements).toHaveLength(2);
-    expect(bodyElements[1].content).toContain('```\ntop\n\nbottom\n```');
+    expect(bodyElements[1].content).toContain('- top\n\n> bottom');
   });
 
-  it('removes visual divider rows from the text canvas', () => {
+  it('renders visual divider rows as markdown dividers', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot({
         rows: [
@@ -83,18 +83,43 @@ describe('renderCurrentScreenCard', () => {
     });
 
     const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
-    expect(canvas).toContain('useful content\nmore content');
+    expect(canvas).toContain('---\nuseful content\n---\nmore content\n---');
     expect(canvas).not.toContain('────────────────');
-    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').not.toContain('────────────────');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('---');
   });
 
-  it('keeps normal command output that contains hyphens', () => {
+  it('renders box table rows as markdown tables', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: '┌────┬──────────┬────────┐', spans: [] },
+          { text: '│ id │ name     │ status │', spans: [] },
+          { text: '├────┼──────────┼────────┤', spans: [] },
+          { text: '│ 1  │ code-bot │ online │', spans: [] },
+          { text: '└────┴──────────┴────────┘', spans: [] },
+        ],
+      }),
+      config: { ...config, cardMaxRows: 10, cardMaxLineChars: 80 },
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
+    expect(canvas).toContain('| id | name | status |');
+    expect(canvas).toContain('| --- | --- | --- |');
+    expect(canvas).toContain('| 1 | code-bot | online |');
+    expect(canvas).not.toContain('┌────');
+  });
+
+  it('keeps normal command output that contains hyphens and pipes', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot({
         rows: [
           { text: 'codex --approval-mode never', spans: [] },
           { text: 'feature/current-tui-snapshot', spans: [] },
           { text: '- markdown bullet remains', spans: [] },
+          { text: 'stdout | pipe remains text', spans: [] },
         ],
       }),
       config: { ...config, cardMaxLineChars: 80 },
@@ -107,6 +132,7 @@ describe('renderCurrentScreenCard', () => {
     expect(canvas).toContain('codex --approval-mode never');
     expect(canvas).toContain('feature/current-tui-snapshot');
     expect(canvas).toContain('- markdown bullet remains');
+    expect(canvas).toContain('stdout \\| pipe remains text');
   });
 
   it('includes title, session/project/status/source/capture metadata, and terminal row text', () => {
@@ -126,7 +152,7 @@ describe('renderCurrentScreenCard', () => {
     expect(preferredJson).toContain('live');
     expect(preferredJson).toContain('2026-06-05T10:00:00.000Z');
     expect(preferredJson).toContain('╭──── Codex ────╮');
-    expect(preferredJson).toContain('› 只读查看当前目录');
+    expect(preferredJson).toContain('> 只读查看当前目录');
   });
 
   it('truncates long rows and records a footer note', () => {
@@ -163,7 +189,7 @@ describe('renderCurrentScreenCard', () => {
     });
 
     expect(cardBodyElements(rendered.preferred)).toHaveLength(2);
-    expect(cardBodyElements(rendered.preferred)[1].content).toContain('```\ntop\n\nmiddle\n\n```');
+    expect(cardBodyElements(rendered.preferred)[1].content).toContain('top\n\nmiddle\n');
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('top\n\nmiddle\n');
   });
 
