@@ -80,7 +80,9 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
     notes.add('Rows were truncated to fit the Feishu card.');
   }
 
-  const preparedRows = limitedRows.map((row) => prepareRow(row, config, notes));
+  const preparedRows = limitedRows
+    .map((row) => prepareRow(row, config, notes))
+    .filter((row) => !isVisualDividerRow(row.text));
 
   return {
     rows: preparedRows,
@@ -123,6 +125,16 @@ function truncateText(text: string, maxChars: number): { text: string; truncated
     text: maxChars === 1 ? '…' : `${text.slice(0, maxChars - 1)}…`,
     truncated: true,
   };
+}
+
+function isVisualDividerRow(text: string): boolean {
+  const compact = text.replace(/\s/g, '');
+  if (compact.length < 3) {
+    return false;
+  }
+
+  const dividerChars = compact.match(/[─━═╭╮╰╯┌┐└┘├┤┬┴┼╞╡╪╔╗╚╝╠╣╦╩╬]/g)?.length ?? 0;
+  return dividerChars / compact.length >= 0.8;
 }
 
 function canRenderStyledRow(row: TerminalSnapshotRow, truncation: { text: string; truncated: boolean }): boolean {

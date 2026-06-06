@@ -65,6 +65,50 @@ describe('renderCurrentScreenCard', () => {
     expect(bodyElements[1].content).toContain('```\ntop\n\nbottom\n```');
   });
 
+  it('removes visual divider rows from the text canvas', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: '╭────────────────────╮', spans: [] },
+          { text: 'useful content', spans: [] },
+          { text: '├────────────────────┤', spans: [] },
+          { text: 'more content', spans: [] },
+          { text: '╰────────────────────╯', spans: [] },
+        ],
+      }),
+      config: { ...config, cardMaxRows: 10, cardMaxLineChars: 80 },
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
+    expect(canvas).toContain('useful content\nmore content');
+    expect(canvas).not.toContain('────────────────');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').not.toContain('────────────────');
+  });
+
+  it('keeps normal command output that contains hyphens', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot({
+        rows: [
+          { text: 'codex --approval-mode never', spans: [] },
+          { text: 'feature/current-tui-snapshot', spans: [] },
+          { text: '- markdown bullet remains', spans: [] },
+        ],
+      }),
+      config: { ...config, cardMaxLineChars: 80 },
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const canvas = cardBodyElements(rendered.preferred)[1].content ?? '';
+    expect(canvas).toContain('codex --approval-mode never');
+    expect(canvas).toContain('feature/current-tui-snapshot');
+    expect(canvas).toContain('- markdown bullet remains');
+  });
+
   it('includes title, session/project/status/source/capture metadata, and terminal row text', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot(),
