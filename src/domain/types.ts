@@ -64,6 +64,7 @@ export interface BotConfig {
   logLevel: LogLevel;
   ui: {
     verbosity: 'normal' | 'debug';
+    currentRenderMode: 'markdown' | 'code';
   };
   notifications: NotificationConfig;
   upgrade: UpgradeConfig;

@@ -23,7 +23,7 @@ import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
 import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
-import { renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
+import { hasRenderableCurrentScreenBody, renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
@@ -91,7 +91,7 @@ export interface SessionManagerDeps {
     quietMs?: number;
   };
   modelCatalog?: ModelCatalogReader;
-  upgradeManager?: Pick<UpgradeManager, 'upgrade'>;
+  upgradeManager?: Pick<UpgradeManager, 'upgrade' | 'restart'>;
 }
 
 interface ModelCatalogView {
@@ -246,6 +246,8 @@ export class SessionManager {
         return this.resolveApproval(input.chatId, parsed.args[0], 'rejected', input.userId);
       case 'upgrade':
         return this.upgrade(input);
+      case 'restart':
+        return this.restart(input);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -1078,6 +1080,7 @@ export class SessionManager {
     const renderedReply = renderCurrentScreenCard({
       snapshot,
       config: this.config.output.terminalSnapshot,
+      renderMode: this.config.ui.currentRenderMode,
       sessionId: session.id,
       projectId: session.projectId,
       status: session.status,
@@ -1092,7 +1095,7 @@ export class SessionManager {
   private async currentSnapshot(sessionId: string): Promise<TerminalSnapshot> {
     try {
       const live = this.terminalObserver.snapshot(sessionId);
-      if (live) {
+      if (live && hasRenderableCurrentScreenBody(live)) {
         return live;
       }
     } catch (error) {
@@ -2140,7 +2143,7 @@ export class SessionManager {
     });
   }
 
-  private getUpgradeManager(): Pick<UpgradeManager, 'upgrade'> {
+  private getUpgradeManager(): Pick<UpgradeManager, 'upgrade' | 'restart'> {
     return this.deps.upgradeManager ?? new UpgradeManager({ projectRoot: process.cwd(), config: this.config.upgrade });
   }
 
@@ -2154,9 +2157,19 @@ export class SessionManager {
     return { reply: result.reply };
   }
 
+  private async restart(input: IncomingBotText): Promise<BotTextResult> {
+    const result = await this.getUpgradeManager().restart({ userId: input.userId });
+    await this.store.appendEvent({
+      type: upgradeEventType(result.status),
+      at: new Date().toISOString(),
+      data: result.event,
+    });
+    return { reply: result.reply };
+  }
+
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
     const resumeHelp = [
       'Resume: /resume <session> [project]',
       '- session can be a code_bot session id from /sessions or a Codex native id',

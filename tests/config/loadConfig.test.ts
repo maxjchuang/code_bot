@@ -115,6 +115,7 @@ describe('loadConfig', () => {
     await expect(loadConfig(root)).resolves.toMatchObject({
       ui: {
         verbosity: 'normal',
+        currentRenderMode: 'markdown',
       },
       notifications: {
         enabled: true,
@@ -288,12 +289,12 @@ describe('loadConfig', () => {
       codex: { command: 'codex', defaultArgs: [] },
       logLevel: 'debug',
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
-      ui: { verbosity: 'debug' },
+      ui: { verbosity: 'debug', currentRenderMode: 'code' },
     });
 
     await expect(loadConfig(root)).resolves.toMatchObject({
       logLevel: 'debug',
-      ui: { verbosity: 'debug' },
+      ui: { verbosity: 'debug', currentRenderMode: 'code' },
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
     });
   });

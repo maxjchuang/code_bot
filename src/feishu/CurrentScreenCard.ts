@@ -1,14 +1,11 @@
 import type { SessionStatus, TerminalSnapshotConfig } from '../domain/types.js';
-import type {
-  TerminalSnapshot,
-  TerminalSnapshotRow,
-  TerminalSnapshotSpan,
-} from '../output/TerminalScreenBuffer.js';
+import type { TerminalSnapshot, TerminalSnapshotRow } from '../output/TerminalScreenBuffer.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
 
 export interface RenderCurrentScreenCardInput {
   snapshot: TerminalSnapshot;
   config: TerminalSnapshotConfig;
+  renderMode?: 'markdown' | 'code';
   sessionId: string;
   projectId: string;
   status: SessionStatus;
@@ -16,11 +13,13 @@ export interface RenderCurrentScreenCardInput {
 
 interface PreparedRow {
   text: string;
-  markdown: string;
 }
 
 interface PreparedRows {
   rows: PreparedRow[];
+  bodyRows: PreparedRow[];
+  markdown: string;
+  footerStatus?: string;
   notes: string[];
 }
 
@@ -29,30 +28,19 @@ export function renderCurrentScreenCard(
 ): { preferred: RenderedFeishuMessage; fallback: RenderedFeishuMessage } {
   const prepared = prepareRows(input.snapshot.rows, input.config);
   const notes = collectNotes(input.snapshot, prepared.notes);
-  const metadata = [
-    `- **Session**: ${markdownCodeSpan(input.sessionId)}`,
-    `- **Project**: ${markdownCodeSpan(input.projectId)}`,
-    `- **Status**: ${markdownCodeSpan(input.status)}`,
-    `- **Source**: ${markdownCodeSpan(input.snapshot.source)}`,
-    `- **Captured**: ${markdownCodeSpan(input.snapshot.capturedAt)}`,
-  ];
+  const renderedBody = input.renderMode === 'code' ? renderCodeBlock(prepared.bodyRows) : prepared.markdown;
+  const bodyMarkdown = renderedBody.trim() ? renderedBody : '_Current screen is empty._';
   const elements: Array<Record<string, unknown>> = [
     {
       tag: 'markdown',
-      content: metadata.join('\n'),
+      content: bodyMarkdown,
     },
-    ...prepared.rows.map((row) => ({
+    {
       tag: 'markdown',
-      content: row.markdown,
-    })),
+      content: renderFooterQuote(input, prepared.footerStatus),
+      text_size: 'notation',
+    },
   ];
-
-  if (notes.length > 0) {
-    elements.push({
-      tag: 'markdown',
-      content: `**Notes**\n${notes.map((note) => `- ${escapeFeishuMarkdownText(note)}`).join('\n')}`,
-    });
-  }
 
   return {
     preferred: {
@@ -77,6 +65,10 @@ export function renderCurrentScreenCard(
   };
 }
 
+export function hasRenderableCurrentScreenBody(snapshot: TerminalSnapshot): boolean {
+  return snapshot.rows.some((row) => isRenderableCurrentBodyRow(row.text));
+}
+
 function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig): PreparedRows {
   const notes = new Set<string>();
   const limitedRows = rows.slice(0, Math.max(0, config.cardMaxRows));
@@ -84,15 +76,28 @@ function prepareRows(rows: TerminalSnapshotRow[], config: TerminalSnapshotConfig
     notes.add('Rows were truncated to fit the Feishu card.');
   }
 
+  const preparedRows = limitedRows.map((row) => prepareRow(row, config, notes));
+  const footerStatus = preparedRows.find((row) => isCodexFooterStatusLine(row.text))?.text;
+  const markdownRows = footerStatus
+    ? preparedRows.filter((row) => row.text !== footerStatus)
+    : preparedRows;
+
   return {
-    rows: limitedRows.map((row) => prepareRow(row, config, notes)),
+    rows: preparedRows,
+    bodyRows: markdownRows,
+    markdown: renderMarkdownRows(markdownRows),
+    footerStatus,
     notes: [...notes],
   };
 }
 
+function isRenderableCurrentBodyRow(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length > 0 && !isCodexFooterStatusLine(trimmed) && !isVisualDividerRow(trimmed);
+}
+
 function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, notes: Set<string>): PreparedRow {
   const truncation = truncateText(row.text, config.cardMaxLineChars);
-  const renderedText = truncation.text === '' ? ' ' : truncation.text;
   if (truncation.truncated) {
     notes.add('Rows were truncated to fit the Feishu card.');
   }
@@ -100,8 +105,7 @@ function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, no
   if (row.spans.length > config.maxStyledSegmentsPerLine) {
     notes.add('Some rows were rendered as plain text because they had too many styled spans.');
     return {
-      text: renderedText,
-      markdown: terminalMarkdownLine(renderedText),
+      text: truncation.text,
     };
   }
 
@@ -110,11 +114,8 @@ function prepareRow(row: TerminalSnapshotRow, config: TerminalSnapshotConfig, no
     notes.add('Some rows were rendered as plain text because their styles are too complex.');
   }
 
-  const markdown = canRenderStyled ? row.spans.map(renderStyledSpan).join('') : terminalMarkdownLine(renderedText);
-
   return {
-    text: renderedText,
-    markdown,
+    text: truncation.text,
   };
 }
 
@@ -131,6 +132,16 @@ function truncateText(text: string, maxChars: number): { text: string; truncated
   };
 }
 
+function isVisualDividerRow(text: string): boolean {
+  const compact = text.replace(/\s/g, '');
+  if (compact.length < 3) {
+    return false;
+  }
+
+  const dividerChars = compact.match(/[─━═╭╮╰╯┌┐└┘├┤┬┴┼╞╡╪╔╗╚╝╠╣╦╩╬]/g)?.length ?? 0;
+  return dividerChars / compact.length >= 0.8;
+}
+
 function canRenderStyledRow(row: TerminalSnapshotRow, truncation: { text: string; truncated: boolean }): boolean {
   if (row.spans.length === 0) {
     return false;
@@ -142,40 +153,125 @@ function canRenderStyledRow(row: TerminalSnapshotRow, truncation: { text: string
   return styledText === row.text && truncation.text === row.text;
 }
 
-function renderStyledSpan(span: TerminalSnapshotSpan): string {
-  let content = escapeFeishuMarkdownText(span.text);
+function renderMarkdownRows(rows: PreparedRow[]): string {
+  const rendered: string[] = [];
 
-  if (span.bold) {
-    content = `**${content}**`;
-  }
-  if (span.dim && !span.color) {
-    content = `<font color='grey'>${content}</font>`;
+  for (let index = 0; index < rows.length; index += 1) {
+    const tableBlock = collectTableBlock(rows, index);
+    if (tableBlock) {
+      rendered.push(...renderMarkdownTable(tableBlock.rows));
+      index = tableBlock.endIndex;
+      continue;
+    }
+
+    rendered.push(renderMarkdownLine(rows[index].text));
   }
 
-  switch (span.color) {
-    case 'red':
-      return `<font color='red'>${content}</font>`;
-    case 'green':
-      return `<font color='green'>${content}</font>`;
-    case 'yellow':
-      return `<font color='orange'>${content}</font>`;
-    case 'gray':
-      return `<font color='grey'>${content}</font>`;
-    default:
-      return content;
-  }
+  return rendered.join('\n');
 }
 
-function terminalMarkdownLine(text: string): string {
-  const escaped = escapeFeishuTagText(text);
-  const fence = '`'.repeat(Math.max(3, longestBacktickRun(escaped) + 1));
-  return `${fence}\n${escaped}\n${fence}`;
+function renderCodeBlock(rows: PreparedRow[]): string {
+  const text = rows.map((row) => row.text).join('\n');
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1));
+  return `${fence}text\n${text}\n${fence}`;
+}
+
+function collectTableBlock(rows: PreparedRow[], startIndex: number): { rows: string[][]; endIndex: number } | undefined {
+  if (!isBoxTableLine(rows[startIndex].text)) {
+    return undefined;
+  }
+
+  const tableRows: string[][] = [];
+  let endIndex = startIndex;
+
+  for (let index = startIndex; index < rows.length && isBoxTableLine(rows[index].text); index += 1) {
+    endIndex = index;
+    const cells = parseBoxTableCells(rows[index].text);
+    if (cells.length > 0) {
+      tableRows.push(cells);
+    }
+  }
+
+  return tableRows.length >= 2 ? { rows: tableRows, endIndex } : undefined;
+}
+
+function renderMarkdownTable(rows: string[][]): string[] {
+  const columnCount = Math.max(...rows.map((row) => row.length));
+  const normalizedRows = rows.map((row) => normalizeTableRow(row, columnCount));
+  const [header, ...bodyRows] = normalizedRows;
+
+  return [
+    renderMarkdownTableRow(header),
+    renderMarkdownTableRow(Array.from({ length: columnCount }, () => '---')),
+    ...bodyRows.map(renderMarkdownTableRow),
+  ];
+}
+
+function normalizeTableRow(row: string[], columnCount: number): string[] {
+  return Array.from({ length: columnCount }, (_, index) => row[index] ?? '');
+}
+
+function renderMarkdownTableRow(row: string[]): string {
+  return `| ${row.map(escapeMarkdownTableCell).join(' | ')} |`;
+}
+
+function escapeMarkdownTableCell(text: string): string {
+  return escapeFeishuMarkdownText(text.trim());
+}
+
+function renderMarkdownLine(text: string): string {
+  if (isVisualDividerRow(text)) {
+    return '---';
+  }
+
+  if (text.startsWith('• ')) {
+    return `- ${escapeFeishuMarkdownText(text.slice(2))}`;
+  }
+
+  if (text.startsWith('› ')) {
+    return `> ${escapeFeishuMarkdownText(text.slice(2))}`;
+  }
+
+  return escapeFeishuMarkdownText(text);
+}
+
+function isBoxTableLine(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.includes('│') || /^[┌┬┐├┼┤└┴┘─━═\s]+$/.test(trimmed);
+}
+
+function parseBoxTableCells(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('│') || !trimmed.endsWith('│')) {
+    return [];
+  }
+
+  return trimmed
+    .slice(1, -1)
+    .split('│')
+    .map((cell) => cell.trim());
 }
 
 function markdownCodeSpan(text: string): string {
   const escaped = escapeFeishuTagText(text);
   const delimiter = '`'.repeat(longestBacktickRun(escaped) + 1);
   return `${delimiter}${escaped}${delimiter}`;
+}
+
+function renderFooterQuote(input: RenderCurrentScreenCardInput, footerStatus: string | undefined): string {
+  return [
+    footerQuoteLine(`Session: ${markdownCodeSpan(input.sessionId)}`),
+    footerQuoteLine(`Captured: ${markdownCodeSpan(input.snapshot.capturedAt)}`),
+    ...(footerStatus ? [footerQuoteLine(escapeFeishuMarkdownText(footerStatus))] : []),
+  ].join('\n');
+}
+
+function footerQuoteLine(content: string): string {
+  return `> <font color='grey'>${content}</font>`;
+}
+
+function isCodexFooterStatusLine(text: string): boolean {
+  return /^gpt-[^\n]+ · Context \d+% used · .+ used$/i.test(text.trim());
 }
 
 function escapeFeishuTagText(text: string): string {
@@ -215,7 +311,7 @@ function renderFallback(input: RenderCurrentScreenCardInput, rows: PreparedRow[]
     `Source: ${input.snapshot.source}`,
     `Captured: ${input.snapshot.capturedAt}`,
     '',
-    ...rows.map((row) => row.text),
+    ...renderFallbackRows(rows),
   ];
 
   if (notes.length > 0) {
@@ -223,4 +319,8 @@ function renderFallback(input: RenderCurrentScreenCardInput, rows: PreparedRow[]
   }
 
   return lines.join('\n');
+}
+
+function renderFallbackRows(rows: PreparedRow[]): string[] {
+  return rows.map((row) => (isVisualDividerRow(row.text) ? '---' : row.text));
 }

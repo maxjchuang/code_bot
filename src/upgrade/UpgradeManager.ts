@@ -177,6 +177,48 @@ export class UpgradeManager {
     };
   }
 
+  async restart(input: { userId: string }): Promise<UpgradeResult> {
+    const config = this.deps.config;
+    if (!config.enabled) {
+      return simpleResult('disabled', 'Self-upgrade is disabled.', { enabled: false });
+    }
+    if (!config.adminUsers.includes(input.userId)) {
+      return simpleResult('unauthorized', 'You are not allowed to run /restart.', { userId: input.userId });
+    }
+
+    const head = await this.runStep('git-head', 'git', ['rev-parse', 'HEAD']);
+    if (!head.ok) {
+      return failedResult('git-head', head.error);
+    }
+
+    const currentCommit = head.stdout.trim();
+    const steps: Array<{ step: string; command: string; args: string[] }> = [
+      { step: 'npm-install', command: 'npm', args: ['install'] },
+      { step: 'npm-build', command: 'npm', args: ['run', 'build'] },
+      { step: 'pm2-restart', command: 'pm2', args: ['restart', config.pm2ProcessName] },
+    ];
+
+    for (const { step, command, args } of steps) {
+      const result = await this.runStep(step, command, args);
+      if (!result.ok) {
+        return failedResult(step, result.error, { oldCommit: currentCommit, newCommit: currentCommit });
+      }
+    }
+
+    const stateWrite = await this.writeState(currentCommit);
+    if (!stateWrite.ok) {
+      return failedResult('deployment-state-write', stateWrite.error, { oldCommit: currentCommit, newCommit: currentCommit });
+    }
+
+    return {
+      status: 'restart-triggered',
+      reply: `Restarted local code at ${shortSha(currentCommit)}. Restarting ${config.pm2ProcessName} with pm2.`,
+      oldCommit: currentCommit,
+      newCommit: currentCommit,
+      event: { status: 'restart-triggered', oldCommit: currentCommit, newCommit: currentCommit, pm2ProcessName: config.pm2ProcessName },
+    };
+  }
+
   private async runStep(step: string, command: string, args: string[]): Promise<StepResult> {
     try {
       const result = await this.runner.run(command, args, { cwd: this.deps.projectRoot });
