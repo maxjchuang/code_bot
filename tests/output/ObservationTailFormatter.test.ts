@@ -19,18 +19,21 @@ describe('formatObservationTail', () => {
   });
 
   it('renders final answers for completed snapshots', () => {
-    const reply = formatObservationTail({
-      availability: { kind: 'ready' },
-      codexSessionId: 'session-2',
-      status: 'completed',
-      finalAnswer: '最终方案：保留 PTY，用户侧改读 observation。',
-      completedAt: '2026-06-02T08:12:00.000Z',
-      recentToolEvents: [],
-    });
+    const reply = formatObservationTail(
+      {
+        availability: { kind: 'ready' },
+        codexSessionId: 'session-2',
+        status: 'completed',
+        finalAnswer: '最终方案：保留 PTY，用户侧改读 observation。',
+        completedAt: '2026-06-02T08:12:00.000Z',
+        recentToolEvents: [],
+      },
+      { timeZone: 'Asia/Shanghai' },
+    );
 
     expect(reply).toContain('Status: completed');
     expect(reply).toContain('最终方案：保留 PTY，用户侧改读 observation。');
-    expect(reply).toContain('Completed: 2026-06-02T08:12:00.000Z');
+    expect(reply).toContain('Completed: 2026-06-02 16:12:00 Asia/Shanghai');
   });
 
   it('truncates long tool activity blocks', () => {

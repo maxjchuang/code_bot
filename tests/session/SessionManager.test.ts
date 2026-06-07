@@ -4117,7 +4117,7 @@ describe('SessionManager', () => {
 
     expect(result.reply).toContain('Codex models');
     expect(result.reply).toContain('Client: 0.136.0');
-    expect(result.reply).toContain('Fetched: 2026-06-03T13:43:32.128077Z');
+    expect(result.reply).toContain('Fetched: 2026-06-03 21:43:32 Asia/Shanghai');
     expect(result.reply).toContain('Current: gpt-5.5');
     expect(result.reply).toContain('Reasoning: high');
     expect(result.reply).toContain('Saved default: gpt-5.5-mini');
@@ -5615,6 +5615,7 @@ describe('SessionManager', () => {
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
     expect(listed.reply).toContain('repo');
     expect(listed.reply).toContain('running');
+    expect(listed.reply).toContain('Asia/Shanghai');
   });
 
   it('marks current and resumable sessions without exposing native ids in /sessions', async () => {
@@ -5651,6 +5652,8 @@ describe('SessionManager', () => {
 
     expect(listed.reply).toContain('sess_current | current | repo | running');
     expect(listed.reply).toContain('sess_resumable | resumable | repo | exited');
+    expect(listed.reply).toContain('2026-06-01 08:02:00 Asia/Shanghai');
+    expect(listed.reply).toContain('2026-06-01 08:01:00 Asia/Shanghai');
     expect(listed.reply).not.toContain(codexSessionId);
     expect(listed.reply).not.toContain('019e7f20-a667-7632-a808-c9595d77116f');
   });

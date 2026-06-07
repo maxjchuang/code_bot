@@ -181,12 +181,29 @@ describe('renderCurrentScreenCard', () => {
     expect(elements[1].text_size).toBe('notation');
     expect(footer).toContain('> ');
     expect(footer).toContain('Session: `sess_1`');
-    expect(footer).toContain('Captured: `2026-06-05T10:00:00.000Z`');
+    expect(footer).toContain('Captured: `2026-06-05 18:00:00 Asia/Shanghai`');
     expect(footer).toContain('Status: gpt-5.5 medium · Context 16% used · 864K used');
     expect(footer).not.toContain("> <font color='grey'>gpt-5.5 medium");
     expect(footer).not.toContain('Project');
     expect(footer).not.toContain('Status: `running`');
     expect(footer).not.toContain('Source');
+  });
+
+  it('uses the configured time zone for captured time', () => {
+    const rendered = renderCurrentScreenCard({
+      snapshot: snapshot(),
+      config,
+      displayTimeZone: 'UTC',
+      sessionId: 'sess_1',
+      projectId: 'repo',
+      status: 'running',
+    });
+
+    const footer = cardBodyElements(rendered.preferred)[1].content ?? '';
+    expect(footer).toContain('Captured: `2026-06-05 10:00:00 UTC`');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain(
+      'Captured: 2026-06-05 10:00:00 UTC',
+    );
   });
 
   it('shows an explicit empty-screen message when no terminal rows render into the main body', () => {
@@ -220,7 +237,7 @@ describe('renderCurrentScreenCard', () => {
     const preferredJson = JSON.stringify(rendered.preferred);
     expect(preferredJson).not.toContain('Codex Current');
     expect(preferredJson).toContain('sess_1');
-    expect(preferredJson).toContain('2026-06-05T10:00:00.000Z');
+    expect(preferredJson).toContain('2026-06-05 18:00:00 Asia/Shanghai');
     expect(preferredJson).toContain('╭──── Codex ────╮');
     expect(preferredJson).toContain('> 只读查看当前目录');
     expect(preferredJson).not.toContain('repo');

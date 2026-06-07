@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { BotConfig, ProjectConfig } from '../domain/types.js';
 import { parseLogLevel } from '../logging/AppLogger.js';
+import { DEFAULT_DISPLAY_TIME_ZONE, isValidDisplayTimeZone } from '../output/DisplayTimeFormatter.js';
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
@@ -160,6 +161,8 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
         ui.currentRenderMode === undefined
           ? 'markdown'
           : requireCurrentRenderMode(ui.currentRenderMode, 'ui.currentRenderMode'),
+      timeZone:
+        ui.timeZone === undefined ? DEFAULT_DISPLAY_TIME_ZONE : requireDisplayTimeZone(ui.timeZone, 'ui.timeZone'),
     },
     notifications: {
       enabled: optionalBoolean(notifications.enabled, true, 'notifications.enabled'),
@@ -183,6 +186,14 @@ function requireCurrentRenderMode(value: unknown, field: string): 'markdown' | '
     return value;
   }
   throw new Error(`Invalid config field: ${field}`);
+}
+
+function requireDisplayTimeZone(value: unknown, field: string): string {
+  const timeZone = requireString(value, field);
+  if (!isValidDisplayTimeZone(timeZone)) {
+    throw new Error(`Invalid config field: ${field}`);
+  }
+  return timeZone;
 }
 
 function normalizeUpgrade(value: Record<string, unknown>): BotConfig['upgrade'] {
