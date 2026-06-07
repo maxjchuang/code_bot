@@ -182,9 +182,10 @@ describe('renderCurrentScreenCard', () => {
     expect(footer).toContain('> ');
     expect(footer).toContain('Session: `sess_1`');
     expect(footer).toContain('Captured: `2026-06-05T10:00:00.000Z`');
-    expect(footer).toContain('gpt-5.5 medium · Context 16% used · 864K used');
+    expect(footer).toContain('Status: gpt-5.5 medium · Context 16% used · 864K used');
+    expect(footer).not.toContain("> <font color='grey'>gpt-5.5 medium");
     expect(footer).not.toContain('Project');
-    expect(footer).not.toContain('Status');
+    expect(footer).not.toContain('Status: `running`');
     expect(footer).not.toContain('Source');
   });
 

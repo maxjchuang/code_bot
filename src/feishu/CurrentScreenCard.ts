@@ -256,7 +256,7 @@ function renderFooterQuote(input: RenderCurrentScreenCardInput, footerStatus: st
   return [
     footerQuoteLine(`Session: ${markdownCodeSpan(input.sessionId)}`),
     footerQuoteLine(`Captured: ${markdownCodeSpan(input.snapshot.capturedAt)}`),
-    ...(footerStatus ? [footerQuoteLine(escapeFeishuMarkdownText(footerStatus))] : []),
+    ...(footerStatus ? [footerQuoteLine(`Status: ${escapeFeishuMarkdownText(footerStatus)}`)] : []),
   ].join('\n');
 }
 
