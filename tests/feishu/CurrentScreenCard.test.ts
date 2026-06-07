@@ -40,7 +40,8 @@ describe('renderCurrentScreenCard', () => {
 
     expect(rendered.preferred.kind).toBe('card');
     expect(rendered.fallback).toEqual(expect.objectContaining({ kind: 'text' }));
-    expect(JSON.stringify(rendered.preferred)).toContain('Codex Current');
+    expect(JSON.stringify(rendered.preferred)).not.toContain('Codex Current');
+    expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('Codex Current');
     expect(JSON.stringify(rendered.preferred)).toContain('⚠ warning here');
     expect(rendered.fallback.kind === 'text' ? rendered.fallback.text : '').toContain('› 只读查看当前目录');
   });
@@ -206,7 +207,7 @@ describe('renderCurrentScreenCard', () => {
     expect(elements[1].content).toContain('Session: `sess_1`');
   });
 
-  it('includes title and terminal row text', () => {
+  it('omits the card title while retaining compact metadata and terminal row text', () => {
     const rendered = renderCurrentScreenCard({
       snapshot: snapshot(),
       config,
@@ -216,7 +217,7 @@ describe('renderCurrentScreenCard', () => {
     });
 
     const preferredJson = JSON.stringify(rendered.preferred);
-    expect(preferredJson).toContain('Codex Current');
+    expect(preferredJson).not.toContain('Codex Current');
     expect(preferredJson).toContain('sess_1');
     expect(preferredJson).toContain('2026-06-05T10:00:00.000Z');
     expect(preferredJson).toContain('╭──── Codex ────╮');

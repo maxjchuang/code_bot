@@ -47,12 +47,6 @@ export function renderCurrentScreenCard(
       kind: 'card',
       payload: {
         schema: '2.0',
-        header: {
-          title: {
-            tag: 'plain_text',
-            content: 'Codex Current',
-          },
-        },
         body: {
           elements,
         },

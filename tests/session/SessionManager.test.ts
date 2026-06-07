@@ -5020,7 +5020,7 @@ describe('SessionManager', () => {
     expect(result.reply).toContain('Codex Current');
     expect(result.reply).toContain('› 只读查看当前目录');
     expect(result.renderedReply?.preferred.kind).toBe('card');
-    expect(JSON.stringify(result.renderedReply?.preferred)).toContain('Codex Current');
+    expect(JSON.stringify(result.renderedReply?.preferred)).not.toContain('Codex Current');
   });
 
   it('renders /current as a code block when configured', async () => {
