@@ -93,6 +93,19 @@ interface LarkCardActionEvent extends LarkCardActionPayload {
   event?: LarkCardActionPayload;
 }
 
+interface LarkBotMenuPayload {
+  event_key?: string;
+  operator?: {
+    operator_id?: {
+      open_id?: string;
+    };
+  };
+}
+
+interface LarkBotMenuEvent extends LarkBotMenuPayload {
+  event?: LarkBotMenuPayload;
+}
+
 interface LarkClientLike {
   request?: (payload: {
     url: string;
@@ -124,6 +137,7 @@ interface EventDispatcherLike {
   register: (handlers: {
     'im.message.receive_v1': (data: LarkReceiveMessageEvent) => Promise<void>;
     'card.action.trigger'?: (data: LarkCardActionEvent) => Promise<void>;
+    'application.bot.menu_v6'?: (data: LarkBotMenuEvent) => Promise<void>;
   }) => unknown;
 }
 
@@ -143,6 +157,18 @@ interface LarkGatewayDeps {
 }
 
 const FEISHU_TEXT_MESSAGE_MAX_CHARS = 15_000;
+const BOT_MENU_COMMANDS: Record<string, string> = {
+  current: '/current',
+  tail: '/tail',
+  status: '/status',
+  project: '/projects',
+  projects: '/projects',
+  new: '/new',
+  model: '/model',
+  stop: '/stop',
+  restart: '/restart',
+  upgrade: '/upgrade',
+};
 
 export class LarkLongConnectionGateway implements FeishuGateway {
   private readonly client: LarkClientLike;
@@ -152,6 +178,7 @@ export class LarkLongConnectionGateway implements FeishuGateway {
   private readonly recordEvent?: (event: BotEvent) => Promise<void>;
   private readonly recordError?: (entry: BotErrorLogEntry) => Promise<void>;
   private botOpenId?: string;
+  private readonly p2pChatIdsByUser = new Map<string, string>();
 
   constructor(appId: string, appSecret: string, deps?: LarkGatewayDeps) {
     this.client = deps?.client ?? new lark.Client({ appId, appSecret });
@@ -181,6 +208,9 @@ export class LarkLongConnectionGateway implements FeishuGateway {
 
           const content = JSON.parse(message.content) as { text?: string };
           const text = content.text ?? '';
+          if (message.chat_type === 'p2p') {
+            this.p2pChatIdsByUser.set(sender.open_id, message.chat_id);
+          }
           const incomingMessage: FeishuIncomingMessage = {
             chatId: message.chat_id,
             chatType: message.chat_type === 'group' ? 'group' : 'private',
@@ -255,6 +285,49 @@ export class LarkLongConnectionGateway implements FeishuGateway {
           }
 
           await this.sendReply(originChatId, incomingAction, reply);
+        },
+        'application.bot.menu_v6': async (data: LarkBotMenuEvent) => {
+          const event = data.event ?? data;
+          const userId = event.operator?.operator_id?.open_id;
+          const command = commandForBotMenuKey(event.event_key);
+          if (!userId || !command) {
+            return;
+          }
+
+          const chatId = this.p2pChatIdsByUser.get(userId);
+          if (!chatId) {
+            this.logger.debug('feishu.bot_menu_ignored', {
+              user: userId,
+              eventKey: event.event_key,
+              reason: 'missing_cached_private_chat_id',
+            });
+            return;
+          }
+
+          const incomingMessage: FeishuIncomingMessage = {
+            chatId,
+            chatType: 'private',
+            userId,
+            text: command,
+            wasMentioned: true,
+            mentionsOpenIds: [],
+            botOpenIdResolved: Boolean(this.botOpenId),
+          };
+
+          let reply: FeishuOutgoingReply;
+          try {
+            reply = await onMessage(incomingMessage);
+          } catch (error) {
+            await this.recordProcessingFailure('handle_message', incomingMessage, undefined, error);
+            this.logger.error('feishu.handle_message_failed', {
+              chat: incomingMessage.chatId,
+              user: incomingMessage.userId,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+
+          await this.sendReply(chatId, incomingMessage, reply);
         },
       });
     await this.wsClient.start({
@@ -535,6 +608,13 @@ function splitFeishuMessages(text: string): string[] {
     chunks.push(text.slice(index, index + FEISHU_TEXT_MESSAGE_MAX_CHARS));
   }
   return chunks;
+}
+
+function commandForBotMenuKey(eventKey: string | undefined): string | undefined {
+  if (!eventKey) {
+    return undefined;
+  }
+  return BOT_MENU_COMMANDS[eventKey.trim().toLowerCase()];
 }
 
 function textWithMention(target: FeishuReplyTarget, text: string): string {
