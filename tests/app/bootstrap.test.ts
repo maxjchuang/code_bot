@@ -31,7 +31,7 @@ const config: BotConfig = {
   },
   codex: { command: 'codex', defaultArgs: [] },
   logLevel: 'info',
-  ui: { verbosity: 'normal', currentRenderMode: 'markdown' },
+  ui: { verbosity: 'normal', currentRenderMode: 'markdown', timeZone: 'Asia/Shanghai' },
   notifications: { enabled: true, idleMs: 3000, maxFinalChars: 8000, failureTailChars: 2000 },
   upgrade: {
     enabled: false,

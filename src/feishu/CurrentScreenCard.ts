@@ -1,11 +1,13 @@
 import type { SessionStatus, TerminalSnapshotConfig } from '../domain/types.js';
 import type { TerminalSnapshot, TerminalSnapshotRow } from '../output/TerminalScreenBuffer.js';
+import { formatDisplayTime } from '../output/DisplayTimeFormatter.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
 
 export interface RenderCurrentScreenCardInput {
   snapshot: TerminalSnapshot;
   config: TerminalSnapshotConfig;
   renderMode?: 'markdown' | 'code';
+  displayTimeZone?: string;
   sessionId: string;
   projectId: string;
   status: SessionStatus;
@@ -47,12 +49,6 @@ export function renderCurrentScreenCard(
       kind: 'card',
       payload: {
         schema: '2.0',
-        header: {
-          title: {
-            tag: 'plain_text',
-            content: 'Codex Current',
-          },
-        },
         body: {
           elements,
         },
@@ -261,8 +257,8 @@ function markdownCodeSpan(text: string): string {
 function renderFooterQuote(input: RenderCurrentScreenCardInput, footerStatus: string | undefined): string {
   return [
     footerQuoteLine(`Session: ${markdownCodeSpan(input.sessionId)}`),
-    footerQuoteLine(`Captured: ${markdownCodeSpan(input.snapshot.capturedAt)}`),
-    ...(footerStatus ? [footerQuoteLine(escapeFeishuMarkdownText(footerStatus))] : []),
+    footerQuoteLine(`Captured: ${markdownCodeSpan(formatDisplayTime(input.snapshot.capturedAt, input.displayTimeZone))}`),
+    ...(footerStatus ? [footerQuoteLine(`Status: ${escapeFeishuMarkdownText(footerStatus)}`)] : []),
   ].join('\n');
 }
 
@@ -309,7 +305,7 @@ function renderFallback(input: RenderCurrentScreenCardInput, rows: PreparedRow[]
     `Project: ${input.projectId}`,
     `Status: ${input.status}`,
     `Source: ${input.snapshot.source}`,
-    `Captured: ${input.snapshot.capturedAt}`,
+    `Captured: ${formatDisplayTime(input.snapshot.capturedAt, input.displayTimeZone)}`,
     '',
     ...renderFallbackRows(rows),
   ];

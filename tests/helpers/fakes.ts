@@ -29,7 +29,7 @@ export function sampleConfig(projectPath: string): BotConfig {
     },
     codex: { command: 'codex', defaultArgs: [] },
     logLevel: 'info',
-    ui: { verbosity: 'normal', currentRenderMode: 'markdown' },
+    ui: { verbosity: 'normal', currentRenderMode: 'markdown', timeZone: 'Asia/Shanghai' },
     notifications: { enabled: true, idleMs: 10, maxFinalChars: 8000, failureTailChars: 2000 },
     upgrade: {
       enabled: false,

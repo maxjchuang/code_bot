@@ -65,6 +65,7 @@ export interface BotConfig {
   ui: {
     verbosity: 'normal' | 'debug';
     currentRenderMode: 'markdown' | 'code';
+    timeZone: string;
   };
   notifications: NotificationConfig;
   upgrade: UpgradeConfig;

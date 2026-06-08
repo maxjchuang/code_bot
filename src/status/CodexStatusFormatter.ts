@@ -1,16 +1,17 @@
 import type { CachedCodexStatus } from '../domain/types.js';
+import { formatDisplayTime } from '../output/DisplayTimeFormatter.js';
 
 export type CodexStatusSection =
   | { kind: 'available'; status: CachedCodexStatus }
   | { kind: 'unavailable' };
 
-export function formatCodexStatusSection(section: CodexStatusSection): string {
+export function formatCodexStatusSection(section: CodexStatusSection, options: { timeZone?: string } = {}): string {
   if (section.kind === 'unavailable') {
     return 'Codex status: unavailable';
   }
 
   const { status } = section;
-  const lines = ['Codex status', `Source: ${status.source}`, `Fetched at: ${status.fetchedAt}`];
+  const lines = ['Codex status', `Source: ${status.source}`, `Fetched at: ${formatDisplayTime(status.fetchedAt, options.timeZone)}`];
 
   if (status.summary.statusLine) {
     lines.push(`Status line: ${status.summary.statusLine}`);

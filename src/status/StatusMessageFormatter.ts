@@ -1,4 +1,5 @@
 import type { CachedCodexStatus, SessionStatus } from '../domain/types.js';
+import { formatDisplayTime } from '../output/DisplayTimeFormatter.js';
 
 export type StatusMessageInput = {
   session: {
@@ -21,10 +22,10 @@ export type StatusMessage = {
   fallbackText: string;
 };
 
-export function formatStatusMessage(input: StatusMessageInput): StatusMessage {
+export function formatStatusMessage(input: StatusMessageInput, options: { timeZone?: string } = {}): StatusMessage {
   return {
-    bodyMarkdown: [formatSessionMarkdown(input.session), formatCodexMarkdown(input.codex, input.runtime)].join('\n\n'),
-    fallbackText: [formatSessionFallback(input.session), formatCodexFallback(input.codex, input.runtime)].join('\n\n'),
+    bodyMarkdown: [formatSessionMarkdown(input.session), formatCodexMarkdown(input.codex, input.runtime, options.timeZone)].join('\n\n'),
+    fallbackText: [formatSessionFallback(input.session), formatCodexFallback(input.codex, input.runtime, options.timeZone)].join('\n\n'),
   };
 }
 
@@ -46,13 +47,13 @@ function formatSessionMarkdown(input: StatusMessageInput['session']): string {
   return lines.join('\n');
 }
 
-function formatCodexMarkdown(input: StatusMessageInput['codex'], runtime: StatusMessageInput['runtime']): string {
+function formatCodexMarkdown(input: StatusMessageInput['codex'], runtime: StatusMessageInput['runtime'], timeZone?: string): string {
   if (input.kind === 'unavailable') {
     return '## Codex\nUnavailable';
   }
 
   const { status } = input;
-  const lines = ['## Codex', `- **Source**: \`${status.source}\``, `- **Fetched at**: \`${status.fetchedAt}\``];
+  const lines = ['## Codex', `- **Source**: \`${status.source}\``, `- **Fetched at**: \`${formatDisplayTime(status.fetchedAt, timeZone)}\``];
 
   if (status.summary.statusLine) {
     lines.push(`- **Status**: \`${status.summary.statusLine}\``);
@@ -127,13 +128,13 @@ function formatSessionFallback(input: StatusMessageInput['session']): string {
   return lines.join('\n');
 }
 
-function formatCodexFallback(input: StatusMessageInput['codex'], runtime: StatusMessageInput['runtime']): string {
+function formatCodexFallback(input: StatusMessageInput['codex'], runtime: StatusMessageInput['runtime'], timeZone?: string): string {
   if (input.kind === 'unavailable') {
     return 'Codex\nUnavailable';
   }
 
   const { status } = input;
-  const lines = ['Codex', `Source: ${status.source}`, `Fetched at: ${status.fetchedAt}`];
+  const lines = ['Codex', `Source: ${status.source}`, `Fetched at: ${formatDisplayTime(status.fetchedAt, timeZone)}`];
 
   if (status.summary.statusLine) {
     lines.push(`Status line: ${status.summary.statusLine}`);

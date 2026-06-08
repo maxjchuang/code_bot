@@ -13,6 +13,7 @@ import {
 } from '../notifications/FinalAnswerExtractor.js';
 import { FileCodexObservationStore, type CodexObservationStore } from '../observations/CodexObservationStore.js';
 import { formatLogTail, formatReadableTail } from '../output/OutputFormatter.js';
+import { formatDisplayTime } from '../output/DisplayTimeFormatter.js';
 import { CodexTerminalObserver } from '../output/CodexTerminalObserver.js';
 import { replayTerminalSnapshot, type TerminalSnapshot } from '../output/TerminalScreenBuffer.js';
 import { sanitizeTerminalOutput } from '../output/TerminalOutputSanitizer.js';
@@ -797,19 +798,22 @@ export class SessionManager {
     const pendingApprovals = await this.store.listPendingApprovalsByChat(chatId);
     const codexStatus = await this.codexStatusResult(session);
     const installedCliVersion = await this.runner.getVersion?.().catch(() => undefined);
-    const message = formatStatusMessage({
-      session: {
-        projectId: chat?.currentProjectId,
-        sessionId: chat?.currentSessionId,
-        status: session?.status ?? 'none',
-        summary: session?.lastSummary,
-        pendingApprovals: pendingApprovals.map((approval) => approval.id),
+    const message = formatStatusMessage(
+      {
+        session: {
+          projectId: chat?.currentProjectId,
+          sessionId: chat?.currentSessionId,
+          status: session?.status ?? 'none',
+          summary: session?.lastSummary,
+          pendingApprovals: pendingApprovals.map((approval) => approval.id),
+        },
+        codex: codexStatus,
+        runtime: {
+          installedCliVersion,
+        },
       },
-      codex: codexStatus,
-      runtime: {
-        installedCliVersion,
-      },
-    });
+      { timeZone: this.config.ui.timeZone },
+    );
 
     return {
       reply: message.fallbackText,
@@ -951,7 +955,7 @@ export class SessionManager {
       lines.push(`Client: ${catalog.clientVersion}`);
     }
     if (catalog.fetchedAt) {
-      lines.push(`Fetched: ${catalog.fetchedAt}`);
+      lines.push(`Fetched: ${formatDisplayTime(catalog.fetchedAt, this.config.ui.timeZone)}`);
     }
     if (currentModel?.model) {
       lines.push(`Current: ${currentModel.model}`);
@@ -1081,6 +1085,7 @@ export class SessionManager {
       snapshot,
       config: this.config.output.terminalSnapshot,
       renderMode: this.config.ui.currentRenderMode,
+      displayTimeZone: this.config.ui.timeZone,
       sessionId: session.id,
       projectId: session.projectId,
       status: session.status,
@@ -1186,7 +1191,7 @@ export class SessionManager {
     const chat = await this.store.getChat(chatId);
     return {
       reply: sessions
-        .map((session) => `${session.id} | ${sessionResumeState(session, chat?.currentSessionId)} | ${session.projectId} | ${session.status} | ${session.updatedAt}`)
+        .map((session) => `${session.id} | ${sessionResumeState(session, chat?.currentSessionId)} | ${session.projectId} | ${session.status} | ${formatDisplayTime(session.updatedAt, this.config.ui.timeZone)}`)
         .join('\n'),
     };
   }

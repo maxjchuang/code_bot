@@ -116,6 +116,7 @@ describe('loadConfig', () => {
       ui: {
         verbosity: 'normal',
         currentRenderMode: 'markdown',
+        timeZone: 'Asia/Shanghai',
       },
       notifications: {
         enabled: true,
@@ -289,12 +290,12 @@ describe('loadConfig', () => {
       codex: { command: 'codex', defaultArgs: [] },
       logLevel: 'debug',
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
-      ui: { verbosity: 'debug', currentRenderMode: 'code' },
+      ui: { verbosity: 'debug', currentRenderMode: 'code', timeZone: 'UTC' },
     });
 
     await expect(loadConfig(root)).resolves.toMatchObject({
       logLevel: 'debug',
-      ui: { verbosity: 'debug', currentRenderMode: 'code' },
+      ui: { verbosity: 'debug', currentRenderMode: 'code', timeZone: 'UTC' },
       notifications: { enabled: false, idleMs: 50, maxFinalChars: 1000, failureTailChars: 500 },
     });
   });

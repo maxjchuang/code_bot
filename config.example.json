@@ -41,7 +41,8 @@
   },
   "ui": {
     "verbosity": "normal",
-    "currentRenderMode": "markdown"
+    "currentRenderMode": "markdown",
+    "timeZone": "Asia/Shanghai"
   },
   "upgrade": {
     "enabled": false,

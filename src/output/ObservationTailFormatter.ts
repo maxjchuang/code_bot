@@ -1,6 +1,7 @@
 import type { CodexObservationSnapshot } from '../observations/CodexObservationStore.js';
+import { formatDisplayTime } from './DisplayTimeFormatter.js';
 
-export function formatObservationTail(snapshot: CodexObservationSnapshot): string {
+export function formatObservationTail(snapshot: CodexObservationSnapshot, options: { timeZone?: string } = {}): string {
   if (snapshot.availability.kind === 'parse_error') {
     return `Structured Codex observation failed to parse. Reason: ${snapshot.availability.reason}. Use /rawtail 80 for raw terminal logs.`;
   }
@@ -17,7 +18,7 @@ export function formatObservationTail(snapshot: CodexObservationSnapshot): strin
     lines.push('', snapshot.finalAnswer);
   }
   if (snapshot.completedAt) {
-    lines.push('', `Completed: ${snapshot.completedAt}`);
+    lines.push('', `Completed: ${formatDisplayTime(snapshot.completedAt, options.timeZone)}`);
   }
 
   const recentToolLines = snapshot.recentToolEvents.slice(-3).map((event) => `- ${event.summary}`);
