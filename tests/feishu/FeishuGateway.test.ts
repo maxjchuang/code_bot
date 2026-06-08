@@ -45,9 +45,27 @@ type CardActionHandler = (data: {
   };
 }) => Promise<void>;
 
+type BotMenuHandler = (data: {
+  event_key?: string;
+  operator?: {
+    operator_id?: {
+      open_id?: string;
+    };
+  };
+  event?: {
+    event_key?: string;
+    operator?: {
+      operator_id?: {
+        open_id?: string;
+      };
+    };
+  };
+}) => Promise<void>;
+
 function createGatewayHarness() {
   let messageHandler: ReceiveHandler | undefined;
   let cardActionHandler: CardActionHandler | undefined;
+  let botMenuHandler: BotMenuHandler | undefined;
   const sent: Array<{ receive_id: string; content: string }> = [];
   const replies: Array<{ message_id: string; msg_type: string; content: string; reply_in_thread?: boolean }> = [];
   const requests: Array<{ url: string; method: string; data?: unknown }> = [];
@@ -98,6 +116,7 @@ function createGatewayHarness() {
       register: (handlers) => {
         messageHandler = handlers['im.message.receive_v1'];
         cardActionHandler = handlers['card.action.trigger'];
+        botMenuHandler = handlers['application.bot.menu_v6'];
         return handlers;
       },
     }),
@@ -137,6 +156,12 @@ function createGatewayHarness() {
         throw new Error('card action handler not registered');
       }
       return cardActionHandler;
+    },
+    getBotMenuHandler: () => {
+      if (!botMenuHandler) {
+        throw new Error('bot menu handler not registered');
+      }
+      return botMenuHandler;
     },
   };
 }
@@ -197,6 +222,93 @@ describe('LarkLongConnectionGateway', () => {
         reply_in_thread: undefined,
       },
     ]);
+  });
+
+  it('dispatches bot menu events as slash commands using the cached private chat id', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi
+      .fn()
+      .mockResolvedValueOnce({ text: '' })
+      .mockResolvedValueOnce({ text: 'current reply' });
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_seed',
+        chat_id: 'oc_private_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    await harness.getBotMenuHandler()({
+      event_key: 'current',
+      operator: {
+        operator_id: {
+          open_id: 'ou_1',
+        },
+      },
+    });
+
+    expect(onMessage).toHaveBeenLastCalledWith({
+      botOpenIdResolved: true,
+      chatId: 'oc_private_1',
+      chatType: 'private',
+      mentionsOpenIds: [],
+      userId: 'ou_1',
+      text: '/current',
+      wasMentioned: true,
+    });
+    expect(harness.sent).toEqual([
+      {
+        receive_id: 'oc_private_1',
+        content: JSON.stringify({ text: 'current reply' }),
+      },
+    ]);
+  });
+
+  it.each([
+    ['current', '/current'],
+    ['tail', '/tail'],
+    ['status', '/status'],
+    ['project', '/projects'],
+    ['projects', '/projects'],
+    ['new', '/new'],
+    ['model', '/model'],
+    ['stop', '/stop'],
+    ['restart', '/restart'],
+    ['upgrade', '/upgrade'],
+  ])('maps bot menu key %s to %s', async (eventKey, command) => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => ({ text: '' }));
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_seed',
+        chat_id: 'oc_private_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello' }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+    onMessage.mockClear();
+
+    await harness.getBotMenuHandler()({
+      event: {
+        event_key: eventKey,
+        operator: {
+          operator_id: {
+            open_id: 'ou_1',
+          },
+        },
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ text: command }));
   });
 
   it('does not use topic replies for ordinary group messages outside a topic', async () => {
