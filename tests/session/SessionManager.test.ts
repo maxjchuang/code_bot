@@ -2881,6 +2881,44 @@ describe('SessionManager', () => {
     expect(payload).not.toContain('sess_not_resumable');
   });
 
+  it('finds current-project resumable sessions when newer sessions from another project fill the page', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveSession({
+      id: 'sess_repo_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T06:00:00.000Z',
+      updatedAt: '2026-06-10T06:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo_old'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+    for (let index = 0; index < 50; index += 1) {
+      const sessionId = `sess_repo2_new_${index}`;
+      await store.saveSession({
+        id: sessionId,
+        chatId: 'oc_1',
+        projectId: 'repo2',
+        status: 'exited',
+        createdBy: 'ou_1',
+        createdAt: '2026-06-10T07:00:00.000Z',
+        updatedAt: `2026-06-10T07:${String(index).padStart(2, '0')}:00.000Z`,
+        logPath: store.sessionLogPath(sessionId),
+        codexSessionId: `019e7f20-a667-7632-a808-c9595d7711${String(index).padStart(2, '0')}`,
+      });
+    }
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toContain('sess_repo_old');
+    expect(result.reply).not.toContain('No resumable sessions for project repo');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+  });
+
   it('asks for a project when /resume has no target and no current project is selected', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

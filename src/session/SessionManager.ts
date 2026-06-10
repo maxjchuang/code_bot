@@ -538,9 +538,10 @@ export class SessionManager {
     if (currentSession && isActiveSession(currentSession)) {
       return { ok: false, reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
     }
-    const sessions = (await this.store.listSessionsByChat(chatId, 50))
-      .filter((session) => session.projectId === chat.currentProjectId && Boolean(session.codexSessionId))
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const sessions = (await this.store.listSessions())
+      .filter((session) => session.chatId === chatId && session.projectId === chat.currentProjectId && Boolean(session.codexSessionId))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 50);
     if (sessions.length === 0) {
       return { ok: false, reply: `No resumable sessions for project ${chat.currentProjectId}. Run /new ${chat.currentProjectId} to start one.` };
     }
