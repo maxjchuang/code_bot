@@ -165,6 +165,7 @@ const BOT_MENU_COMMANDS: Record<string, string> = {
   projects: '/projects',
   new: '/new',
   model: '/model',
+  resume: '/resume',
   stop: '/stop',
   restart: '/restart',
   upgrade: '/upgrade',

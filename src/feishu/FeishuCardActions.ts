@@ -11,7 +11,12 @@ export interface ProjectSelectCardAction {
   projectId: string;
 }
 
-export type FeishuCardActionPayload = ModelSelectCardAction | ProjectSelectCardAction;
+export interface ResumeSelectCardAction {
+  kind: 'resume_select';
+  sessionId: string;
+}
+
+export type FeishuCardActionPayload = ModelSelectCardAction | ProjectSelectCardAction | ResumeSelectCardAction;
 
 export interface FeishuIncomingCardAction {
   chatId: string;
@@ -55,6 +60,18 @@ export function parseCardActionValue(
       chatId: value.chatId,
       chatType,
       action: { kind: 'project_select', projectId },
+    };
+  }
+
+  if (value.kind === 'resume_select') {
+    const sessionId = readString(form?.sessionId) ?? readString(value.sessionId);
+    if (!sessionId) {
+      return undefined;
+    }
+    return {
+      chatId: value.chatId,
+      chatType,
+      action: { kind: 'resume_select', sessionId },
     };
   }
 

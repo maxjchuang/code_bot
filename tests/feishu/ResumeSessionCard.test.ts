@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderResumeSessionCard } from '../../src/feishu/ResumeSessionCard.js';
+import { parseCardActionValue } from '../../src/feishu/FeishuCardActions.js';
 import type { SessionRecord } from '../../src/domain/types.js';
 
 function session(overrides: Partial<SessionRecord>): SessionRecord {
@@ -65,6 +66,19 @@ describe('ResumeSessionCard', () => {
     expect(rendered.fallback).toEqual({
       kind: 'text',
       text: 'Resume sessions for project repo:\nsess_repo_old | exited | 2026-06-10 15:10\nRun /resume <session> to resume.',
+    });
+  });
+
+  it('parses resume_select session id from form values', () => {
+    expect(
+      parseCardActionValue(
+        { kind: 'resume_select', chatId: 'oc_1', chatType: 'group', sessionId: 'ignored' },
+        { sessionId: 'sess_selected' },
+      ),
+    ).toEqual({
+      chatId: 'oc_1',
+      chatType: 'group',
+      action: { kind: 'resume_select', sessionId: 'sess_selected' },
     });
   });
 });
