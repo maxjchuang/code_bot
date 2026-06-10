@@ -4680,13 +4680,25 @@ describe('SessionManager', () => {
     });
   });
 
-  it('project_select does not stop or replace a running session', async () => {
+  it('project_select stops the running session and resumes the selected project when possible', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
-    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.saveSession({
+      id: 'sess_repo2_old',
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath('sess_repo2_old'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
 
     const result = await manager.handleCardAction({
       chatId: 'oc_1',
@@ -4695,17 +4707,28 @@ describe('SessionManager', () => {
       action: { kind: 'project_select', projectId: 'repo2' },
     });
 
-    expect(result.reply).toBe(`Current session ${sessionId} is still running. Run /stop before switching projects.`);
+    expect(result.reply).toContain(`Stopped session ${sessionId}.`);
+    expect(result.reply).toContain('Resumed session');
+    expect(runner.starts).toHaveLength(2);
+    expect(runner.starts[1]).toMatchObject({
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+    });
     await expect(store.getChat('oc_1')).resolves.toMatchObject({
       chatId: 'oc_1',
       chatType: 'group',
-      currentProjectId: 'repo',
-      currentSessionId: sessionId,
+      currentProjectId: 'repo2',
+      currentSessionId: runner.starts[1].sessionId,
     });
     await expect(store.getSession(sessionId)).resolves.toMatchObject({
       id: sessionId,
       projectId: 'repo',
-      status: 'running',
+      status: 'interrupted',
+    });
+    await expect(store.getSession(runner.starts[1].sessionId)).resolves.toMatchObject({
+      projectId: 'repo2',
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      resumedFromSessionId: 'sess_repo2_old',
+      resumeSource: 'code_bot',
     });
   });
 
@@ -4909,24 +4932,80 @@ describe('SessionManager', () => {
     expect(runner.sentMessages).not.toContain('status');
   });
 
-  it('keeps running session current and stoppable when /use targets another project', async () => {
+  it('stops the running session and starts a new session when /use targets a project with no resumable session', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
-    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
 
     const created = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     expect(created.reply).toContain('Created session');
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
 
     const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
-    expect(switched.reply).toBe(`Current session ${sessionId} is still running. Run /stop before switching projects.`);
+    expect(switched.reply).toContain(`Stopped session ${sessionId}.`);
+    expect(switched.reply).toContain('Created session');
+    expect(runner.starts).toHaveLength(2);
+    expect(runner.starts[1]).toMatchObject({
+      mode: { kind: 'new' },
+    });
 
     const chat = await store.getChat('oc_1');
-    expect(chat?.currentProjectId).toBe('repo');
-    expect(chat?.currentSessionId).toBe(sessionId);
+    expect(chat?.currentProjectId).toBe('repo2');
+    expect(chat?.currentSessionId).toBe(runner.starts[1].sessionId);
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+    });
+  });
 
-    const stopped = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
-    expect(stopped.reply).toBe(`Stopped session ${sessionId}.`);
+  it('falls back to a new session when automatic project resume fails', async () => {
+    class ResumeFailingRunner extends FakeCodexRunner {
+      async start(options: CodexRunOptions): Promise<void> {
+        if (!this.starts.includes(options)) {
+          this.starts.push(options);
+        }
+        if (options.mode?.kind === 'resume') {
+          throw new Error('resume failed');
+        }
+        return super.start(options);
+      }
+    }
+
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new ResumeFailingRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.saveSession({
+      id: 'sess_repo2_old',
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+      logPath: store.sessionLogPath('sess_repo2_old'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const switched = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/use repo2' });
+
+    expect(switched.reply).toContain(`Stopped session ${sessionId}.`);
+    expect(switched.reply).toContain('Failed to resume Codex session 019e7f20-a667-7632-a808-c9595d77116e for project repo2: resume failed');
+    expect(switched.reply).toContain('Created session');
+    expect(runner.starts).toHaveLength(3);
+    expect(runner.starts[1]).toMatchObject({
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+    });
+    expect(runner.starts[2]).toMatchObject({
+      mode: { kind: 'new' },
+    });
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      currentProjectId: 'repo2',
+      currentSessionId: runner.starts[2].sessionId,
+    });
   });
 
   it('allows /use to switch projects after the current session exits', async () => {
