@@ -2826,29 +2826,118 @@ describe('SessionManager', () => {
     expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
   });
 
-  it('returns usage and keeps current session when /resume has no target', async () => {
+  it('returns a resume card for current-project resumable sessions when /resume has no target', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner);
-    const priorSessionId = 'sess_prior';
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
     await store.saveSession({
-      id: priorSessionId,
+      id: 'sess_repo',
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'exited',
       createdBy: 'ou_1',
-      createdAt: '2026-06-01T00:00:00.000Z',
-      updatedAt: '2026-06-01T00:00:00.000Z',
-      logPath: store.sessionLogPath(priorSessionId),
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
     });
-    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+    await store.saveSession({
+      id: 'sess_other_project',
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:20:00.000Z',
+      logPath: store.sessionLogPath('sess_other_project'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116f',
+    });
+    await store.saveSession({
+      id: 'sess_not_resumable',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:30:00.000Z',
+      logPath: store.sessionLogPath('sess_not_resumable'),
+    });
 
-    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
 
-    expect(resumed.reply).toBe('Usage: /resume <session> [project]');
-    expect(runner.starts).toHaveLength(0);
-    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+    expect(result.reply).toContain('Resume sessions for project repo');
+    expect(result.reply).toContain('sess_repo');
+    expect(result.reply).not.toContain('sess_other_project');
+    expect(result.reply).not.toContain('sess_not_resumable');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    if (result.renderedReply?.preferred.kind !== 'card') {
+      throw new Error('expected card');
+    }
+    const payload = JSON.stringify(result.renderedReply.preferred.payload);
+    expect(payload).toContain('sess_repo');
+    expect(payload).not.toContain('sess_other_project');
+    expect(payload).not.toContain('sess_not_resumable');
+  });
+
+  it('finds current-project resumable sessions when newer sessions from another project fill the page', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveSession({
+      id: 'sess_repo_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T06:00:00.000Z',
+      updatedAt: '2026-06-10T06:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo_old'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+    for (let index = 0; index < 50; index += 1) {
+      const sessionId = `sess_repo2_new_${index}`;
+      await store.saveSession({
+        id: sessionId,
+        chatId: 'oc_1',
+        projectId: 'repo2',
+        status: 'exited',
+        createdBy: 'ou_1',
+        createdAt: '2026-06-10T07:00:00.000Z',
+        updatedAt: `2026-06-10T07:${String(index).padStart(2, '0')}:00.000Z`,
+        logPath: store.sessionLogPath(sessionId),
+        codexSessionId: `019e7f20-a667-7632-a808-c9595d7711${String(index).padStart(2, '0')}`,
+      });
+    }
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toContain('sess_repo_old');
+    expect(result.reply).not.toContain('No resumable sessions for project repo');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+  });
+
+  it('asks for a project when /resume has no target and no current project is selected', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toBe('Choose a project with /projects or /use <project> before resuming a session.');
+  });
+
+  it('returns an empty state when /resume has no current-project resumable sessions', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toBe('No resumable sessions for project repo. Run /new repo to start one.');
   });
 
   it('rejects /resume while the current session is running', async () => {
@@ -3833,12 +3922,12 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/help');
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
-    expect(help.reply).toContain('/resume <session> [project]');
+    expect(help.reply).toContain('/resume [session] [project]');
     expect(help.reply).toContain('/current');
     expect(help.reply).toContain('/tail [n]');
     expect(help.reply).toContain('/rawtail [n]');
     expect(help.reply).toContain('/upgrade');
-    expect(help.reply).toContain('Resume: /resume <session> [project]');
+    expect(help.reply).toContain('Resume: /resume opens a project-scoped selector card; /resume <session> [project] resumes directly.');
     expect(help.reply).toContain('session can be a code_bot session id from /sessions or a Codex native id');
     expect(help.reply).toContain('Restrictions:');
     expect(help.reply).toContain('Allowed users: 1');
@@ -4678,6 +4767,132 @@ describe('SessionManager', () => {
       chatType: 'group',
       currentProjectId: 'repo2',
     });
+  });
+
+  it('resumes a current-project session from resume_select card action', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveSession({
+      id: 'sess_repo',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: 'sess_repo' },
+    });
+
+    expect(result.reply).toContain('Resumed session');
+    expect(runner.starts[0]).toMatchObject({
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+    });
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      projectId: 'repo',
+      resumedFromSessionId: 'sess_repo',
+      resumeSource: 'code_bot',
+    });
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      currentProjectId: 'repo',
+      currentSessionId: runner.starts[0].sessionId,
+    });
+  });
+
+  it('rejects resume_select for a session outside the current project', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveSession({
+      id: 'sess_repo2',
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo2'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: 'sess_repo2' },
+    });
+
+    expect(result.reply).toBe('Session sess_repo2 does not belong to current project repo.');
+    expect(runner.starts).toHaveLength(0);
+  });
+
+  it('rejects malformed resume_select session id without starting a runner', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: '../x' },
+    });
+
+    expect(result.reply).toBe('Invalid session target: ../x');
+    expect(runner.starts).toHaveLength(0);
+  });
+
+  it.each(['running', 'starting'] as const)('rejects resume_select while the current session is %s', async (status) => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: 'sess_active' });
+    await store.saveSession({
+      id: 'sess_active',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status,
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_active'),
+    });
+    await store.saveSession({
+      id: 'sess_repo',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: 'sess_repo' },
+    });
+
+    expect(result.reply).toBe('Current session sess_active is still running. Run /stop before resuming another session.');
+    expect(runner.starts).toHaveLength(0);
   });
 
   it('project_select stops the running session and resumes the selected project when possible', async () => {

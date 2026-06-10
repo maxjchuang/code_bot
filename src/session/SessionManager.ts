@@ -27,6 +27,7 @@ import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCard
 import { hasRenderableCurrentScreenBody, renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
+import { renderResumeSessionCard } from '../feishu/ResumeSessionCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
 import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
 
@@ -267,6 +268,8 @@ export class SessionManager {
         return this.selectModel(input.chatId, input.action, { unsupportedReasoning: 'drop' });
       case 'project_select':
         return this.selectProject(authorizedInput, input.action);
+      case 'resume_select':
+        return this.resumeSelectedSession(authorizedInput, input.action.sessionId);
       default:
         return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
@@ -430,7 +433,7 @@ export class SessionManager {
 
   private async resumeSession(input: IncomingBotText, target?: string, projectId?: string): Promise<BotTextResult> {
     if (!target) {
-      return { reply: 'Usage: /resume <session> [project]' };
+      return this.resumeSessionCard(input);
     }
 
     const previousChat = await this.store.getChat(input.chatId);
@@ -503,6 +506,89 @@ export class SessionManager {
         ? { codexSessionId: resumeTarget, resumedFromSessionId: target, resumeSource: 'code_bot' }
         : { codexSessionId: target, resumeSource: 'codex' },
     });
+  }
+
+  private async resumeSessionCard(input: IncomingBotText): Promise<BotTextResult> {
+    const listed = await this.listResumableSessionsForCurrentProject(input.chatId);
+    if (!listed.ok) {
+      return { reply: listed.reply };
+    }
+
+    const fallbackText = formatResumeSessionFallback(listed.chat.currentProjectId!, listed.sessions, this.config.ui.timeZone);
+    return {
+      reply: fallbackText,
+      renderedReply: renderResumeSessionCard({
+        chatId: input.chatId,
+        chatType: input.chatType,
+        projectId: listed.chat.currentProjectId!,
+        sessions: listed.sessions,
+        timeZone: this.config.ui.timeZone,
+        fallbackText,
+      }),
+    };
+  }
+
+  private async resumeSelectedSession(
+    input: Pick<IncomingBotText, 'chatId' | 'chatType' | 'userId'>,
+    sessionId: string,
+  ): Promise<BotTextResult> {
+    const chat = await this.store.getChat(input.chatId);
+    if (!chat?.currentProjectId) {
+      return { reply: 'Choose a project with /projects or /use <project> before resuming a session.' };
+    }
+    const currentSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    if (currentSession && isActiveSession(currentSession)) {
+      return { reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
+    }
+    if (!isValidSessionTarget(sessionId)) {
+      return { reply: `Invalid session target: ${sessionId}` };
+    }
+    const sourceSession = await this.store.getSession(sessionId);
+    if (!sourceSession || sourceSession.chatId !== input.chatId) {
+      return { reply: `Session not found: ${sessionId}` };
+    }
+    if (sourceSession.projectId !== chat.currentProjectId) {
+      return { reply: `Session ${sessionId} does not belong to current project ${chat.currentProjectId}.` };
+    }
+    if (!sourceSession.codexSessionId) {
+      return { reply: `Session ${sessionId} cannot be resumed because no Codex session id was captured.` };
+    }
+    const project = resolveProject(this.config, chat.currentProjectId);
+    if (!project) {
+      return { reply: `Unknown project: ${chat.currentProjectId}` };
+    }
+    return this.startCodexSession(input, project, {
+      mode: { kind: 'resume', target: sourceSession.codexSessionId },
+      replyVerb: 'Resumed',
+      eventType: 'session.resumed',
+      sessionFields: {
+        codexSessionId: sourceSession.codexSessionId,
+        resumedFromSessionId: sourceSession.id,
+        resumeSource: 'code_bot',
+      },
+    });
+  }
+
+  private async listResumableSessionsForCurrentProject(chatId: string): Promise<
+    | { ok: true; chat: ChatContext; sessions: SessionRecord[] }
+    | { ok: false; reply: string }
+  > {
+    const chat = await this.store.getChat(chatId);
+    if (!chat?.currentProjectId) {
+      return { ok: false, reply: 'Choose a project with /projects or /use <project> before resuming a session.' };
+    }
+    const currentSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    if (currentSession && isActiveSession(currentSession)) {
+      return { ok: false, reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
+    }
+    const sessions = (await this.store.listSessions())
+      .filter((session) => session.chatId === chatId && session.projectId === chat.currentProjectId && Boolean(session.codexSessionId))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 50);
+    if (sessions.length === 0) {
+      return { ok: false, reply: `No resumable sessions for project ${chat.currentProjectId}. Run /new ${chat.currentProjectId} to start one.` };
+    }
+    return { ok: true, chat, sessions };
   }
 
   private async startCodexSession(
@@ -2226,9 +2312,9 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume [session] [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
     const resumeHelp = [
-      'Resume: /resume <session> [project]',
+      'Resume: /resume opens a project-scoped selector card; /resume <session> [project] resumes directly.',
       '- session can be a code_bot session id from /sessions or a Codex native id',
     ].join('\n');
     const restrictions = [
@@ -2253,6 +2339,14 @@ function upgradeEventType(status: UpgradeResult['status']): 'upgrade.completed' 
 
 function isActiveSession(session: SessionRecord): boolean {
   return session.status === 'running' || session.status === 'starting';
+}
+
+function formatResumeSessionFallback(projectId: string, sessions: SessionRecord[], timeZone: string): string {
+  return [
+    `Resume sessions for project ${projectId}:`,
+    ...sessions.map((session) => `${session.id} | ${session.status} | ${formatDisplayTime(session.updatedAt, timeZone)}`),
+    'Run /resume <session> to resume.',
+  ].join('\n');
 }
 
 function formatModelLine(model: CodexModelInfo): string {

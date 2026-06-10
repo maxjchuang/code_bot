@@ -83,7 +83,7 @@ With completion notifications enabled, plain text messages receive an immediate 
 /model [model] [reasoning]
 /stop
 /sessions
-/resume <session> [project]
+/resume [session] [project]
 /approve <id>
 /reject <id>
 /upgrade
@@ -99,7 +99,8 @@ Notes:
 - `/current` returns a Feishu card snapshot of the current Codex TUI viewport. It uses the configured terminal snapshot dimensions and does not accept a line count.
 - On bot restart, the last running session for each chat is marked interrupted and automatically resumed when a Codex native session ID was captured.
 - `/sessions` lists recent sessions. Session status is shown as `current`, `resumable`, or `not-resumable`.
-- `/resume <session> [project]` resumes a Codex session. Prefer the code_bot session ID shown by `/sessions`. Codex native session IDs are also supported, but you must specify `project` or already have a current project selected in the chat.
+- `/resume` opens a project-scoped session selector card when a project is selected.
+- `/resume <session> [project]` directly resumes a code_bot or Codex native session.
 - `/tail [n]` returns a readable progress summary for the active Codex session. It still accepts and validates an optional count with a default of 80, but that count applies to the sanitized PTY fallback path. When structured Codex observation data is available, `/tail` returns the structured summary instead.
 - `/rawtail [n]` returns raw PTY terminal output for exact debugging. It accepts an optional count and defaults to 80.
 - `/stop` stops the current session immediately.

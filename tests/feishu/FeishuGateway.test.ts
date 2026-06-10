@@ -277,6 +277,7 @@ describe('LarkLongConnectionGateway', () => {
     ['projects', '/projects'],
     ['new', '/new'],
     ['model', '/model'],
+    ['resume', '/resume'],
     ['stop', '/stop'],
     ['restart', '/restart'],
     ['upgrade', '/upgrade'],
