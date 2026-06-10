@@ -158,6 +158,7 @@ async function autoResumeRecoveredSession(
     codexSessionId,
     resumedFromSessionId: sourceSession.id,
     resumeSource: 'code_bot',
+    firstUserMessagePreview: sourceSession.firstUserMessagePreview,
     lastSummary: 'Auto-resumed after bot restart.',
   };
   await store.saveSession(session);

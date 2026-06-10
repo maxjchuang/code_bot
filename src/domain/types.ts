@@ -117,6 +117,7 @@ export interface SessionRecord {
   logPath: string;
   exitCode?: number;
   lastSummary?: string;
+  firstUserMessagePreview?: string;
   stopRequested?: boolean;
   codexSessionId?: string;
   resumedFromSessionId?: string;

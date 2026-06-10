@@ -1,6 +1,7 @@
 import type { ChatType, SessionRecord } from '../domain/types.js';
-import { formatDisplayTime } from '../output/DisplayTimeFormatter.js';
 import type { RenderedFeishuMessage } from './FeishuMessageRenderer.js';
+
+const SESSION_OPTION_TEXT_LIMIT = 120;
 
 export interface RenderResumeSessionCardInput {
   chatId: string;
@@ -45,7 +46,7 @@ export function renderResumeSessionCard(
               options: sessions.map((session) => ({
                 text: {
                   tag: 'plain_text',
-                  content: formatSessionOption(session, input.timeZone),
+                  content: formatSessionOption(session),
                 },
                 value: session.id,
               })),
@@ -82,15 +83,14 @@ export function renderResumeSessionCard(
   };
 }
 
-function formatSessionOption(session: SessionRecord, timeZone: string): string {
-  const summary = compactText(session.lastSummary) || `Session ${session.id}`;
-  return `${summary} | ${session.status} | ${formatDisplayTime(session.updatedAt, timeZone)} | ${session.id}`;
+function formatSessionOption(session: SessionRecord): string {
+  return compactText(session.firstUserMessagePreview) || compactText(session.lastSummary) || `Session ${session.id}`;
 }
 
 function compactText(value: string | undefined): string {
   const normalized = value?.replace(/\s+/g, ' ').trim() ?? '';
-  if (normalized.length <= 80) {
+  if (normalized.length <= SESSION_OPTION_TEXT_LIMIT) {
     return normalized;
   }
-  return `${normalized.slice(0, 77)}...`;
+  return `${normalized.slice(0, SESSION_OPTION_TEXT_LIMIT - 3)}...`;
 }
