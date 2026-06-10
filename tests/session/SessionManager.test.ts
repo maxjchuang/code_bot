@@ -400,6 +400,27 @@ describe('SessionManager', () => {
     });
     expect(sent.reply).toContain('Sent to Codex');
     expect(runner.sentMessages).toEqual(['inspect status']);
+    const chat = await store.getChat('oc_1');
+    await expect(store.getSession(chat!.currentSessionId!)).resolves.toMatchObject({
+      firstUserMessagePreview: 'inspect status',
+    });
+  });
+
+  it('keeps the first user message preview when later messages are sent', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    const longFirstMessage = `${'a'.repeat(140)}\nwith more detail`;
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: longFirstMessage });
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'second message' });
+
+    const chat = await store.getChat('oc_1');
+    await expect(store.getSession(chat!.currentSessionId!)).resolves.toMatchObject({
+      firstUserMessagePreview: `${longFirstMessage.slice(0, 117)}...`,
+    });
   });
 
   it('logs session creation summaries for explicit /new commands', async () => {
@@ -2712,6 +2733,7 @@ describe('SessionManager', () => {
       updatedAt: '2026-06-01T00:00:00.000Z',
       logPath: store.sessionLogPath(oldSessionId),
       codexSessionId,
+      firstUserMessagePreview: '用户问的第一句话',
     };
     await store.saveSession(oldSession);
     await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: oldSessionId });
@@ -2732,6 +2754,7 @@ describe('SessionManager', () => {
       status: 'running',
       resumedFromSessionId: oldSessionId,
       resumeSource: 'code_bot',
+      firstUserMessagePreview: '用户问的第一句话',
     });
   });
 

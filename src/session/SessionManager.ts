@@ -363,6 +363,7 @@ export class SessionManager {
           codexSessionId: resumableSession.codexSessionId,
           resumedFromSessionId: resumableSession.id,
           resumeSource: 'code_bot',
+          firstUserMessagePreview: resumableSession.firstUserMessagePreview,
         },
       });
       if (!resumed.reply.startsWith('Failed to resume Codex session ')) {
@@ -503,7 +504,12 @@ export class SessionManager {
       replyVerb: 'Resumed',
       eventType: 'session.resumed',
       sessionFields: isCodeBotSessionId
-        ? { codexSessionId: resumeTarget, resumedFromSessionId: target, resumeSource: 'code_bot' }
+        ? {
+            codexSessionId: resumeTarget,
+            resumedFromSessionId: target,
+            resumeSource: 'code_bot',
+            firstUserMessagePreview: sourceSession?.firstUserMessagePreview,
+          }
         : { codexSessionId: target, resumeSource: 'codex' },
     });
   }
@@ -565,6 +571,7 @@ export class SessionManager {
         codexSessionId: sourceSession.codexSessionId,
         resumedFromSessionId: sourceSession.id,
         resumeSource: 'code_bot',
+        firstUserMessagePreview: sourceSession.firstUserMessagePreview,
       },
     });
   }
@@ -825,6 +832,12 @@ export class SessionManager {
 
     try {
       await this.runner.send(chat.currentSessionId, text);
+      await this.store.updateSession(chat.currentSessionId, (latest) => {
+        if (latest.firstUserMessagePreview) {
+          return latest;
+        }
+        return { ...latest, firstUserMessagePreview: previewText(text) };
+      });
     } catch (error) {
       if (createdPendingTurn) {
         this.removePendingTurn(chat.currentSessionId, text, false);

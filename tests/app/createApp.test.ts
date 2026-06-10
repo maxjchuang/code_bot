@@ -76,6 +76,7 @@ describe('createApp', () => {
       updatedAt: '2026-06-01T09:19:01.493Z',
       logPath: store.sessionLogPath('sess_last'),
       codexSessionId,
+      firstUserMessagePreview: '当前 resume 卡片列表信息量仍然很低',
     });
     await store.saveChat({
       chatId: 'oc_1',
@@ -110,6 +111,7 @@ describe('createApp', () => {
       codexSessionId,
       resumedFromSessionId: 'sess_last',
       resumeSource: 'code_bot',
+      firstUserMessagePreview: '当前 resume 卡片列表信息量仍然很低',
     });
   });
 

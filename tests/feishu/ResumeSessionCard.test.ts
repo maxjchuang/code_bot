@@ -30,12 +30,14 @@ describe('ResumeSessionCard', () => {
           status: 'exited',
           updatedAt: '2026-06-10T07:10:00.000Z',
           lastSummary: 'Refactor project selector',
+          firstUserMessagePreview: 'How should we refactor the project selector?',
         }),
         session({
           id: 'sess_repo_new',
           status: 'interrupted',
           updatedAt: '2026-06-10T08:20:00.000Z',
           lastSummary: 'Add resume card with dropdown selection',
+          firstUserMessagePreview: 'Add a resume card with dropdown selection',
         }),
       ],
       timeZone: 'Asia/Shanghai',
@@ -54,10 +56,7 @@ describe('ResumeSessionCard', () => {
     const select = form.elements.find((element: any) => element.name === 'sessionId');
     expect(select.initial_option).toBe('sess_repo_new');
     expect(select.options.map((option: any) => option.value)).toEqual(['sess_repo_new', 'sess_repo_old']);
-    expect(select.options[0].text.content).toContain('Add resume card with dropdown selection');
-    expect(select.options[0].text.content).toContain('interrupted');
-    expect(select.options[0].text.content).toContain('2026-06-10 16:20:00 Asia/Shanghai');
-    expect(select.options[0].text.content).toContain('sess_repo_new');
+    expect(select.options[0].text.content).toBe('Add a resume card with dropdown selection');
     const button = form.elements.find((element: any) => element.name === 'confirm_resume_select');
     expect(button.behaviors[0].value).toEqual({
       kind: 'resume_select',
@@ -83,8 +82,58 @@ describe('ResumeSessionCard', () => {
     const payload = rendered.preferred.payload as any;
     const form = payload.body.elements.find((element: any) => element.tag === 'form');
     const select = form.elements.find((element: any) => element.name === 'sessionId');
-    expect(select.options[0].text.content).toContain('Session sess_without_summary');
-    expect(select.options[0].text.content).toContain('exited');
+    expect(select.options[0].text.content).toBe('Session sess_without_summary');
+  });
+
+  it('uses only the first user message preview for auto-resumed session options', () => {
+    const rendered = renderResumeSessionCard({
+      chatId: 'oc_1',
+      chatType: 'group',
+      projectId: 'repo',
+      sessions: [
+        session({
+          id: 'sess_auto',
+          status: 'interrupted',
+          lastSummary: 'Auto-resumed after bot restart.',
+          firstUserMessagePreview: '当前 resume 卡片列表信息量仍然很低',
+          resumedFromSessionId: 'sess_before_restart',
+          resumeSource: 'code_bot',
+          codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+        }),
+      ],
+      timeZone: 'Asia/Shanghai',
+      fallbackText: 'fallback',
+    });
+
+    if (rendered.preferred.kind !== 'card') {
+      throw new Error('expected card');
+    }
+
+    const payload = rendered.preferred.payload as any;
+    const form = payload.body.elements.find((element: any) => element.tag === 'form');
+    const select = form.elements.find((element: any) => element.name === 'sessionId');
+    expect(select.options[0].text.content).toBe('当前 resume 卡片列表信息量仍然很低');
+  });
+
+  it('truncates long first user message previews to 120 characters', () => {
+    const firstUserMessagePreview = 'a'.repeat(140);
+    const rendered = renderResumeSessionCard({
+      chatId: 'oc_1',
+      chatType: 'group',
+      projectId: 'repo',
+      sessions: [session({ id: 'sess_long', firstUserMessagePreview })],
+      timeZone: 'Asia/Shanghai',
+      fallbackText: 'fallback',
+    });
+
+    if (rendered.preferred.kind !== 'card') {
+      throw new Error('expected card');
+    }
+
+    const payload = rendered.preferred.payload as any;
+    const form = payload.body.elements.find((element: any) => element.tag === 'form');
+    const select = form.elements.find((element: any) => element.name === 'sessionId');
+    expect(select.options[0].text.content).toBe(`${firstUserMessagePreview.slice(0, 117)}...`);
   });
 
   it('renders a text fallback listing the same session ids', () => {
