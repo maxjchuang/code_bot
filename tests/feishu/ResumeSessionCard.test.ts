@@ -25,8 +25,18 @@ describe('ResumeSessionCard', () => {
       chatType: 'group',
       projectId: 'repo',
       sessions: [
-        session({ id: 'sess_repo_old', status: 'exited', updatedAt: '2026-06-10T07:10:00.000Z' }),
-        session({ id: 'sess_repo_new', status: 'interrupted', updatedAt: '2026-06-10T08:20:00.000Z' }),
+        session({
+          id: 'sess_repo_old',
+          status: 'exited',
+          updatedAt: '2026-06-10T07:10:00.000Z',
+          lastSummary: 'Refactor project selector',
+        }),
+        session({
+          id: 'sess_repo_new',
+          status: 'interrupted',
+          updatedAt: '2026-06-10T08:20:00.000Z',
+          lastSummary: 'Add resume card with dropdown selection',
+        }),
       ],
       timeZone: 'Asia/Shanghai',
       fallbackText: 'fallback',
@@ -44,12 +54,37 @@ describe('ResumeSessionCard', () => {
     const select = form.elements.find((element: any) => element.name === 'sessionId');
     expect(select.initial_option).toBe('sess_repo_new');
     expect(select.options.map((option: any) => option.value)).toEqual(['sess_repo_new', 'sess_repo_old']);
+    expect(select.options[0].text.content).toContain('Add resume card with dropdown selection');
+    expect(select.options[0].text.content).toContain('interrupted');
+    expect(select.options[0].text.content).toContain('2026-06-10 16:20:00 Asia/Shanghai');
+    expect(select.options[0].text.content).toContain('sess_repo_new');
     const button = form.elements.find((element: any) => element.name === 'confirm_resume_select');
     expect(button.behaviors[0].value).toEqual({
       kind: 'resume_select',
       chatId: 'oc_1',
       chatType: 'group',
     });
+  });
+
+  it('uses a readable session fallback when no summary exists', () => {
+    const rendered = renderResumeSessionCard({
+      chatId: 'oc_1',
+      chatType: 'group',
+      projectId: 'repo',
+      sessions: [session({ id: 'sess_without_summary', lastSummary: undefined })],
+      timeZone: 'Asia/Shanghai',
+      fallbackText: 'fallback',
+    });
+
+    if (rendered.preferred.kind !== 'card') {
+      throw new Error('expected card');
+    }
+
+    const payload = rendered.preferred.payload as any;
+    const form = payload.body.elements.find((element: any) => element.tag === 'form');
+    const select = form.elements.find((element: any) => element.name === 'sessionId');
+    expect(select.options[0].text.content).toContain('Session sess_without_summary');
+    expect(select.options[0].text.content).toContain('exited');
   });
 
   it('renders a text fallback listing the same session ids', () => {
