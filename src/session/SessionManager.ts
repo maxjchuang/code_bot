@@ -540,6 +540,9 @@ export class SessionManager {
     if (currentSession && isActiveSession(currentSession)) {
       return { reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
     }
+    if (!isValidSessionTarget(sessionId)) {
+      return { reply: `Invalid session target: ${sessionId}` };
+    }
     const sourceSession = await this.store.getSession(sessionId);
     if (!sourceSession || sourceSession.chatId !== input.chatId) {
       return { reply: `Session not found: ${sessionId}` };

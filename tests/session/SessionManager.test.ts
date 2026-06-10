@@ -4803,6 +4803,10 @@ describe('SessionManager', () => {
       resumedFromSessionId: 'sess_repo',
       resumeSource: 'code_bot',
     });
+    await expect(store.getChat('oc_1')).resolves.toMatchObject({
+      currentProjectId: 'repo',
+      currentSessionId: runner.starts[0].sessionId,
+    });
   });
 
   it('rejects resume_select for a session outside the current project', async () => {
@@ -4831,6 +4835,24 @@ describe('SessionManager', () => {
     });
 
     expect(result.reply).toBe('Session sess_repo2 does not belong to current project repo.');
+    expect(runner.starts).toHaveLength(0);
+  });
+
+  it('rejects malformed resume_select session id without starting a runner', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: '../x' },
+    });
+
+    expect(result.reply).toBe('Invalid session target: ../x');
     expect(runner.starts).toHaveLength(0);
   });
 
