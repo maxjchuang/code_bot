@@ -4769,6 +4769,71 @@ describe('SessionManager', () => {
     });
   });
 
+  it('resumes a current-project session from resume_select card action', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveSession({
+      id: 'sess_repo',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: 'sess_repo' },
+    });
+
+    expect(result.reply).toContain('Resumed session');
+    expect(runner.starts[0]).toMatchObject({
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+    });
+    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+      projectId: 'repo',
+      resumedFromSessionId: 'sess_repo',
+      resumeSource: 'code_bot',
+    });
+  });
+
+  it('rejects resume_select for a session outside the current project', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+    await store.saveSession({
+      id: 'sess_repo2',
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo2'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: 'sess_repo2' },
+    });
+
+    expect(result.reply).toBe('Session sess_repo2 does not belong to current project repo.');
+    expect(runner.starts).toHaveLength(0);
+  });
+
   it('project_select stops the running session and resumes the selected project when possible', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

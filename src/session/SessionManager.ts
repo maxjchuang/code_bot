@@ -268,6 +268,8 @@ export class SessionManager {
         return this.selectModel(input.chatId, input.action, { unsupportedReasoning: 'drop' });
       case 'project_select':
         return this.selectProject(authorizedInput, input.action);
+      case 'resume_select':
+        return this.resumeSelectedSession(authorizedInput, input.action.sessionId);
       default:
         return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
@@ -524,6 +526,44 @@ export class SessionManager {
         fallbackText,
       }),
     };
+  }
+
+  private async resumeSelectedSession(
+    input: Pick<IncomingBotText, 'chatId' | 'chatType' | 'userId'>,
+    sessionId: string,
+  ): Promise<BotTextResult> {
+    const chat = await this.store.getChat(input.chatId);
+    if (!chat?.currentProjectId) {
+      return { reply: 'Choose a project with /projects or /use <project> before resuming a session.' };
+    }
+    const currentSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    if (currentSession && isActiveSession(currentSession)) {
+      return { reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
+    }
+    const sourceSession = await this.store.getSession(sessionId);
+    if (!sourceSession || sourceSession.chatId !== input.chatId) {
+      return { reply: `Session not found: ${sessionId}` };
+    }
+    if (sourceSession.projectId !== chat.currentProjectId) {
+      return { reply: `Session ${sessionId} does not belong to current project ${chat.currentProjectId}.` };
+    }
+    if (!sourceSession.codexSessionId) {
+      return { reply: `Session ${sessionId} cannot be resumed because no Codex session id was captured.` };
+    }
+    const project = resolveProject(this.config, chat.currentProjectId);
+    if (!project) {
+      return { reply: `Unknown project: ${chat.currentProjectId}` };
+    }
+    return this.startCodexSession(input, project, {
+      mode: { kind: 'resume', target: sourceSession.codexSessionId },
+      replyVerb: 'Resumed',
+      eventType: 'session.resumed',
+      sessionFields: {
+        codexSessionId: sourceSession.codexSessionId,
+        resumedFromSessionId: sourceSession.id,
+        resumeSource: 'code_bot',
+      },
+    });
   }
 
   private async listResumableSessionsForCurrentProject(chatId: string): Promise<
