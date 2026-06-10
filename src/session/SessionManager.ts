@@ -2312,9 +2312,9 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume <session> [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume [session] [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
     const resumeHelp = [
-      'Resume: /resume <session> [project]',
+      'Resume: /resume opens a project-scoped selector card; /resume <session> [project] resumes directly.',
       '- session can be a code_bot session id from /sessions or a Codex native id',
     ].join('\n');
     const restrictions = [

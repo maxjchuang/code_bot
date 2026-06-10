@@ -3922,12 +3922,12 @@ describe('SessionManager', () => {
     expect(help.reply).toContain('/help');
     expect(help.reply).toContain('/projects');
     expect(help.reply).toContain('/use <project>');
-    expect(help.reply).toContain('/resume <session> [project]');
+    expect(help.reply).toContain('/resume [session] [project]');
     expect(help.reply).toContain('/current');
     expect(help.reply).toContain('/tail [n]');
     expect(help.reply).toContain('/rawtail [n]');
     expect(help.reply).toContain('/upgrade');
-    expect(help.reply).toContain('Resume: /resume <session> [project]');
+    expect(help.reply).toContain('Resume: /resume opens a project-scoped selector card; /resume <session> [project] resumes directly.');
     expect(help.reply).toContain('session can be a code_bot session id from /sessions or a Codex native id');
     expect(help.reply).toContain('Restrictions:');
     expect(help.reply).toContain('Allowed users: 1');
@@ -4853,6 +4853,45 @@ describe('SessionManager', () => {
     });
 
     expect(result.reply).toBe('Invalid session target: ../x');
+    expect(runner.starts).toHaveLength(0);
+  });
+
+  it.each(['running', 'starting'] as const)('rejects resume_select while the current session is %s', async (status) => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: 'sess_active' });
+    await store.saveSession({
+      id: 'sess_active',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status,
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_active'),
+    });
+    await store.saveSession({
+      id: 'sess_repo',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+    });
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'resume_select', sessionId: 'sess_repo' },
+    });
+
+    expect(result.reply).toBe('Current session sess_active is still running. Run /stop before resuming another session.');
     expect(runner.starts).toHaveLength(0);
   });
 

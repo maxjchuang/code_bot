@@ -83,7 +83,7 @@ With completion notifications enabled, plain text messages receive an immediate 
 /model [model] [reasoning]
 /stop
 /sessions
-/resume <session> [project]
+/resume [session] [project]
 /approve <id>
 /reject <id>
 /upgrade
