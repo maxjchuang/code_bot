@@ -2826,29 +2826,80 @@ describe('SessionManager', () => {
     expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
   });
 
-  it('returns usage and keeps current session when /resume has no target', async () => {
+  it('returns a resume card for current-project resumable sessions when /resume has no target', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner);
-    const priorSessionId = 'sess_prior';
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
     await store.saveSession({
-      id: priorSessionId,
+      id: 'sess_repo',
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'exited',
       createdBy: 'ou_1',
-      createdAt: '2026-06-01T00:00:00.000Z',
-      updatedAt: '2026-06-01T00:00:00.000Z',
-      logPath: store.sessionLogPath(priorSessionId),
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
     });
-    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo', currentSessionId: priorSessionId });
+    await store.saveSession({
+      id: 'sess_other_project',
+      chatId: 'oc_1',
+      projectId: 'repo2',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:20:00.000Z',
+      logPath: store.sessionLogPath('sess_other_project'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116f',
+    });
+    await store.saveSession({
+      id: 'sess_not_resumable',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:30:00.000Z',
+      logPath: store.sessionLogPath('sess_not_resumable'),
+    });
 
-    const resumed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
 
-    expect(resumed.reply).toBe('Usage: /resume <session> [project]');
-    expect(runner.starts).toHaveLength(0);
-    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+    expect(result.reply).toContain('Resume sessions for project repo');
+    expect(result.reply).toContain('sess_repo');
+    expect(result.reply).not.toContain('sess_other_project');
+    expect(result.reply).not.toContain('sess_not_resumable');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    if (result.renderedReply?.preferred.kind !== 'card') {
+      throw new Error('expected card');
+    }
+    const payload = JSON.stringify(result.renderedReply.preferred.payload);
+    expect(payload).toContain('sess_repo');
+    expect(payload).not.toContain('sess_other_project');
+    expect(payload).not.toContain('sess_not_resumable');
+  });
+
+  it('asks for a project when /resume has no target and no current project is selected', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toBe('Choose a project with /projects or /use <project> before resuming a session.');
+  });
+
+  it('returns an empty state when /resume has no current-project resumable sessions', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    await store.saveChat({ chatId: 'oc_1', chatType: 'group', currentProjectId: 'repo' });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toBe('No resumable sessions for project repo. Run /new repo to start one.');
   });
 
   it('rejects /resume while the current session is running', async () => {
