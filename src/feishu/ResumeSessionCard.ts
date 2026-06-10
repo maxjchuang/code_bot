@@ -83,5 +83,14 @@ export function renderResumeSessionCard(
 }
 
 function formatSessionOption(session: SessionRecord, timeZone: string): string {
-  return `${session.id} | ${session.status} | ${formatDisplayTime(session.updatedAt, timeZone)}`;
+  const summary = compactText(session.lastSummary) || `Session ${session.id}`;
+  return `${summary} | ${session.status} | ${formatDisplayTime(session.updatedAt, timeZone)} | ${session.id}`;
+}
+
+function compactText(value: string | undefined): string {
+  const normalized = value?.replace(/\s+/g, ' ').trim() ?? '';
+  if (normalized.length <= 80) {
+    return normalized;
+  }
+  return `${normalized.slice(0, 77)}...`;
 }
