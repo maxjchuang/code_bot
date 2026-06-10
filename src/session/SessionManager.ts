@@ -314,19 +314,26 @@ export class SessionManager {
   }
 
   private async selectProject(
-    input: Pick<IncomingBotText, 'chatId' | 'chatType'>,
+    input: Pick<IncomingBotText, 'chatId' | 'chatType' | 'userId'>,
     action: ProjectSelectCardAction,
   ): Promise<BotTextResult> {
     const projectId = action.projectId;
-    if (!projectId || !resolveProject(this.config, projectId)) {
+    const project = projectId ? resolveProject(this.config, projectId) : undefined;
+    if (!projectId || !project) {
       return { reply: `Unknown project: ${projectId ?? ''}`.trim() };
     }
     const existingChat = await this.store.getChat(input.chatId);
     const currentSession = existingChat?.currentSessionId ? await this.store.getSession(existingChat.currentSessionId) : undefined;
     const activeSession = currentSession && isActiveSession(currentSession) ? currentSession : undefined;
     if (activeSession && activeSession.projectId !== projectId) {
+      const stopped = await this.executeApprovedStop(activeSession.id, input.userId);
+      if (!stopped.reply.startsWith('Stopped session ')) {
+        return stopped;
+      }
+      const started = await this.startSessionForSelectedProject(input, project);
       return {
-        reply: `Current session ${activeSession.id} is still running. Run /stop before switching projects.`,
+        ...started,
+        reply: `${stopped.reply}\n${started.reply}`,
       };
     }
     await this.store.saveChat({
@@ -337,6 +344,51 @@ export class SessionManager {
       modelSelectionsByProject: existingChat?.modelSelectionsByProject,
     });
     return { reply: `Current project set to ${projectId}.` };
+  }
+
+  private async startSessionForSelectedProject(
+    input: Pick<IncomingBotText, 'chatId' | 'chatType' | 'userId'>,
+    project: NonNullable<ReturnType<typeof resolveProject>>,
+  ): Promise<BotTextResult> {
+    const resumableSession = await this.findLatestResumableSession(input.chatId, project.id);
+    if (resumableSession?.codexSessionId) {
+      const resumed = await this.startCodexSession(input, project, {
+        mode: { kind: 'resume', target: resumableSession.codexSessionId },
+        replyVerb: 'Resumed',
+        eventType: 'session.resumed',
+        sessionFields: {
+          codexSessionId: resumableSession.codexSessionId,
+          resumedFromSessionId: resumableSession.id,
+          resumeSource: 'code_bot',
+        },
+      });
+      if (!resumed.reply.startsWith('Failed to resume Codex session ')) {
+        return resumed;
+      }
+
+      const created = await this.startCodexSession(input, project, {
+        mode: { kind: 'new' },
+        replyVerb: 'Created',
+        eventType: 'session.created',
+        discoverCodexSessionId: true,
+      });
+      return {
+        ...created,
+        reply: `${resumed.reply}\n${created.reply}`,
+      };
+    }
+
+    return this.startCodexSession(input, project, {
+      mode: { kind: 'new' },
+      replyVerb: 'Created',
+      eventType: 'session.created',
+      discoverCodexSessionId: true,
+    });
+  }
+
+  private async findLatestResumableSession(chatId: string, projectId: string): Promise<SessionRecord | undefined> {
+    const sessions = await this.store.listSessionsByChat(chatId, 50);
+    return sessions.find((session) => session.projectId === projectId && Boolean(session.codexSessionId));
   }
 
   private async createSession(input: IncomingBotText, projectId?: string): Promise<BotTextResult> {
@@ -454,7 +506,7 @@ export class SessionManager {
   }
 
   private async startCodexSession(
-    input: IncomingBotText,
+    input: Pick<IncomingBotText, 'chatId' | 'chatType' | 'userId'>,
     project: NonNullable<ReturnType<typeof resolveProject>>,
     options: {
       mode: { kind: 'new' } | { kind: 'resume'; target: string };
