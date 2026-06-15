@@ -462,6 +462,41 @@ describe('LarkLongConnectionGateway', () => {
     expect(harness.sent).toEqual([]);
   });
 
+  it('handles rich text post events by extracting readable text', async () => {
+    const harness = createGatewayHarness();
+    const onMessage = vi.fn(async () => ({ text: '' }));
+    await harness.gateway.start(onMessage);
+
+    await harness.getHandler()({
+      message: {
+        message_id: 'om_post_1',
+        chat_id: 'oc_1',
+        chat_type: 'p2p',
+        message_type: 'post',
+        content: JSON.stringify({
+          title: 'Request',
+          content: [
+            [
+              { tag: 'text', text: 'please inspect ' },
+              { tag: 'a', text: 'this MR', href: 'https://example.test/mr/1' },
+            ],
+            [{ tag: 'text', text: 'thanks' }],
+          ],
+        }),
+      },
+      sender: { sender_id: { open_id: 'ou_1' } },
+    });
+
+    expect(onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'oc_1',
+        chatType: 'private',
+        messageId: 'om_post_1',
+        text: 'Request\nplease inspect this MR https://example.test/mr/1\nthanks',
+      }),
+    );
+  });
+
   it('marks group messages as mentioned only when they mention the bot identity', async () => {
     const harness = createGatewayHarness();
     const onMessage = vi.fn(async () => ({ text: '' }));

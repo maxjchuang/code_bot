@@ -203,12 +203,10 @@ export class LarkLongConnectionGateway implements FeishuGateway {
           if (!message?.chat_id || !message.content || !sender?.open_id) {
             return;
           }
-          if (message.message_type !== 'text') {
+          const text = extractIncomingMessageText(message.message_type, message.content);
+          if (text === undefined) {
             return;
           }
-
-          const content = JSON.parse(message.content) as { text?: string };
-          const text = content.text ?? '';
           if (message.chat_type === 'p2p') {
             this.p2pChatIdsByUser.set(sender.open_id, message.chat_id);
           }
@@ -609,6 +607,74 @@ function splitFeishuMessages(text: string): string[] {
     chunks.push(text.slice(index, index + FEISHU_TEXT_MESSAGE_MAX_CHARS));
   }
   return chunks;
+}
+
+function extractIncomingMessageText(messageType: string | undefined, contentJson: string): string | undefined {
+  let content: unknown;
+  try {
+    content = JSON.parse(contentJson);
+  } catch {
+    return undefined;
+  }
+
+  if (messageType === 'text') {
+    return isRecord(content) && typeof content.text === 'string' ? content.text : '';
+  }
+
+  if (messageType === 'post') {
+    return extractPostText(content);
+  }
+
+  return undefined;
+}
+
+function extractPostText(content: unknown): string {
+  const post = isRecord(content) && isRecord(content.post) ? selectLocalizedPost(content.post) : content;
+  if (!isRecord(post)) {
+    return '';
+  }
+
+  const lines: string[] = [];
+  if (typeof post.title === 'string' && post.title.trim().length > 0) {
+    lines.push(post.title.trim());
+  }
+  if (Array.isArray(post.content)) {
+    for (const line of post.content) {
+      if (!Array.isArray(line)) {
+        continue;
+      }
+      const text = line.map(extractPostElementText).join('').trim();
+      if (text.length > 0) {
+        lines.push(text);
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+function selectLocalizedPost(post: Record<string, unknown>): unknown {
+  return post.zh_cn ?? post.en_us ?? Object.values(post).find(isRecord) ?? post;
+}
+
+function extractPostElementText(element: unknown): string {
+  if (!isRecord(element)) {
+    return '';
+  }
+
+  const text = typeof element.text === 'string' ? element.text : '';
+  if (element.tag === 'a' && typeof element.href === 'string' && element.href.length > 0) {
+    return text.length > 0 ? `${text} ${element.href}` : element.href;
+  }
+  if (element.tag === 'at' && typeof element.user_name === 'string') {
+    return element.user_name;
+  }
+  if (text.length > 0) {
+    return text;
+  }
+  if (typeof element.name === 'string') {
+    return element.name;
+  }
+  return '';
 }
 
 function commandForBotMenuKey(eventKey: string | undefined): string | undefined {
