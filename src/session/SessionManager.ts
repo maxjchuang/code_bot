@@ -438,12 +438,6 @@ export class SessionManager {
     }
 
     const previousChat = await this.store.getChat(input.chatId);
-    const previousSession = previousChat?.currentSessionId ? await this.store.getSession(previousChat.currentSessionId) : undefined;
-    if (previousSession && isActiveSession(previousSession)) {
-      return {
-        reply: `Current session ${previousSession.id} is still running. Run /stop before resuming another session.`,
-      };
-    }
 
     const isCodeBotSessionId = target.startsWith('sess_');
     if (!isValidSessionTarget(target)) {
@@ -499,7 +493,11 @@ export class SessionManager {
     }
 
     const resumeTarget = isCodeBotSessionId ? sourceSession!.codexSessionId! : target;
-    return this.startCodexSession(input, project, {
+    const stopped = await this.stopCurrentSessionBeforeResume(input);
+    if (!stopped.ok) {
+      return { reply: stopped.reply };
+    }
+    const resumed = await this.startCodexSession(input, project, {
       mode: { kind: 'resume', target: resumeTarget },
       replyVerb: 'Resumed',
       eventType: 'session.resumed',
@@ -512,12 +510,17 @@ export class SessionManager {
           }
         : { codexSessionId: target, resumeSource: 'codex' },
     });
+    return resumed;
   }
 
   private async resumeSessionCard(input: IncomingBotText): Promise<BotTextResult> {
     const listed = await this.listResumableSessionsForCurrentProject(input.chatId);
     if (!listed.ok) {
       return { reply: listed.reply };
+    }
+    const stopped = await this.stopCurrentSessionBeforeResume(input);
+    if (!stopped.ok) {
+      return { reply: stopped.reply };
     }
 
     const fallbackText = formatResumeSessionFallback(listed.chat.currentProjectId!, listed.sessions, this.config.ui.timeZone);
@@ -542,10 +545,6 @@ export class SessionManager {
     if (!chat?.currentProjectId) {
       return { reply: 'Choose a project with /projects or /use <project> before resuming a session.' };
     }
-    const currentSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
-    if (currentSession && isActiveSession(currentSession)) {
-      return { reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
-    }
     if (!isValidSessionTarget(sessionId)) {
       return { reply: `Invalid session target: ${sessionId}` };
     }
@@ -563,7 +562,11 @@ export class SessionManager {
     if (!project) {
       return { reply: `Unknown project: ${chat.currentProjectId}` };
     }
-    return this.startCodexSession(input, project, {
+    const stopped = await this.stopCurrentSessionBeforeResume(input);
+    if (!stopped.ok) {
+      return { reply: stopped.reply };
+    }
+    const resumed = await this.startCodexSession(input, project, {
       mode: { kind: 'resume', target: sourceSession.codexSessionId },
       replyVerb: 'Resumed',
       eventType: 'session.resumed',
@@ -574,6 +577,7 @@ export class SessionManager {
         firstUserMessagePreview: sourceSession.firstUserMessagePreview,
       },
     });
+    return resumed;
   }
 
   private async listResumableSessionsForCurrentProject(chatId: string): Promise<
@@ -584,10 +588,6 @@ export class SessionManager {
     if (!chat?.currentProjectId) {
       return { ok: false, reply: 'Choose a project with /projects or /use <project> before resuming a session.' };
     }
-    const currentSession = chat.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
-    if (currentSession && isActiveSession(currentSession)) {
-      return { ok: false, reply: `Current session ${currentSession.id} is still running. Run /stop before resuming another session.` };
-    }
     const sessions = (await this.store.listSessions())
       .filter((session) => session.chatId === chatId && session.projectId === chat.currentProjectId && Boolean(session.codexSessionId))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
@@ -596,6 +596,22 @@ export class SessionManager {
       return { ok: false, reply: `No resumable sessions for project ${chat.currentProjectId}. Run /new ${chat.currentProjectId} to start one.` };
     }
     return { ok: true, chat, sessions };
+  }
+
+  private async stopCurrentSessionBeforeResume(
+    input: Pick<IncomingBotText, 'chatId' | 'userId'>,
+  ): Promise<{ ok: true; reply?: string } | { ok: false; reply: string }> {
+    const chat = await this.store.getChat(input.chatId);
+    const currentSession = chat?.currentSessionId ? await this.store.getSession(chat.currentSessionId) : undefined;
+    if (!currentSession || !isActiveSession(currentSession)) {
+      return { ok: true };
+    }
+
+    const stopped = await this.executeApprovedStop(currentSession.id, input.userId);
+    if (!stopped.reply.startsWith('Stopped session ')) {
+      return { ok: false, reply: stopped.reply };
+    }
+    return { ok: true, reply: stopped.reply };
   }
 
   private async startCodexSession(

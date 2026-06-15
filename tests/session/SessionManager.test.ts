@@ -2942,6 +2942,38 @@ describe('SessionManager', () => {
     expect(result.renderedReply?.preferred.kind).toBe('card');
   });
 
+  it('auto-stops the running current session before showing the /resume card', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const manager = new SessionManager(sampleConfig(root), store, runner);
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const activeSessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.saveSession({
+      id: 'sess_repo_old',
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'exited',
+      createdBy: 'ou_1',
+      createdAt: '2026-06-10T07:00:00.000Z',
+      updatedAt: '2026-06-10T07:10:00.000Z',
+      logPath: store.sessionLogPath('sess_repo_old'),
+      codexSessionId: '019e7f20-a667-7632-a808-c9595d77116e',
+      firstUserMessagePreview: '之前的任务',
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/resume' });
+
+    expect(result.reply).toContain('Resume sessions for project repo:');
+    expect(result.renderedReply?.preferred.kind).toBe('card');
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+    await expect(store.getSession(activeSessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
+  });
+
   it('asks for a project when /resume has no target and no current project is selected', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -2963,7 +2995,7 @@ describe('SessionManager', () => {
     expect(result.reply).toBe('No resumable sessions for project repo. Run /new repo to start one.');
   });
 
-  it('rejects /resume while the current session is running', async () => {
+  it('auto-stops the running current session before /resume', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -2980,12 +3012,17 @@ describe('SessionManager', () => {
       text: '/resume 019e7f20-a667-7632-a808-c9595d77116e repo',
     });
 
-    expect(resumed.reply).toBe(`Current session ${originalSessionId} is still running. Run /stop before resuming another session.`);
-    expect(runner.starts).toHaveLength(1);
-    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(originalSessionId);
+    expect(resumed.reply).toBe(`Resumed session ${runner.starts[1].sessionId} for project repo.`);
+    expect(runner.starts).toHaveLength(2);
+    expect(runner.starts[1].mode).toEqual({ kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' });
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(runner.starts[1].sessionId);
+    await expect(store.getSession(originalSessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
   });
 
-  it('rejects /resume while the current session is starting', async () => {
+  it('auto-stops the starting current session before /resume', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -3010,9 +3047,14 @@ describe('SessionManager', () => {
       text: '/resume 019e7f20-a667-7632-a808-c9595d77116e repo',
     });
 
-    expect(resumed.reply).toBe(`Current session ${startingSessionId} is still running. Run /stop before resuming another session.`);
-    expect(runner.starts).toHaveLength(0);
-    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(startingSessionId);
+    expect(resumed.reply).toBe(`Resumed session ${runner.starts[0].sessionId} for project repo.`);
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0].mode).toEqual({ kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' });
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(runner.starts[0].sessionId);
+    await expect(store.getSession(startingSessionId)).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
   });
 
   it('rejects native Codex id resume without an explicit or current project', async () => {
@@ -4879,7 +4921,7 @@ describe('SessionManager', () => {
     expect(runner.starts).toHaveLength(0);
   });
 
-  it.each(['running', 'starting'] as const)('rejects resume_select while the current session is %s', async (status) => {
+  it.each(['running', 'starting'] as const)('auto-stops the current %s session before resume_select', async (status) => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
@@ -4914,8 +4956,14 @@ describe('SessionManager', () => {
       action: { kind: 'resume_select', sessionId: 'sess_repo' },
     });
 
-    expect(result.reply).toBe('Current session sess_active is still running. Run /stop before resuming another session.');
-    expect(runner.starts).toHaveLength(0);
+    expect(result.reply).toBe(`Resumed session ${runner.starts[0].sessionId} for project repo.`);
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0].mode).toEqual({ kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' });
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(runner.starts[0].sessionId);
+    await expect(store.getSession('sess_active')).resolves.toMatchObject({
+      status: 'interrupted',
+      stopRequested: true,
+    });
   });
 
   it('project_select stops the running session and resumes the selected project when possible', async () => {
@@ -5776,7 +5824,7 @@ describe('SessionManager', () => {
     expect(content).toContain('"type":"session.stopped"');
   });
 
-  it('stops a starting current session after resume tells the user to stop it', async () => {
+  it('auto-stops a starting current session before resume', async () => {
     class CountingRunner extends FakeCodexRunner {
       stoppedSessions: string[] = [];
 
@@ -5809,13 +5857,12 @@ describe('SessionManager', () => {
       userId: 'ou_1',
       text: '/resume 019e7f20-a667-7632-a808-c9595d77116e repo',
     });
-    expect(resumed.reply).toBe(`Current session ${startingSessionId} is still running. Run /stop before resuming another session.`);
 
-    const stopped = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/stop' });
-    expect(stopped.reply).toBe(`Stopped session ${startingSessionId}.`);
-
+    expect(resumed.reply).toBe(`Resumed session ${runner.starts[0].sessionId} for project repo.`);
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0].mode).toEqual({ kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' });
     expect(runner.stoppedSessions).toEqual([startingSessionId]);
-    expect((await store.getChat('oc_1'))?.currentSessionId).toBeUndefined();
+    expect((await store.getChat('oc_1'))?.currentSessionId).toBe(runner.starts[0].sessionId);
     await expect(store.getSession(startingSessionId)).resolves.toMatchObject({
       status: 'interrupted',
       stopRequested: true,
