@@ -1911,13 +1911,12 @@ export class SessionManager {
       return undefined;
     }
 
-    const extraction = extractFinalAnswer({
-      rawLines: finalAnswer.split('\n'),
+    const preserved = preserveStructuredFinalAnswer({
+      text: finalAnswer,
       prompt: turn.prompt,
       maxChars: this.config.notifications.maxFinalChars,
-      requireCompletionMarker: false,
     });
-    return extraction.kind === 'answer' ? extraction : undefined;
+    return preserved ? { kind: 'answer', text: preserved } : undefined;
   }
 
   private async currentTurnAnswerExtraction(
@@ -2477,6 +2476,50 @@ function previewText(text: string): string {
 function previewCandidate(text: string): string {
   const singleLine = text.replace(/\s+/g, ' ').trim();
   return singleLine.length <= SEND_TEXT_PREVIEW_LIMIT ? singleLine : `${singleLine.slice(0, SEND_TEXT_PREVIEW_LIMIT - 3)}...`;
+}
+
+function preserveStructuredFinalAnswer(input: {
+  text: string;
+  prompt: string;
+  maxChars: number;
+}): string | undefined {
+  const normalized = input.text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const withoutPromptEcho = dropStandalonePromptEcho(normalized, input.prompt);
+  if (!withoutPromptEcho) {
+    return undefined;
+  }
+
+  return truncateWithTailHint(withoutPromptEcho, input.maxChars);
+}
+
+function dropStandalonePromptEcho(text: string, prompt: string): string {
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt) {
+    return text;
+  }
+
+  const lines = text.split('\n');
+  if ((lines[0] ?? '').trim() !== normalizedPrompt) {
+    return text;
+  }
+
+  return lines.slice(1).join('\n').trim();
+}
+
+function truncateWithTailHint(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const suffix = '\n\n输出已截断，可使用 /tail 查看完整内容。';
+  const prefixLength = maxChars - suffix.length - 1;
+  if (prefixLength <= 0) {
+    return `…${suffix}`.slice(0, Math.max(0, maxChars));
+  }
+  return `${text.slice(0, prefixLength)}…${suffix}`;
 }
 
 function hashCandidate(text: string): string {

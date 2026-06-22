@@ -47,6 +47,44 @@ function createNotifierWithReactions() {
   };
 }
 
+async function completeFromObservation(input: {
+  finalAnswer: string;
+  prompt?: string;
+}): Promise<{
+  notifier: { sendText: ReturnType<typeof vi.fn> };
+}> {
+  vi.useFakeTimers();
+  const root = await createTmpDir();
+  const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+  const store = new FileStateStore(root);
+  const runner = new FakeCodexRunner();
+  const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+  const observationStore = new FakeCodexObservationStore();
+  const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+  await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+  const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+  const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3406';
+  await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+  await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: input.prompt ?? 'format response' });
+
+  observationStore.snapshots.set(codexSessionId, {
+    availability: { kind: 'ready' },
+    codexSessionId,
+    status: 'completed',
+    finalAnswer: input.finalAnswer,
+    completedAt: '2099-06-02T08:00:00.000Z',
+    recentToolEvents: [],
+  });
+
+  await runner.emitOutput(sessionId, 'tick\n');
+  await vi.advanceTimersByTimeAsync(50);
+  vi.useRealTimers();
+  await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+
+  return { notifier };
+}
+
 describe('SessionManager', () => {
   const singleProjectConfig = (root: string): BotConfig => {
     const config = sampleConfig(root);
@@ -1522,6 +1560,76 @@ describe('SessionManager', () => {
           ]),
         ),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves blank lines in observation final answers', async () => {
+    try {
+      const { notifier } = await completeFromObservation({
+        finalAnswer: '方案 1\n\n**方案 2**\n\n结论',
+      });
+
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '方案 1\n\n**方案 2**\n\n结论');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves indentation in observation final answers', async () => {
+    try {
+      const { notifier } = await completeFromObservation({
+        finalAnswer: '代码:\n\n    const value = 1;\n    return value;',
+      });
+
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '代码:\n\n    const value = 1;\n    return value;');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('continues to clean PTY final answer noise', async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new FileStateStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const registry = {
+        discoverForProject: vi.fn().mockResolvedValue({ ok: false, reason: 'not-found' }),
+      };
+      const manager = new SessionManager(config, store, runner, {
+        notifier,
+        codexSessionRegistry: registry as any,
+        codexSessionDiscovery: { maxAttempts: 1, retryDelayMs: 0, sleep: async () => undefined },
+      });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+
+      await runner.emitOutput(
+        sessionId,
+        [
+          '› 当前分支是什么',
+          '• Working',
+          '• Ran git rev-parse --abbrev-ref HEAD',
+          '└ main',
+          '────────────────────────────────────────────────────────────────',
+          '',
+          '当前分支是 `main`。',
+          '',
+          'gpt-5.5 medium · Context 1% used',
+        ].join('\n') + '\n',
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '当前分支是 `main`。');
+      expect(registry.discoverForProject).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
