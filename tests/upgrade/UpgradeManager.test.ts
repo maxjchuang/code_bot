@@ -49,6 +49,27 @@ function stateStore(deployedCommit?: string): UpgradeStateStore & { writes: Arra
   };
 }
 
+function pm2Process(input: {
+  pm_id: number;
+  name?: string;
+  cwd?: string;
+  execPath?: string;
+}): Record<string, unknown> {
+  return {
+    pm_id: input.pm_id,
+    name: input.name ?? 'code-bot',
+    pm2_env: {
+      pm_cwd: input.cwd,
+      cwd: input.cwd,
+      pm_exec_path: input.execPath,
+    },
+  };
+}
+
+function pm2Jlist(processes: Array<Record<string, unknown>>): string {
+  return `${JSON.stringify(processes)}\n`;
+}
+
 function commandLines(calls: RecordedCommand[]): string[] {
   return calls.map((call) => `${call.command} ${call.args.join(' ')}`);
 }
@@ -83,7 +104,7 @@ describe('UpgradeManager', () => {
       'git rev-parse HEAD': 'local123\n',
     });
     const state = stateStore();
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'restart-triggered',
@@ -96,10 +117,93 @@ describe('UpgradeManager', () => {
       'git rev-parse HEAD',
       'npm install',
       'npm run build',
-      'pm2 restart code-bot',
+      'pm2 restart 7',
     ]);
     expect(state.writes).toHaveLength(1);
     expect(state.writes[0].deployedCommit).toBe('local123');
+  });
+
+  it('notifies before restarting so successful self-restarts can be observed', async () => {
+    const beforeRestart = vi.fn().mockResolvedValue(undefined);
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'local123\n',
+    });
+    const manager = new UpgradeManager({
+      projectRoot: '/repo',
+      config: config(),
+      runner: commandRunner,
+      state: stateStore(),
+      currentPmId: '7',
+    });
+
+    await expect(manager.restart({ userId: 'ou_admin', beforeRestart })).resolves.toMatchObject({
+      status: 'restart-triggered',
+      reply: '',
+      preRestartNotified: true,
+    });
+    expect(beforeRestart).toHaveBeenCalledWith('Restarted local code at local12. Restarting code-bot with pm2.');
+    const restartCall = vi.mocked(commandRunner.run).mock.calls.findIndex((call) => call[0] === 'pm2' && call[1].join(' ') === 'restart 7');
+    expect(restartCall).toBeGreaterThanOrEqual(0);
+    expect(vi.mocked(beforeRestart).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(commandRunner.run).mock.invocationCallOrder[restartCall],
+    );
+  });
+
+  it('uses pm2 jlist path matching when current pm_id is unavailable', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'local123\n',
+      'pm2 jlist': pm2Jlist([
+        pm2Process({ pm_id: 3, cwd: '/other/repo', execPath: '/other/repo/dist/src/index.js' }),
+        pm2Process({ pm_id: 9, cwd: '/repo', execPath: '/repo/dist/src/index.js' }),
+      ]),
+    });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state: stateStore(), currentPmId: '' });
+
+    await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'restart-triggered',
+      oldCommit: 'local123',
+      newCommit: 'local123',
+    });
+    expect(commandLines(commandRunner.calls)).toContain('pm2 jlist');
+    expect(commandLines(commandRunner.calls)).toContain('pm2 restart 9');
+    expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart code-bot');
+  });
+
+  it('fails instead of restarting by name when pm2 target matching is ambiguous', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'local123\n',
+      'pm2 jlist': pm2Jlist([
+        pm2Process({ pm_id: 3, cwd: '/repo', execPath: '/repo/dist/src/index.js' }),
+        pm2Process({ pm_id: 9, cwd: '/repo', execPath: '/repo/dist/src/index.js' }),
+      ]),
+    });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '' });
+
+    await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'failed',
+      failedStep: 'pm2-target',
+      error: 'Multiple PM2 processes match code-bot at /repo.',
+    });
+    expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart code-bot');
+    expect(state.writes).toEqual([]);
+  });
+
+  it('fails instead of restarting by name when no pm2 target matches the project path', async () => {
+    const commandRunner = runner({
+      'git rev-parse HEAD': 'local123\n',
+      'pm2 jlist': pm2Jlist([pm2Process({ pm_id: 3, cwd: '/other/repo', execPath: '/other/repo/dist/src/index.js' })]),
+    });
+    const state = stateStore();
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '' });
+
+    await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
+      status: 'failed',
+      failedStep: 'pm2-target',
+      error: 'No PM2 process matches code-bot at /repo.',
+    });
+    expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart code-bot');
+    expect(state.writes).toEqual([]);
   });
 
   it('uses the same restart authorization and disabled checks as upgrade', async () => {
@@ -128,7 +232,7 @@ describe('UpgradeManager', () => {
       'npm run build': new Error('build failed'),
     });
     const state = stateStore();
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.restart({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'failed',
@@ -159,7 +263,7 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main': 'abc123\n',
     });
     const state = stateStore('abc123');
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'already-current',
@@ -182,7 +286,7 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main': 'abc123\n',
     });
     const state = stateStore();
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'restart-triggered',
@@ -196,7 +300,7 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main',
       'npm install',
       'npm run build',
-      'pm2 restart code-bot',
+      'pm2 restart 7',
     ]);
     expect(state.writes).toHaveLength(1);
     expect(state.writes[0].deployedCommit).toBe('abc123');
@@ -208,7 +312,7 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main': 'abc123\n',
     });
     const state = stateStore('old123');
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'restart-triggered',
@@ -227,7 +331,7 @@ describe('UpgradeManager', () => {
       'npm install': new Error('install failed'),
     });
     const state = stateStore();
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'failed',
@@ -256,7 +360,7 @@ describe('UpgradeManager', () => {
       oldCommit: 'old',
       newCommit: 'new',
     });
-    expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart code-bot');
+    expect(commandLines(commandRunner.calls)).not.toContain('pm2 restart 7');
     expect(state.writes).toEqual([]);
   });
 
@@ -285,7 +389,7 @@ describe('UpgradeManager', () => {
       'git rev-parse origin/main': 'new\n',
     });
     const state = stateStore();
-    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state });
+    const manager = new UpgradeManager({ projectRoot: '/repo', config: config(), runner: commandRunner, state, currentPmId: '7' });
 
     await expect(manager.upgrade({ userId: 'ou_admin' })).resolves.toMatchObject({
       status: 'restart-triggered',
@@ -302,7 +406,7 @@ describe('UpgradeManager', () => {
       'git merge --ff-only origin/main',
       'npm install',
       'npm run build',
-      'pm2 restart code-bot',
+      'pm2 restart 7',
     ]);
     expect(commandRunner.calls.every((call) => call.cwd === '/repo')).toBe(true);
     expect(state.writes).toHaveLength(1);
