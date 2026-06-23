@@ -2319,7 +2319,10 @@ export class SessionManager {
   }
 
   private async upgrade(input: IncomingBotText): Promise<BotTextResult> {
-    const result = await this.getUpgradeManager().upgrade({ userId: input.userId });
+    const result = await this.getUpgradeManager().upgrade({
+      userId: input.userId,
+      beforeRestart: this.createBeforeRestartNotifier(input),
+    });
     await this.store.appendEvent({
       type: upgradeEventType(result.status),
       at: new Date().toISOString(),
@@ -2329,13 +2332,38 @@ export class SessionManager {
   }
 
   private async restart(input: IncomingBotText): Promise<BotTextResult> {
-    const result = await this.getUpgradeManager().restart({ userId: input.userId });
+    const result = await this.getUpgradeManager().restart({
+      userId: input.userId,
+      beforeRestart: this.createBeforeRestartNotifier(input),
+    });
     await this.store.appendEvent({
       type: upgradeEventType(result.status),
       at: new Date().toISOString(),
       data: result.event,
     });
     return { reply: result.reply };
+  }
+
+  private createBeforeRestartNotifier(input: IncomingBotText): ((message: string) => Promise<void>) | undefined {
+    const notifier = this.deps.notifier;
+    if (!notifier) {
+      return undefined;
+    }
+    return async (message: string): Promise<void> => {
+      if (input.messageId && notifier.sendTextToTarget) {
+        await notifier.sendTextToTarget(
+          {
+            chatId: input.chatId,
+            replyToMessageId: input.messageId,
+            replyInThread: input.chatType === 'group' && input.threadId ? true : undefined,
+            mentionUserId: input.chatType === 'group' ? input.userId : undefined,
+          },
+          message,
+        );
+        return;
+      }
+      await notifier.sendText(input.chatId, message);
+    };
   }
 
   private helpText(): string {

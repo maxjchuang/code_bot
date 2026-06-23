@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
 import { promisify } from 'node:util';
 import type { UpgradeConfig } from '../domain/types.js';
 
@@ -69,16 +69,26 @@ export type UpgradeResult =
       newCommit?: string;
       event: Record<string, unknown>;
     }
-  | { status: 'restart-triggered'; reply: string; oldCommit: string; newCommit: string; event: Record<string, unknown> };
+  | {
+      status: 'restart-triggered';
+      reply: string;
+      oldCommit: string;
+      newCommit: string;
+      preRestartNotified?: boolean;
+      event: Record<string, unknown>;
+    };
 
 export interface UpgradeManagerDeps {
   projectRoot: string;
   config: UpgradeConfig;
   runner?: UpgradeCommandRunner;
   state?: UpgradeStateStore;
+  currentPmId?: string;
 }
 
 type StepResult = { ok: true; stdout: string; stderr: string } | { ok: false; error: string };
+type RestartInput = { userId: string; beforeRestart?: (message: string) => Promise<void> };
+type Pm2Target = { ok: true; pmId: string } | { ok: false; error: string };
 
 export class UpgradeManager {
   private readonly runner: UpgradeCommandRunner;
@@ -89,7 +99,7 @@ export class UpgradeManager {
     this.state = deps.state ?? new FileUpgradeStateStore(deps.projectRoot);
   }
 
-  async upgrade(input: { userId: string }): Promise<UpgradeResult> {
+  async upgrade(input: RestartInput): Promise<UpgradeResult> {
     const config = this.deps.config;
     if (!config.enabled) {
       return simpleResult('disabled', 'Self-upgrade is disabled.', { enabled: false });
@@ -147,7 +157,6 @@ export class UpgradeManager {
     const steps: Array<{ step: string; command: string; args: string[] }> = [
       { step: 'npm-install', command: 'npm', args: ['install'] },
       { step: 'npm-build', command: 'npm', args: ['run', 'build'] },
-      { step: 'pm2-restart', command: 'pm2', args: ['restart', config.pm2ProcessName] },
     ];
     if (oldCommit !== newCommit) {
       steps.unshift(
@@ -163,6 +172,12 @@ export class UpgradeManager {
       }
     }
 
+    const restartMessage = `Upgrade installed ${shortSha(newCommit)}. Restarting ${config.pm2ProcessName} with pm2.`;
+    const restarted = await this.restartPm2Process(restartMessage, input.beforeRestart);
+    if (!restarted.ok) {
+      return failedResult('pm2-target', restarted.error, { oldCommit, newCommit });
+    }
+
     const stateWrite = await this.writeState(newCommit);
     if (!stateWrite.ok) {
       return failedResult('deployment-state-write', stateWrite.error, { oldCommit, newCommit });
@@ -170,14 +185,22 @@ export class UpgradeManager {
 
     return {
       status: 'restart-triggered',
-      reply: `Upgrade installed ${shortSha(newCommit)}. Restarting ${config.pm2ProcessName} with pm2.`,
+      reply: restarted.preRestartNotified ? '' : restartMessage,
       oldCommit,
       newCommit,
-      event: { status: 'restart-triggered', oldCommit, newCommit, pm2ProcessName: config.pm2ProcessName },
+      preRestartNotified: restarted.preRestartNotified,
+      event: {
+        status: 'restart-triggered',
+        oldCommit,
+        newCommit,
+        pm2ProcessName: config.pm2ProcessName,
+        pm2Target: restarted.pmId,
+        preRestartNotified: restarted.preRestartNotified,
+      },
     };
   }
 
-  async restart(input: { userId: string }): Promise<UpgradeResult> {
+  async restart(input: RestartInput): Promise<UpgradeResult> {
     const config = this.deps.config;
     if (!config.enabled) {
       return simpleResult('disabled', 'Self-upgrade is disabled.', { enabled: false });
@@ -195,7 +218,6 @@ export class UpgradeManager {
     const steps: Array<{ step: string; command: string; args: string[] }> = [
       { step: 'npm-install', command: 'npm', args: ['install'] },
       { step: 'npm-build', command: 'npm', args: ['run', 'build'] },
-      { step: 'pm2-restart', command: 'pm2', args: ['restart', config.pm2ProcessName] },
     ];
 
     for (const { step, command, args } of steps) {
@@ -205,6 +227,12 @@ export class UpgradeManager {
       }
     }
 
+    const restartMessage = `Restarted local code at ${shortSha(currentCommit)}. Restarting ${config.pm2ProcessName} with pm2.`;
+    const restarted = await this.restartPm2Process(restartMessage, input.beforeRestart);
+    if (!restarted.ok) {
+      return failedResult('pm2-target', restarted.error, { oldCommit: currentCommit, newCommit: currentCommit });
+    }
+
     const stateWrite = await this.writeState(currentCommit);
     if (!stateWrite.ok) {
       return failedResult('deployment-state-write', stateWrite.error, { oldCommit: currentCommit, newCommit: currentCommit });
@@ -212,11 +240,98 @@ export class UpgradeManager {
 
     return {
       status: 'restart-triggered',
-      reply: `Restarted local code at ${shortSha(currentCommit)}. Restarting ${config.pm2ProcessName} with pm2.`,
+      reply: restarted.preRestartNotified ? '' : restartMessage,
       oldCommit: currentCommit,
       newCommit: currentCommit,
-      event: { status: 'restart-triggered', oldCommit: currentCommit, newCommit: currentCommit, pm2ProcessName: config.pm2ProcessName },
+      preRestartNotified: restarted.preRestartNotified,
+      event: {
+        status: 'restart-triggered',
+        oldCommit: currentCommit,
+        newCommit: currentCommit,
+        pm2ProcessName: config.pm2ProcessName,
+        pm2Target: restarted.pmId,
+        preRestartNotified: restarted.preRestartNotified,
+      },
     };
+  }
+
+  private async restartPm2Process(
+    message: string,
+    beforeRestart?: (message: string) => Promise<void>,
+  ): Promise<{ ok: true; pmId: string; preRestartNotified: boolean } | { ok: false; error: string }> {
+    const target = await this.resolvePm2Target();
+    if (!target.ok) {
+      return target;
+    }
+
+    let preRestartNotified = false;
+    if (beforeRestart) {
+      try {
+        await beforeRestart(message);
+        preRestartNotified = true;
+      } catch {
+        preRestartNotified = false;
+      }
+    }
+
+    const restarted = await this.runStep('pm2-restart', 'pm2', ['restart', target.pmId]);
+    if (!restarted.ok) {
+      return { ok: false, error: restarted.error };
+    }
+    return { ok: true, pmId: target.pmId, preRestartNotified };
+  }
+
+  private async resolvePm2Target(): Promise<Pm2Target> {
+    const currentPmId = this.deps.currentPmId ?? process.env.pm_id;
+    if (currentPmId?.trim()) {
+      return { ok: true, pmId: currentPmId.trim() };
+    }
+
+    const listed = await this.runStep('pm2-jlist', 'pm2', ['jlist']);
+    if (!listed.ok) {
+      return { ok: false, error: listed.error };
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(listed.stdout);
+    } catch {
+      return { ok: false, error: 'Unable to parse pm2 jlist output.' };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ok: false, error: 'Unable to parse pm2 jlist output.' };
+    }
+
+    const projectRoot = normalizePath(this.deps.projectRoot);
+    const expectedExecPath = normalizePath(join(this.deps.projectRoot, 'dist/src/index.js'));
+    const matches = parsed.filter((entry) => this.matchesPm2Process(entry, projectRoot, expectedExecPath));
+    if (matches.length === 0) {
+      return { ok: false, error: `No PM2 process matches ${this.deps.config.pm2ProcessName} at ${this.deps.projectRoot}.` };
+    }
+    if (matches.length > 1) {
+      return { ok: false, error: `Multiple PM2 processes match ${this.deps.config.pm2ProcessName} at ${this.deps.projectRoot}.` };
+    }
+
+    const pmId = readPmId(matches[0]);
+    if (!pmId) {
+      return { ok: false, error: `Matched PM2 process for ${this.deps.config.pm2ProcessName} does not have a pm_id.` };
+    }
+    return { ok: true, pmId };
+  }
+
+  private matchesPm2Process(entry: unknown, projectRoot: string, expectedExecPath: string): boolean {
+    if (!isRecord(entry) || entry.name !== this.deps.config.pm2ProcessName || !isRecord(entry.pm2_env)) {
+      return false;
+    }
+    const env = entry.pm2_env;
+    const cwd = typeof env.pm_cwd === 'string' ? env.pm_cwd : typeof env.cwd === 'string' ? env.cwd : undefined;
+    if (!cwd || normalizePath(cwd) !== projectRoot) {
+      return false;
+    }
+    if (typeof env.pm_exec_path === 'string' && normalizePath(env.pm_exec_path) !== expectedExecPath) {
+      return false;
+    }
+    return true;
   }
 
   private async runStep(step: string, command: string, args: string[]): Promise<StepResult> {
@@ -277,6 +392,23 @@ function formatError(error: unknown): string {
 
 function shortSha(value: string): string {
   return value.slice(0, 7);
+}
+
+function readPmId(entry: unknown): string | undefined {
+  if (!isRecord(entry)) {
+    return undefined;
+  }
+  if (typeof entry.pm_id === 'number' && Number.isFinite(entry.pm_id)) {
+    return String(entry.pm_id);
+  }
+  if (typeof entry.pm_id === 'string' && entry.pm_id.trim()) {
+    return entry.pm_id.trim();
+  }
+  return undefined;
+}
+
+function normalizePath(value: string): string {
+  return normalize(value).replace(/[\\/]+$/, '');
 }
 
 function preview(value: string): string {

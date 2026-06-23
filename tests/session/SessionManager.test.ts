@@ -363,13 +363,62 @@ describe('SessionManager', () => {
     });
 
     expect(result.reply).toBe('Upgrade installed abc1234. Restarting code-bot with pm2.');
-    expect(upgradeManager.upgrade).toHaveBeenCalledWith({ userId: 'ou_1' });
+    expect(upgradeManager.upgrade).toHaveBeenCalledWith({
+      userId: 'ou_1',
+      beforeRestart: undefined,
+    });
     const content = await readFile(join(root, '.code-bot/events/2026-06-04.jsonl'), 'utf8');
     const event = JSON.parse(content.trim());
     expect(event).toMatchObject({
       type: 'upgrade.completed',
       data: { status: 'restart-triggered', oldCommit: 'old', newCommit: 'abc1234' },
     });
+  });
+
+  it('sends upgrade restart prompts before pm2 restart and suppresses duplicate command replies', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendTextToTarget: vi.fn().mockResolvedValue(undefined),
+    };
+    const upgradeManager = {
+      upgrade: vi.fn(async (input: { userId: string; beforeRestart?: (message: string) => Promise<void> }) => {
+        await input.beforeRestart?.('Upgrade installed abc1234. Restarting code-bot with pm2.');
+        return {
+          status: 'restart-triggered' as const,
+          reply: '',
+          oldCommit: 'old',
+          newCommit: 'abc1234',
+          preRestartNotified: true,
+          event: { status: 'restart-triggered', oldCommit: 'old', newCommit: 'abc1234', preRestartNotified: true },
+        };
+      }),
+      restart: vi.fn(),
+    };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { notifier, upgradeManager });
+
+    const result = await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_1',
+      threadId: 'thread_1',
+      text: '/upgrade',
+      wasMentioned: true,
+    });
+
+    expect(result.reply).toBe('');
+    expect(notifier.sendTextToTarget).toHaveBeenCalledWith(
+      {
+        chatId: 'oc_1',
+        replyToMessageId: 'om_1',
+        replyInThread: true,
+        mentionUserId: 'ou_1',
+      },
+      'Upgrade installed abc1234. Restarting code-bot with pm2.',
+    );
   });
 
   it('routes /restart to the upgrade manager and records the result event', async () => {
@@ -406,7 +455,10 @@ describe('SessionManager', () => {
     });
 
     expect(result.reply).toBe('Restarted local code at abc1234. Restarting code-bot with pm2.');
-    expect(upgradeManager.restart).toHaveBeenCalledWith({ userId: 'ou_1' });
+    expect(upgradeManager.restart).toHaveBeenCalledWith({
+      userId: 'ou_1',
+      beforeRestart: undefined,
+    });
     expect(upgradeManager.upgrade).not.toHaveBeenCalled();
     const content = await readFile(join(root, '.code-bot/events/2026-06-04.jsonl'), 'utf8');
     const event = JSON.parse(content.trim());
