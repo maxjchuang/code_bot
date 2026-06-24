@@ -806,6 +806,17 @@ export class SessionManager {
       return { reply: 'No running session. Run /new <project> first.' };
     }
 
+    const submittedAt = new Date().toISOString();
+    const updatedSession = applyCodexSessionEvent(session, {
+      type: 'user.message_submitted',
+      chatId: input.chatId,
+      userId: input.userId,
+      sessionId: session.id,
+      text,
+      at: submittedAt,
+    });
+    await this.store.saveSession(updatedSession);
+
     const notificationEnabled = this.notificationsEnabled();
     const notificationStartedAt = new Date().toISOString();
     let createdPendingTurn = false;

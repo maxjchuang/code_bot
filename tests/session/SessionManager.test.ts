@@ -498,7 +498,11 @@ describe('SessionManager', () => {
     const chat = await store.getChat('oc_1');
     await expect(store.getSession(chat!.currentSessionId!)).resolves.toMatchObject({
       firstUserMessagePreview: 'inspect status',
+      phase: 'processing',
     });
+    const processingSession = await store.getSession(chat!.currentSessionId!);
+    expect(processingSession?.lastActivityAt).toBeDefined();
+    expect(processingSession?.lastPhaseChangedAt).toBeDefined();
   });
 
   it('keeps the first user message preview when later messages are sent', async () => {
