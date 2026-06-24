@@ -19,6 +19,8 @@ export interface AppDependencies {
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
   codexObservationStore?: CodexObservationStore;
+  codexHookInstaller?: Pick<CodexHookInstaller, 'status' | 'install' | 'uninstall'>;
+  createCodexHookService?: (options: ConstructorParameters<typeof CodexHookService>[0]) => Pick<CodexHookService, 'start' | 'stop' | 'isRunning' | 'resolvePermissionRequest'>;
 }
 
 export function createApp(deps: AppDependencies): {
@@ -27,13 +29,15 @@ export function createApp(deps: AppDependencies): {
   recoverStartupState: () => Promise<void>;
 } {
   const hookSocketPath = resolveHookSocketPath(deps.projectRoot, deps.config.codexHooks.socketPath);
-  const codexHookInstaller = new CodexHookInstaller({
-    codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
-    projectRoot: deps.projectRoot,
-    socketPath: hookSocketPath,
-  });
+  const codexHookInstaller =
+    deps.codexHookInstaller ??
+    new CodexHookInstaller({
+      codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
+      projectRoot: deps.projectRoot,
+      socketPath: hookSocketPath,
+    });
   let sessionManager: SessionManager;
-  const codexHookService = new CodexHookService({
+  const hookServiceOptions: ConstructorParameters<typeof CodexHookService>[0] = {
     enabled: deps.config.codexHooks.enabled,
     socketPath: hookSocketPath,
     store: deps.store,
@@ -41,7 +45,8 @@ export function createApp(deps: AppDependencies): {
     permissionTimeoutMs: deps.config.codexHooks.permissionTimeoutMs,
     onPermissionRequest: (request) => sessionManager.handleHookPermissionRequest(request),
     onPermissionTimeout: (request) => sessionManager.handleHookPermissionTimeout(request),
-  });
+  };
+  const codexHookService = deps.createCodexHookService ? deps.createCodexHookService(hookServiceOptions) : new CodexHookService(hookServiceOptions);
   sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, {
     logLevel: deps.config.logLevel,
     notifier: deps.notifier,
@@ -61,16 +66,64 @@ export function createApp(deps: AppDependencies): {
       data: { reason: message },
     });
   });
+  void recordStartupHookHealth(deps.config, deps.store, codexHookInstaller).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    void deps.store.appendEvent({
+      type: 'hook.startup_status_failed',
+      at: new Date().toISOString(),
+      data: { reason: message },
+    });
+  });
   return {
     sessionManager,
     healthCheck: () => deps.codexRunner.healthCheck(),
-    recoverStartupState: () =>
-      recoverStartupState(deps.store, deps.config, deps.codexRunner, {
+    recoverStartupState: async () => {
+      await recoverPendingApprovals(deps.store);
+      await recoverStartupState(deps.store, deps.config, deps.codexRunner, {
         onOutput: (sessionId, text) => sessionManager.handleRunnerOutput(sessionId, text),
         codexSessionRegistry: deps.codexSessionRegistry,
         codexSessionDiscovery: deps.codexSessionDiscovery,
-      }),
+      });
+    },
   };
+}
+
+async function recoverPendingApprovals(store: FileStateStore): Promise<void> {
+  const now = new Date().toISOString();
+  for (const approval of await store.listPendingApprovals()) {
+    await store.saveApproval({
+      ...approval,
+      status: 'expired',
+      failureReason: 'Bot restarted before permission decision.',
+    });
+    await store.appendEvent({
+      type: 'approval.expired_startup_recovery',
+      at: now,
+      data: { approvalId: approval.id, hookRequestId: approval.hookRequestId },
+    });
+  }
+}
+
+async function recordStartupHookHealth(
+  config: BotConfig,
+  store: FileStateStore,
+  hookInstaller: Pick<CodexHookInstaller, 'status' | 'install'>,
+): Promise<void> {
+  if (!config.codexHooks.enabled) {
+    return;
+  }
+  const status = await hookInstaller.status();
+  const now = new Date().toISOString();
+  await store.appendEvent({ type: 'hook.startup_status', at: now, data: status as unknown as Record<string, unknown> });
+  if (!config.codexHooks.autoRepair || status.configured) {
+    return;
+  }
+  await hookInstaller.install();
+  await store.appendEvent({
+    type: 'hook.auto_repaired',
+    at: new Date().toISOString(),
+    data: { reason: 'startup_status_unhealthy', recommendedCommand: status.recommendedCommand },
+  });
 }
 
 function resolveHookSocketPath(projectRoot: string, socketPath: string): string {

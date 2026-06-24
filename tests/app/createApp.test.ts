@@ -5,6 +5,7 @@ import { createApp } from '../../src/app/createApp.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { FakeCodexObservationStore, FakeCodexRunner, sampleConfig } from '../helpers/fakes.js';
 import { createTmpDir } from '../helpers/tmp.js';
+import type { CodexHookStatusReport } from '../../src/hooks/CodexHookTypes.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,6 +38,27 @@ describe('createApp', () => {
     sendRenderedMessageToTarget: vi.fn(),
   };
 
+  const hookStatusReport = (overrides: Partial<CodexHookStatusReport> = {}): CodexHookStatusReport => ({
+    configured: true,
+    configFeatureEnabled: true,
+    hooksJsonValid: true,
+    hooksJsonContainsManagedHooks: true,
+    manifestValid: true,
+    scriptInstalled: true,
+    listenerRunning: false,
+    recommendedCommand: '/hook-status',
+    issues: [],
+    ...overrides,
+  });
+
+  const createHookServiceFactory = () =>
+    vi.fn(() => ({
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      isRunning: vi.fn(() => true),
+      resolvePermissionRequest: vi.fn(() => false),
+    }));
+
   it('wires dependencies and exposes health', async () => {
     const root = await createTmpDir();
     const app = createApp({
@@ -59,6 +81,113 @@ describe('createApp', () => {
     const app = createApp({ projectRoot: root, config: sampleConfig(root), store, codexRunner: runner, notifier });
 
     expect((app.sessionManager as any).deps.notifier).toBe(notifier);
+  });
+
+  it('expires pending permission approvals during startup recovery', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-24T00:00:00.000Z'));
+    await store.saveApproval({
+      id: 'ap_pending',
+      sessionId: 'sess_1',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      status: 'pending',
+      riskSummary: 'Permission requested for shell',
+      createdAt: '2026-06-23T23:59:00.000Z',
+      expiresAt: '2026-06-24T00:04:00.000Z',
+      hookRequestId: 'turn_1',
+      toolName: 'shell',
+      projectId: 'repo',
+    });
+    const app = createApp({
+      projectRoot: root,
+      config: sampleConfig(root),
+      store,
+      codexRunner: new FakeCodexRunner(),
+      createCodexHookService: createHookServiceFactory(),
+    });
+
+    await app.recoverStartupState();
+
+    await expect(store.getApproval('ap_pending')).resolves.toMatchObject({
+      status: 'expired',
+      failureReason: 'Bot restarted before permission decision.',
+    });
+    const events = await readFile(join(root, '.code-bot/events/2026-06-24.jsonl'), 'utf8');
+    expect(events).toContain('"type":"approval.expired_startup_recovery"');
+  });
+
+  it('checks hook status on startup when codexHooks.enabled is true', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-24T00:00:00.000Z'));
+    const hookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport()),
+      install: vi.fn(),
+      uninstall: vi.fn(),
+    };
+    const config = { ...sampleConfig(root), codexHooks: { ...sampleConfig(root).codexHooks, enabled: true } };
+    createApp({
+      projectRoot: root,
+      config,
+      store,
+      codexRunner: new FakeCodexRunner(),
+      codexHookInstaller: hookInstaller,
+      createCodexHookService: createHookServiceFactory(),
+    });
+
+    await waitForAssertion(async () => {
+      expect(hookInstaller.status).toHaveBeenCalledTimes(1);
+      const events = await readFile(join(root, '.code-bot/events/2026-06-24.jsonl'), 'utf8');
+      expect(events).toContain('"type":"hook.startup_status"');
+    });
+    expect(hookInstaller.install).not.toHaveBeenCalled();
+  });
+
+  it('does not repair hooks on startup when autoRepair is false', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-24T00:00:00.000Z'));
+    const hookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport({ configured: false, recommendedCommand: '/install-hooks' })),
+      install: vi.fn(),
+      uninstall: vi.fn(),
+    };
+    const config = { ...sampleConfig(root), codexHooks: { ...sampleConfig(root).codexHooks, enabled: true, autoRepair: false } };
+
+    createApp({
+      projectRoot: root,
+      config,
+      store,
+      codexRunner: new FakeCodexRunner(),
+      codexHookInstaller: hookInstaller,
+      createCodexHookService: createHookServiceFactory(),
+    });
+
+    await waitForAssertion(() => expect(hookInstaller.status).toHaveBeenCalledTimes(1));
+    expect(hookInstaller.install).not.toHaveBeenCalled();
+  });
+
+  it('repairs managed hooks on startup when enabled and autoRepair is true', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, () => new Date('2026-06-24T00:00:00.000Z'));
+    const hookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport({ configured: false, recommendedCommand: '/install-hooks' })),
+      install: vi.fn().mockResolvedValue({ installed: true, status: hookStatusReport() }),
+      uninstall: vi.fn(),
+    };
+    const config = { ...sampleConfig(root), codexHooks: { ...sampleConfig(root).codexHooks, enabled: true, autoRepair: true } };
+
+    createApp({
+      projectRoot: root,
+      config,
+      store,
+      codexRunner: new FakeCodexRunner(),
+      codexHookInstaller: hookInstaller,
+      createCodexHookService: createHookServiceFactory(),
+    });
+
+    await waitForAssertion(() => expect(hookInstaller.install).toHaveBeenCalledTimes(1));
+    const events = await readFile(join(root, '.code-bot/events/2026-06-24.jsonl'), 'utf8');
+    expect(events).toContain('"type":"hook.auto_repaired"');
   });
 
   it('auto-resumes the current Codex session on startup recovery', async () => {

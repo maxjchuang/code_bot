@@ -377,6 +377,43 @@ describe('FileStateStore', () => {
     await expect(store.listPendingApprovalsByChat('oc_1')).resolves.toMatchObject([{ id: 'ap_pending' }]);
   });
 
+  it('lists all pending approvals across chats', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    await store.saveApproval({
+      id: 'ap_pending_1',
+      sessionId: 'session_1',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      status: 'pending',
+      riskSummary: 'pending 1',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+    await store.saveApproval({
+      id: 'ap_pending_2',
+      sessionId: 'session_2',
+      chatId: 'oc_2',
+      requestedBy: 'hook',
+      status: 'pending',
+      riskSummary: 'pending 2',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+    await store.saveApproval({
+      id: 'ap_rejected',
+      sessionId: 'session_3',
+      chatId: 'oc_3',
+      requestedBy: 'hook',
+      status: 'rejected',
+      riskSummary: 'rejected',
+      createdAt: '2026-05-31T10:00:00.000Z',
+      expiresAt: '2026-05-31T11:00:00.000Z',
+    });
+
+    await expect(store.listPendingApprovals()).resolves.toMatchObject([{ id: 'ap_pending_1' }, { id: 'ap_pending_2' }]);
+  });
+
   it('lists recent sessions for a chat', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);

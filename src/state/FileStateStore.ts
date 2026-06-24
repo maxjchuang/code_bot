@@ -114,6 +114,11 @@ export class FileStateStore {
   }
 
   async listPendingApprovalsByChat(chatId: string): Promise<ApprovalRecord[]> {
+    const approvals = await this.listPendingApprovals();
+    return approvals.filter((approval) => approval.chatId === chatId);
+  }
+
+  async listPendingApprovals(): Promise<ApprovalRecord[]> {
     await this.waitForPendingWrites();
     const approvalsDir = join(this.baseDir, 'state/approvals');
     let files: string[];
@@ -132,7 +137,7 @@ export class FileStateStore {
         .map(async (fileName) => this.readJson<ApprovalRecord>(join(approvalsDir, fileName))),
     );
 
-    return approvals.filter((approval): approval is ApprovalRecord => Boolean(approval && approval.chatId === chatId && approval.status === 'pending'));
+    return approvals.filter((approval): approval is ApprovalRecord => Boolean(approval && approval.status === 'pending'));
   }
 
   async claimInboundMessage(input: ClaimInboundMessageInput): Promise<ClaimInboundMessageResult> {
