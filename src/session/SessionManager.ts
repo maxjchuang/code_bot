@@ -807,7 +807,11 @@ export class SessionManager {
     }
 
     const submittedAt = new Date().toISOString();
-    const updatedSession = applyCodexSessionEvent(session, {
+    const sessionForSubmission = {
+      ...session,
+      firstUserMessagePreview: session.firstUserMessagePreview ?? previewText(text),
+    };
+    const updatedSession = applyCodexSessionEvent(sessionForSubmission, {
       type: 'user.message_submitted',
       chatId: input.chatId,
       userId: input.userId,

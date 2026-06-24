@@ -510,7 +510,7 @@ describe('SessionManager', () => {
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner);
-    const longFirstMessage = `${'a'.repeat(140)}\nwith more detail`;
+    const longFirstMessage = `first line with extra spaces\n${'a'.repeat(130)}  with  gaps`;
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: longFirstMessage });
