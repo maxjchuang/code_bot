@@ -481,6 +481,11 @@ describe('SessionManager', () => {
       text: '/new repo',
     });
     expect(created.reply).toContain('Created session');
+    const createdChat = await store.getChat('oc_1');
+    const createdSession = await store.getSession(createdChat!.currentSessionId!);
+    expect(createdSession?.phase).toBe('waiting_for_input');
+    expect(createdSession?.lastActivityAt).toBeDefined();
+    expect(createdSession?.lastPhaseChangedAt).toBeDefined();
 
     const sent = await manager.handleText({
       chatId: 'oc_1',
@@ -3550,6 +3555,11 @@ describe('SessionManager', () => {
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
     await runner.emitOutput(sessionId, 'hello from codex\n');
     await runner.exit(sessionId, 0);
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      status: 'exited',
+      phase: 'exited',
+      exitCode: 0,
+    });
 
     const logLines = await store.tailSessionLog(sessionId, 10);
     expect(logLines).toContain('hello from codex');

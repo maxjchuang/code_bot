@@ -29,6 +29,7 @@ import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import { renderResumeSessionCard } from '../feishu/ResumeSessionCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
+import { applyCodexSessionEvent } from './CodexSessionStateMachine.js';
 import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
 
 export interface IncomingBotText {
@@ -113,6 +114,7 @@ const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
 const DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS = 100;
 const DEFAULT_CODEX_STATUS_LIVE_FETCH_TIMEOUT_MS = 2_000;
 const DEFAULT_CODEX_STATUS_QUIET_MS = 75;
+const EXIT_DISCOVERY_GRACE_MS = 250;
 const MAX_LIVE_STATUS_CHARS = 32_768;
 const MAX_PTY_DEBUG_BUFFER_CHARS = 16_384;
 const PTY_DEBUG_TRUNCATION_MARKER = '\n[debug pty output truncated: terminal redraw exceeded buffer limit]\n';
@@ -634,9 +636,12 @@ export class SessionManager {
       chatId: input.chatId,
       projectId: project.id,
       status: 'running',
+      phase: 'starting',
       createdBy: input.userId,
       createdAt: now,
       updatedAt: now,
+      lastActivityAt: now,
+      lastPhaseChangedAt: now,
       logPath: this.store.sessionLogPath(sessionId),
       ...options.sessionFields,
     };
@@ -679,6 +684,17 @@ export class SessionManager {
         return { reply: `Failed to resume Codex session ${options.mode.target} for project ${project.id}: ${message}` };
       }
       return { reply: `Failed to start Codex for project ${project.id}: ${message}` };
+    }
+    const runnerStartedAt = new Date().toISOString();
+    const currentSession = await this.store.getSession(sessionId);
+    if (currentSession) {
+      await this.store.saveSession(
+        applyCodexSessionEvent(currentSession, {
+          type: 'runner.started',
+          sessionId,
+          at: runnerStartedAt,
+        }),
+      );
     }
     await this.store.appendEvent({
       type: options.eventType,
@@ -1460,6 +1476,11 @@ export class SessionManager {
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
+    const pendingTurn = this.pendingTurns.get(sessionId);
+    if (pendingTurn?.timer) {
+      clearTimeout(pendingTurn.timer);
+      pendingTurn.timer = undefined;
+    }
     await this.flushPendingPtyDebugOutput(sessionId);
     try {
       this.terminalObserver.end(sessionId);
@@ -1467,31 +1488,41 @@ export class SessionManager {
       void this.recordBackgroundError('session.terminal_observer_end_failed', error, { sessionId }).catch(() => undefined);
     }
     const exitedAt = new Date().toISOString();
-    const updated = await this.store.updateSession(sessionId, (latest) => {
-      const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
-      return {
-        ...latest,
-        status: nextStatus,
-        exitCode,
-        updatedAt: exitedAt,
-      };
-    });
-    if (!updated) {
+    const current = await this.store.getSession(sessionId);
+    if (!current) {
       await this.store.appendEvent({
         type: 'session.exit_missing_record',
         at: new Date().toISOString(),
         data: { sessionId, exitCode },
       });
+      return;
     }
+    let updated: SessionRecord | undefined;
+    await this.store.updateSession(sessionId, (latest) => {
+      let next = applyCodexSessionEvent(latest, {
+        type: 'runner.exited',
+        sessionId,
+        exitCode,
+        at: exitedAt,
+      });
+      if (latest.status === 'interrupted' && latest.stopRequested) {
+        next = {
+          ...next,
+          status: 'interrupted',
+          phase: 'interrupted',
+          lastPhaseChangedAt: latest.phase === 'interrupted' ? latest.lastPhaseChangedAt : exitedAt,
+        };
+      }
+      updated = next;
+      return next;
+    });
     this.logger.info('session.exited', {
       session: sessionId,
       exitCode: exitCode ?? 'none',
       status: updated?.status ?? 'missing',
     });
     if (this.pendingTurns.has(sessionId)) {
-      await this.completePendingTurn(sessionId, 'exit').catch((error) =>
-        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
-      );
+      await this.completePendingTurn(sessionId, 'exit').catch(() => undefined);
     }
   }
 
@@ -1509,9 +1540,9 @@ export class SessionManager {
   }
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
+    this.notifyLiveStatusWaiters(sessionId, text);
     await this.store.appendSessionLog(sessionId, text);
     await this.logPtyDebugOutput(sessionId, text);
-    this.notifyLiveStatusWaiters(sessionId, text);
     await this.observePendingTurnOutputCoalesced(sessionId);
   }
 
@@ -1772,9 +1803,7 @@ export class SessionManager {
       }).catch(() => undefined),
     );
     turn.timer = setTimeout(() => {
-      return this.completePendingTurn(sessionId, 'stable').catch((error) =>
-        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
-      );
+      return this.completePendingTurn(sessionId, 'stable').catch(() => undefined);
     }, this.config.notifications.idleMs);
   }
 
@@ -1785,7 +1814,10 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const currentAnswer = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
+      const currentAnswer =
+        reason === 'exit'
+          ? await this.currentTurnAnswerExtractionOnExit(sessionId, turn)
+          : await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
       const extraction: FinalAnswerExtraction =
         currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
       if (extraction.kind === 'answer' && currentAnswer.kind === 'answer') {
@@ -1870,6 +1902,11 @@ export class SessionManager {
         }).catch(() => undefined),
       );
     } catch (error) {
+      await this.recordBackgroundError('notification.send_failed', error, {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+      }).catch(() => undefined);
       this.logger.error('notification.failed', {
         chat: turn.chatId,
         session: sessionId,
@@ -1938,6 +1975,30 @@ export class SessionManager {
     }
 
     return { kind: 'empty' };
+  }
+
+  private async currentTurnAnswerExtractionOnExit(sessionId: string, turn: PendingTurn): Promise<CurrentTurnAnswer> {
+    const session = await this.store.getSession(sessionId);
+    if (session?.codexSessionId) {
+      return this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
+    }
+
+    const ptyAnswer = await this.currentTurnPtyExtraction(sessionId, turn);
+    if (!ptyAnswer) {
+      return this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
+    }
+
+    const observationAnswer = await Promise.race<
+      { kind: 'answer'; text: string } | undefined
+    >([
+      this.currentTurnObservationExtraction(sessionId, turn, { allowDiscovery: true }),
+      new Promise<undefined>((resolve) => setTimeout(resolve, EXIT_DISCOVERY_GRACE_MS)),
+    ]);
+    if (observationAnswer) {
+      return { kind: 'answer', text: observationAnswer.text, source: 'observation' };
+    }
+
+    return { kind: 'answer', text: ptyAnswer, source: 'pty' };
   }
 
   private async currentTurnPtyExtraction(sessionId: string, turn: PendingTurn): Promise<string | undefined> {
