@@ -670,6 +670,9 @@ export class SessionManager {
       await this.store.saveSession({
         ...session,
         status: 'exited',
+        phase: 'failed',
+        lastActivityAt: failedAt,
+        lastPhaseChangedAt: failedAt,
         lastSummary:
           options.mode.kind === 'resume' ? `Failed to resume Codex session ${options.mode.target}: ${message}` : `Failed to start Codex: ${message}`,
         updatedAt: failedAt,
@@ -1517,7 +1520,7 @@ export class SessionManager {
       status: updated?.status ?? 'missing',
     });
     if (this.pendingTurns.has(sessionId)) {
-      await this.completePendingTurn(sessionId, 'exit').catch(() => undefined);
+      await this.completePendingTurn(sessionId, 'exit');
     }
   }
 
@@ -1911,7 +1914,23 @@ export class SessionManager {
         clearTimeout(turn.timer);
       }
       this.pendingTurns.delete(sessionId);
-      await this.activateNextQueuedTurn(sessionId);
+      try {
+        await this.activateNextQueuedTurn(sessionId);
+      } catch (error) {
+        await this.recordBackgroundError('notification.turn_completion_failed', error, {
+          sessionId,
+          chatId: turn.chatId,
+          projectId: turn.projectId,
+          completionReason: reason,
+        }).catch(() => undefined);
+        this.logger.error('notification.turn_completion_failed', {
+          chat: turn.chatId,
+          session: sessionId,
+          project: turn.projectId,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     }
   }
 

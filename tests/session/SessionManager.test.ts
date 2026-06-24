@@ -3467,6 +3467,13 @@ describe('SessionManager', () => {
 
     expect(resumed.reply).toBe('Failed to resume Codex session 019e7f20-a667-7632-a808-c9595d77116e for project repo: spawn failed');
     expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+    const failedResumeSession = (await store.listSessionsByChat('oc_1', 10)).find((session) => session.id !== priorSessionId);
+    expect(failedResumeSession).toMatchObject({
+      status: 'exited',
+      phase: 'failed',
+    });
+    expect(failedResumeSession?.updatedAt).toBe(failedResumeSession?.lastActivityAt);
+    expect(failedResumeSession?.updatedAt).toBe(failedResumeSession?.lastPhaseChangedAt);
   });
 
   it('rejects code_bot session resume when an explicit project differs from the source session project', async () => {
@@ -3511,6 +3518,13 @@ describe('SessionManager', () => {
       text: '/new repo',
     });
     expect(created.reply).toContain('Failed to start Codex');
+    const failedSession = (await store.listSessionsByChat('oc_1', 10))[0];
+    expect(failedSession).toMatchObject({
+      status: 'exited',
+      phase: 'failed',
+    });
+    expect(failedSession?.updatedAt).toBe(failedSession?.lastActivityAt);
+    expect(failedSession?.updatedAt).toBe(failedSession?.lastPhaseChangedAt);
 
     const sessionsReply = await manager.handleText({
       chatId: 'oc_1',
@@ -3528,6 +3542,66 @@ describe('SessionManager', () => {
     expect(content).toContain('"type":"session.start_failed"');
     expect(content).toContain('"reason":"spawn failed"');
   });
+
+  it('records queued turn activation failures after stable completion', async () => {
+    vi.useFakeTimers();
+    try {
+      class FailingQueueActivationStore extends FileStateStore {
+        failQueueActivation = false;
+
+        async sessionLogSize(sessionId: string): Promise<number> {
+          if (this.failQueueActivation) {
+            throw new Error(`queue activation failed for ${sessionId}`);
+          }
+          return super.sessionLogSize(sessionId);
+        }
+      }
+
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 20 } };
+      const store = new FailingQueueActivationStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a34ff';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first queued task' });
+      const nextTurn = (manager as any).createPendingTurn(
+        sessionId,
+        'oc_1',
+        'repo',
+        'second queued task',
+        new Date().toISOString(),
+      );
+      (manager as any).queuedTurns.set(sessionId, [nextTurn]);
+
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: 'first answer',
+        completedAt: '2099-06-02T08:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await runner.emitOutput(sessionId, 'tick\n');
+      store.failQueueActivation = true;
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
+
+      const day = new Date().toISOString().slice(0, 10);
+      await waitForAssertion(async () => {
+        const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+        expect(content).toContain('"type":"notification.turn_completion_failed"');
+        expect(content).toContain('"reason":"queue activation failed');
+      }, 6000);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 10_000);
 
   it('blocks sends when current session has exited', async () => {
     const root = await createTmpDir();
