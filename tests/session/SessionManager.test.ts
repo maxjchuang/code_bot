@@ -1407,6 +1407,9 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(1);
       vi.useRealTimers();
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      const session = await store.getSession(sessionId);
+      expect(session?.phase).toBe('completed');
+      expect(session?.lastSummary).toBe('当前分支：develop');
       expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '当前分支：develop');
     } finally {
       vi.useRealTimers();

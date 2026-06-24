@@ -1830,6 +1830,21 @@ export class SessionManager {
       const currentAnswer = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
       const extraction: FinalAnswerExtraction =
         currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
+      if (currentAnswer.kind === 'answer') {
+        const completedAt = new Date().toISOString();
+        const current = await this.store.getSession(turn.sessionId);
+        if (current) {
+          await this.store.saveSession(
+            applyCodexSessionEvent(current, {
+              type: 'observation.task_completed',
+              sessionId: turn.sessionId,
+              codexSessionId: current.codexSessionId ?? `unknown:${turn.sessionId}`,
+              finalAnswer: currentAnswer.text,
+              at: completedAt,
+            }),
+          );
+        }
+      }
       if (extraction.kind === 'answer' && currentAnswer.kind === 'answer') {
         void this.store.appendEvent({
           type: 'notification.final_extract_selected',
