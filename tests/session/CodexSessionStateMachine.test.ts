@@ -17,6 +17,19 @@ function baseSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
 }
 
 describe('applyCodexSessionEvent', () => {
+  it('returns the original session object unchanged when the sessionId does not match', () => {
+    const session = baseSession({ phase: 'processing' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'runner.started',
+      sessionId: 'other_session',
+      at: '2026-06-24T00:00:01.000Z',
+      pid: 123,
+    });
+
+    expect(updated).toBe(session);
+  });
+
   it('moves a starting session to waiting_for_input when the runner starts', () => {
     const session = baseSession({ status: 'starting', phase: 'starting' });
 
@@ -50,6 +63,24 @@ describe('applyCodexSessionEvent', () => {
     expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:02.000Z');
   });
 
+  it('preserves an existing firstUserMessagePreview when a user message is submitted', () => {
+    const session = baseSession({
+      phase: 'waiting_for_input',
+      firstUserMessagePreview: 'existing preview',
+    });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'user.message_submitted',
+      chatId: 'chat_1',
+      userId: 'user_1',
+      sessionId: 'sess_test',
+      text: 'implement feature',
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    expect(updated.firstUserMessagePreview).toBe('existing preview');
+  });
+
   it('keeps the previous phase timestamp when an event does not change phase', () => {
     const session = baseSession({
       phase: 'processing',
@@ -68,6 +99,19 @@ describe('applyCodexSessionEvent', () => {
     expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:02.000Z');
   });
 
+  it('sets phase processing when runner output is received without a prior phase', () => {
+    const session = baseSession({ phase: undefined });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'runner.output_received',
+      sessionId: 'sess_test',
+      text: 'working',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+  });
+
   it('marks completion from observation without changing the coarse running status', () => {
     const session = baseSession({ status: 'running', phase: 'processing' });
 
@@ -82,6 +126,34 @@ describe('applyCodexSessionEvent', () => {
     expect(updated.status).toBe('running');
     expect(updated.phase).toBe('completed');
     expect(updated.lastSummary).toBe('done');
+  });
+
+  it('marks a recovered interrupted session as interrupted', () => {
+    const session = baseSession({ status: 'running', phase: 'processing', lastSummary: undefined });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'session.recovered_interrupted',
+      sessionId: 'sess_test',
+      at: '2026-06-24T00:00:04.000Z',
+    });
+
+    expect(updated.status).toBe('interrupted');
+    expect(updated.phase).toBe('interrupted');
+    expect(updated.lastSummary).toBe('Interrupted during bot restart recovery.');
+  });
+
+  it('marks an auto-resumed session as waiting_for_input', () => {
+    const session = baseSession({ status: 'interrupted', phase: 'interrupted' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'session.auto_resumed',
+      sessionId: 'sess_test',
+      sourceSessionId: 'sess_prev',
+      at: '2026-06-24T00:00:05.000Z',
+    });
+
+    expect(updated.status).toBe('running');
+    expect(updated.phase).toBe('waiting_for_input');
   });
 
   it('marks runner exit as exited and preserves exit code', () => {
