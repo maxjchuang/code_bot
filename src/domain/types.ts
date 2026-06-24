@@ -2,6 +2,16 @@ import type { LogLevel } from '../logging/AppLogger.js';
 
 export type ChatType = 'private' | 'group';
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'interrupted' | 'unknown';
+export type CodexSessionPhase =
+  | 'idle'
+  | 'starting'
+  | 'processing'
+  | 'waiting_for_input'
+  | 'waiting_for_approval'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'exited';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 
 export interface ProjectConfig {
@@ -110,9 +120,12 @@ export interface SessionRecord {
   chatId: string;
   projectId: string;
   status: SessionStatus;
+  phase?: CodexSessionPhase;
   createdBy: string;
   createdAt: string;
+  lastActivityAt?: string;
   updatedAt: string;
+  lastPhaseChangedAt?: string;
   pid?: number;
   logPath: string;
   exitCode?: number;
