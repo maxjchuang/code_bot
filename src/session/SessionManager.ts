@@ -1004,6 +1004,7 @@ export class SessionManager {
           projectId: chat?.currentProjectId,
           sessionId: chat?.currentSessionId,
           status: session?.status ?? 'none',
+          phase: session?.phase,
           summary: session?.lastSummary,
           pendingApprovals: pendingApprovals.map((approval) => approval.id),
         },
@@ -1391,7 +1392,18 @@ export class SessionManager {
     const chat = await this.store.getChat(chatId);
     return {
       reply: sessions
-        .map((session) => `${session.id} | ${sessionResumeState(session, chat?.currentSessionId)} | ${session.projectId} | ${session.status} | ${formatDisplayTime(session.updatedAt, this.config.ui.timeZone)}`)
+        .map((session) =>
+          [
+            session.id,
+            sessionResumeState(session, chat?.currentSessionId),
+            session.projectId,
+            session.status,
+            session.phase,
+            formatDisplayTime(session.updatedAt, this.config.ui.timeZone),
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join(' | '),
+        )
         .join('\n'),
     };
   }

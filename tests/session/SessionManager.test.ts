@@ -6347,6 +6347,7 @@ describe('SessionManager', () => {
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'running',
+      phase: 'processing',
       createdBy: 'ou_1',
       createdAt: '2026-06-01T00:00:00.000Z',
       updatedAt: '2026-06-01T00:02:00.000Z',
@@ -6358,6 +6359,7 @@ describe('SessionManager', () => {
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'exited',
+      phase: 'completed',
       createdBy: 'ou_1',
       createdAt: '2026-06-01T00:00:00.000Z',
       updatedAt: '2026-06-01T00:01:00.000Z',
@@ -6368,8 +6370,8 @@ describe('SessionManager', () => {
 
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
 
-    expect(listed.reply).toContain('sess_current | current | repo | running');
-    expect(listed.reply).toContain('sess_resumable | resumable | repo | exited');
+    expect(listed.reply).toContain('sess_current | current | repo | running | processing');
+    expect(listed.reply).toContain('sess_resumable | resumable | repo | exited | completed');
     expect(listed.reply).toContain('2026-06-01 08:02:00 Asia/Shanghai');
     expect(listed.reply).toContain('2026-06-01 08:01:00 Asia/Shanghai');
     expect(listed.reply).not.toContain(codexSessionId);
@@ -6386,6 +6388,7 @@ describe('SessionManager', () => {
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'exited',
+      phase: 'failed',
       createdBy: 'ou_1',
       createdAt: '2026-06-01T00:00:00.000Z',
       updatedAt: '2026-06-01T00:01:00.000Z',
@@ -6394,7 +6397,8 @@ describe('SessionManager', () => {
 
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
 
-    expect(listed.reply).toContain('sess_missing_native_id | not-resumable | repo | exited');
+    expect(listed.reply).toContain('sess_missing_native_id | not-resumable | repo | exited | failed');
+    expect(listed.reply).not.toContain('undefined');
   });
 
   it('supports /approve and /reject approval commands', async () => {
