@@ -6,6 +6,10 @@ export function applyCodexSessionEvent(session: SessionRecord, event: CodexSessi
     return session;
   }
 
+  if (isProtectedTerminalPhase(session.phase) && event.type !== 'runner.exited') {
+    return session;
+  }
+
   const next = reduceSession(session, event);
   const nextPhase = next.phase ?? session.phase;
   const phaseChanged = nextPhase !== session.phase;
@@ -62,10 +66,20 @@ function reduceSession(session: SessionRecord, event: CodexSessionEvent): Sessio
         status: 'running',
         phase: 'waiting_for_input',
       };
+    default:
+      return assertNever(event);
   }
 }
 
 function preview(text: string): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
+}
+
+function isProtectedTerminalPhase(phase: SessionRecord['phase']): boolean {
+  return phase === 'completed' || phase === 'exited' || phase === 'interrupted' || phase === 'failed';
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled Codex session event: ${JSON.stringify(value)}`);
 }

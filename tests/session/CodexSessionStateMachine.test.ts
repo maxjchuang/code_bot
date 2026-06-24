@@ -128,6 +128,21 @@ describe('applyCodexSessionEvent', () => {
     expect(updated.lastSummary).toBe('done');
   });
 
+  it('does not reopen an exited session when a late runner starts', () => {
+    const session = baseSession({ status: 'exited', phase: 'exited' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'runner.started',
+      sessionId: 'sess_test',
+      at: '2026-06-24T00:00:04.000Z',
+      pid: 456,
+    });
+
+    expect(updated.status).toBe('exited');
+    expect(updated.phase).toBe('exited');
+    expect(updated.pid).toBeUndefined();
+  });
+
   it('marks a recovered interrupted session as interrupted', () => {
     const session = baseSession({ status: 'running', phase: 'processing', lastSummary: undefined });
 
@@ -142,8 +157,38 @@ describe('applyCodexSessionEvent', () => {
     expect(updated.lastSummary).toBe('Interrupted during bot restart recovery.');
   });
 
-  it('marks an auto-resumed session as waiting_for_input', () => {
+  it('does not reopen an interrupted session when a late auto-resume arrives', () => {
     const session = baseSession({ status: 'interrupted', phase: 'interrupted' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'session.auto_resumed',
+      sessionId: 'sess_test',
+      sourceSessionId: 'sess_prev',
+      at: '2026-06-24T00:00:05.000Z',
+    });
+
+    expect(updated.status).toBe('interrupted');
+    expect(updated.phase).toBe('interrupted');
+  });
+
+  it('does not overwrite an exited session when a late task completion arrives', () => {
+    const session = baseSession({ status: 'exited', phase: 'exited', lastSummary: 'stopped' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'observation.task_completed',
+      sessionId: 'sess_test',
+      codexSessionId: 'codex_1',
+      finalAnswer: 'done',
+      at: '2026-06-24T00:00:06.000Z',
+    });
+
+    expect(updated.status).toBe('exited');
+    expect(updated.phase).toBe('exited');
+    expect(updated.lastSummary).toBe('stopped');
+  });
+
+  it('marks an auto-resumed session as waiting_for_input', () => {
+    const session = baseSession({ status: 'running', phase: 'processing' });
 
     const updated = applyCodexSessionEvent(session, {
       type: 'session.auto_resumed',
@@ -154,6 +199,21 @@ describe('applyCodexSessionEvent', () => {
 
     expect(updated.status).toBe('running');
     expect(updated.phase).toBe('waiting_for_input');
+  });
+
+  it('moves a completed session to exited when the runner exits', () => {
+    const session = baseSession({ status: 'running', phase: 'completed' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'runner.exited',
+      sessionId: 'sess_test',
+      exitCode: 0,
+      at: '2026-06-24T00:00:06.000Z',
+    });
+
+    expect(updated.status).toBe('exited');
+    expect(updated.phase).toBe('exited');
+    expect(updated.exitCode).toBe(0);
   });
 
   it('marks runner exit as exited and preserves exit code', () => {
