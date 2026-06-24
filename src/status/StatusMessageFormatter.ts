@@ -6,6 +6,7 @@ export type StatusMessageInput = {
     projectId?: string;
     sessionId?: string;
     status?: SessionStatus | 'none';
+    phase?: string;
     summary?: string;
     pendingApprovals: string[];
   };
@@ -37,6 +38,9 @@ function formatSessionMarkdown(input: StatusMessageInput['session']): string {
     `- **Status**: \`${valueOrNone(input.status)}\``,
   ];
 
+  if (input.phase) {
+    lines.push(`- **Phase**: \`${input.phase}\``);
+  }
   if (input.summary) {
     lines.push(`- **Summary**: ${input.summary}`);
   }
@@ -118,6 +122,9 @@ function formatSessionFallback(input: StatusMessageInput['session']): string {
     `Status: ${valueOrNone(input.status)}`,
   ];
 
+  if (input.phase) {
+    lines.push(`Phase: ${input.phase}`);
+  }
   if (input.summary) {
     lines.push(`Summary: ${input.summary}`);
   }

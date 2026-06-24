@@ -3,4 +3,5 @@ dist/
 .code-bot/
 .superpowers/
 .worktrees/
+docs/superpowers/plans/
 *.log

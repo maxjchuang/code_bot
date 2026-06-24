@@ -29,6 +29,7 @@ import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import { renderResumeSessionCard } from '../feishu/ResumeSessionCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
+import { applyCodexSessionEvent } from './CodexSessionStateMachine.js';
 import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
 
 export interface IncomingBotText {
@@ -634,9 +635,12 @@ export class SessionManager {
       chatId: input.chatId,
       projectId: project.id,
       status: 'running',
+      phase: 'starting',
       createdBy: input.userId,
       createdAt: now,
       updatedAt: now,
+      lastActivityAt: now,
+      lastPhaseChangedAt: now,
       logPath: this.store.sessionLogPath(sessionId),
       ...options.sessionFields,
     };
@@ -666,6 +670,9 @@ export class SessionManager {
       await this.store.saveSession({
         ...session,
         status: 'exited',
+        phase: 'failed',
+        lastActivityAt: failedAt,
+        lastPhaseChangedAt: failedAt,
         lastSummary:
           options.mode.kind === 'resume' ? `Failed to resume Codex session ${options.mode.target}: ${message}` : `Failed to start Codex: ${message}`,
         updatedAt: failedAt,
@@ -679,6 +686,17 @@ export class SessionManager {
         return { reply: `Failed to resume Codex session ${options.mode.target} for project ${project.id}: ${message}` };
       }
       return { reply: `Failed to start Codex for project ${project.id}: ${message}` };
+    }
+    const runnerStartedAt = new Date().toISOString();
+    const currentSession = await this.store.getSession(sessionId);
+    if (currentSession) {
+      await this.store.saveSession(
+        applyCodexSessionEvent(currentSession, {
+          type: 'runner.started',
+          sessionId,
+          at: runnerStartedAt,
+        }),
+      );
     }
     await this.store.appendEvent({
       type: options.eventType,
@@ -787,6 +805,21 @@ export class SessionManager {
     if (!session || session.status !== 'running') {
       return { reply: 'No running session. Run /new <project> first.' };
     }
+
+    const submittedAt = new Date().toISOString();
+    const sessionForSubmission = {
+      ...session,
+      firstUserMessagePreview: session.firstUserMessagePreview ?? previewText(text),
+    };
+    const updatedSession = applyCodexSessionEvent(sessionForSubmission, {
+      type: 'user.message_submitted',
+      chatId: input.chatId,
+      userId: input.userId,
+      sessionId: session.id,
+      text,
+      at: submittedAt,
+    });
+    await this.store.saveSession(updatedSession);
 
     const notificationEnabled = this.notificationsEnabled();
     const notificationStartedAt = new Date().toISOString();
@@ -971,6 +1004,7 @@ export class SessionManager {
           projectId: chat?.currentProjectId,
           sessionId: chat?.currentSessionId,
           status: session?.status ?? 'none',
+          phase: session?.phase,
           summary: session?.lastSummary,
           pendingApprovals: pendingApprovals.map((approval) => approval.id),
         },
@@ -1358,7 +1392,18 @@ export class SessionManager {
     const chat = await this.store.getChat(chatId);
     return {
       reply: sessions
-        .map((session) => `${session.id} | ${sessionResumeState(session, chat?.currentSessionId)} | ${session.projectId} | ${session.status} | ${formatDisplayTime(session.updatedAt, this.config.ui.timeZone)}`)
+        .map((session) =>
+          [
+            session.id,
+            sessionResumeState(session, chat?.currentSessionId),
+            session.projectId,
+            session.status,
+            session.phase,
+            formatDisplayTime(session.updatedAt, this.config.ui.timeZone),
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join(' | '),
+        )
         .join('\n'),
     };
   }
@@ -1460,6 +1505,11 @@ export class SessionManager {
   }
 
   private async markExited(sessionId: string, exitCode: number | undefined): Promise<void> {
+    const pendingTurn = this.pendingTurns.get(sessionId);
+    if (pendingTurn?.timer) {
+      clearTimeout(pendingTurn.timer);
+      pendingTurn.timer = undefined;
+    }
     await this.flushPendingPtyDebugOutput(sessionId);
     try {
       this.terminalObserver.end(sessionId);
@@ -1468,13 +1518,21 @@ export class SessionManager {
     }
     const exitedAt = new Date().toISOString();
     const updated = await this.store.updateSession(sessionId, (latest) => {
-      const nextStatus = latest.status === 'interrupted' && latest.stopRequested ? 'interrupted' : 'exited';
-      return {
-        ...latest,
-        status: nextStatus,
+      let next = applyCodexSessionEvent(latest, {
+        type: 'runner.exited',
+        sessionId,
         exitCode,
-        updatedAt: exitedAt,
-      };
+        at: exitedAt,
+      });
+      if (latest.status === 'interrupted' && latest.stopRequested) {
+        next = {
+          ...next,
+          status: 'interrupted',
+          phase: 'interrupted',
+          lastPhaseChangedAt: latest.phase === 'interrupted' ? latest.lastPhaseChangedAt : exitedAt,
+        };
+      }
+      return next;
     });
     if (!updated) {
       await this.store.appendEvent({
@@ -1489,9 +1547,7 @@ export class SessionManager {
       status: updated?.status ?? 'missing',
     });
     if (this.pendingTurns.has(sessionId)) {
-      await this.completePendingTurn(sessionId, 'exit').catch((error) =>
-        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
-      );
+      await this.completePendingTurn(sessionId, 'exit');
     }
   }
 
@@ -1509,9 +1565,9 @@ export class SessionManager {
   }
 
   private async appendSessionOutput(sessionId: string, text: string): Promise<void> {
+    this.notifyLiveStatusWaiters(sessionId, text);
     await this.store.appendSessionLog(sessionId, text);
     await this.logPtyDebugOutput(sessionId, text);
-    this.notifyLiveStatusWaiters(sessionId, text);
     await this.observePendingTurnOutputCoalesced(sessionId);
   }
 
@@ -1772,9 +1828,7 @@ export class SessionManager {
       }).catch(() => undefined),
     );
     turn.timer = setTimeout(() => {
-      return this.completePendingTurn(sessionId, 'stable').catch((error) =>
-        this.recordBackgroundError('notification.send_failed', error, { sessionId }).catch(() => undefined),
-      );
+      return this.completePendingTurn(sessionId, 'stable').catch(() => undefined);
     }, this.config.notifications.idleMs);
   }
 
@@ -1788,6 +1842,20 @@ export class SessionManager {
       const currentAnswer = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
       const extraction: FinalAnswerExtraction =
         currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
+      if (currentAnswer.kind === 'answer') {
+        const completedAt = new Date().toISOString();
+        await this.store.updateSession(turn.sessionId, (latest) => {
+          const hadCodexSessionId = Boolean(latest.codexSessionId);
+          const updated = applyCodexSessionEvent(latest, {
+              type: 'observation.task_completed',
+              sessionId: turn.sessionId,
+              codexSessionId: latest.codexSessionId ?? `unknown:${turn.sessionId}`,
+              finalAnswer: currentAnswer.text,
+              at: completedAt,
+            });
+          return hadCodexSessionId ? updated : { ...updated, codexSessionId: undefined };
+        });
+      }
       if (extraction.kind === 'answer' && currentAnswer.kind === 'answer') {
         void this.store.appendEvent({
           type: 'notification.final_extract_selected',
@@ -1870,6 +1938,11 @@ export class SessionManager {
         }).catch(() => undefined),
       );
     } catch (error) {
+      await this.recordBackgroundError('notification.send_failed', error, {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+      }).catch(() => undefined);
       this.logger.error('notification.failed', {
         chat: turn.chatId,
         session: sessionId,
@@ -1882,7 +1955,22 @@ export class SessionManager {
         clearTimeout(turn.timer);
       }
       this.pendingTurns.delete(sessionId);
-      await this.activateNextQueuedTurn(sessionId);
+      try {
+        await this.activateNextQueuedTurn(sessionId);
+      } catch (error) {
+        await this.recordBackgroundError('notification.turn_completion_failed', error, {
+          sessionId,
+          chatId: turn.chatId,
+          projectId: turn.projectId,
+          completionReason: reason,
+        }).catch(() => undefined);
+        this.logger.error('notification.turn_completion_failed', {
+          chat: turn.chatId,
+          session: sessionId,
+          project: turn.projectId,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 

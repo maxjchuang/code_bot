@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
@@ -481,6 +481,11 @@ describe('SessionManager', () => {
       text: '/new repo',
     });
     expect(created.reply).toContain('Created session');
+    const createdChat = await store.getChat('oc_1');
+    const createdSession = await store.getSession(createdChat!.currentSessionId!);
+    expect(createdSession?.phase).toBe('waiting_for_input');
+    expect(createdSession?.lastActivityAt).toBeDefined();
+    expect(createdSession?.lastPhaseChangedAt).toBeDefined();
 
     const sent = await manager.handleText({
       chatId: 'oc_1',
@@ -493,7 +498,11 @@ describe('SessionManager', () => {
     const chat = await store.getChat('oc_1');
     await expect(store.getSession(chat!.currentSessionId!)).resolves.toMatchObject({
       firstUserMessagePreview: 'inspect status',
+      phase: 'processing',
     });
+    const processingSession = await store.getSession(chat!.currentSessionId!);
+    expect(processingSession?.lastActivityAt).toBeDefined();
+    expect(processingSession?.lastPhaseChangedAt).toBeDefined();
   });
 
   it('keeps the first user message preview when later messages are sent', async () => {
@@ -501,7 +510,7 @@ describe('SessionManager', () => {
     const store = new FileStateStore(root);
     const runner = new FakeCodexRunner();
     const manager = new SessionManager(sampleConfig(root), store, runner);
-    const longFirstMessage = `${'a'.repeat(140)}\nwith more detail`;
+    const longFirstMessage = `first line with extra spaces\n${'a'.repeat(130)}  with  gaps`;
 
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
     await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: longFirstMessage });
@@ -1398,6 +1407,9 @@ describe('SessionManager', () => {
       await vi.advanceTimersByTimeAsync(1);
       vi.useRealTimers();
       await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      const session = await store.getSession(sessionId);
+      expect(session?.phase).toBe('completed');
+      expect(session?.lastSummary).toBe('当前分支：develop');
       expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '当前分支：develop');
     } finally {
       vi.useRealTimers();
@@ -2407,7 +2419,80 @@ describe('SessionManager', () => {
       await waitForAssertion(() =>
         expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '这是缺少 codexSessionId 时的 PTY 最终答案。'),
       );
+      const session = await store.getSession(sessionId);
+      expect(session?.phase).toBe('completed');
+      expect(session?.lastSummary).toBe('这是缺少 codexSessionId 时的 PTY 最终答案。');
+      expect(session?.codexSessionId).toBeUndefined();
       expect(registry.discoverForProject).toHaveBeenCalled();
+
+      const chat = await store.getChat('oc_1');
+      await store.saveChat({ ...chat!, currentSessionId: undefined });
+      const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+      expect(listed.reply).toContain(`${sessionId} | not-resumable | repo | running`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not overwrite an interrupted terminal state when completion persistence races with a newer update', async () => {
+    vi.useFakeTimers();
+    try {
+      class InterleavingCompletionStore extends FileStateStore {
+        private injectedInterruptedBeforeCompletion = false;
+
+        async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+          return super.updateSession(sessionId, (current) => {
+            const candidate = updater(current);
+            if (!this.injectedInterruptedBeforeCompletion && candidate.phase === 'completed') {
+              this.injectedInterruptedBeforeCompletion = true;
+              const interruptedAt = '2099-06-02T08:00:02.000Z';
+              return updater({
+                ...current,
+                status: 'interrupted',
+                phase: 'interrupted',
+                stopRequested: true,
+                updatedAt: interruptedAt,
+                lastActivityAt: interruptedAt,
+                lastPhaseChangedAt: interruptedAt,
+                lastSummary: 'Stopped by ou_1',
+              });
+            }
+            return candidate;
+          });
+        }
+      }
+
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new InterleavingCompletionStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3411';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: '当前分支：develop',
+        completedAt: '2099-06-02T08:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await runner.emitOutput(sessionId, '• Working\n');
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      const session = await store.getSession(sessionId);
+      expect(session?.status).toBe('interrupted');
+      expect(session?.phase).toBe('interrupted');
+      expect(session?.lastSummary).toBe('Stopped by ou_1');
     } finally {
       vi.useRealTimers();
     }
@@ -3462,6 +3547,13 @@ describe('SessionManager', () => {
 
     expect(resumed.reply).toBe('Failed to resume Codex session 019e7f20-a667-7632-a808-c9595d77116e for project repo: spawn failed');
     expect((await store.getChat('oc_1'))?.currentSessionId).toBe(priorSessionId);
+    const failedResumeSession = (await store.listSessionsByChat('oc_1', 10)).find((session) => session.id !== priorSessionId);
+    expect(failedResumeSession).toMatchObject({
+      status: 'exited',
+      phase: 'failed',
+    });
+    expect(failedResumeSession?.updatedAt).toBe(failedResumeSession?.lastActivityAt);
+    expect(failedResumeSession?.updatedAt).toBe(failedResumeSession?.lastPhaseChangedAt);
   });
 
   it('rejects code_bot session resume when an explicit project differs from the source session project', async () => {
@@ -3506,6 +3598,13 @@ describe('SessionManager', () => {
       text: '/new repo',
     });
     expect(created.reply).toContain('Failed to start Codex');
+    const failedSession = (await store.listSessionsByChat('oc_1', 10))[0];
+    expect(failedSession).toMatchObject({
+      status: 'exited',
+      phase: 'failed',
+    });
+    expect(failedSession?.updatedAt).toBe(failedSession?.lastActivityAt);
+    expect(failedSession?.updatedAt).toBe(failedSession?.lastPhaseChangedAt);
 
     const sessionsReply = await manager.handleText({
       chatId: 'oc_1',
@@ -3523,6 +3622,67 @@ describe('SessionManager', () => {
     expect(content).toContain('"type":"session.start_failed"');
     expect(content).toContain('"reason":"spawn failed"');
   });
+
+  it('records queued turn activation failures after stable completion', async () => {
+    vi.useFakeTimers();
+    try {
+      class FailingQueueActivationStore extends FileStateStore {
+        failQueueActivation = false;
+
+        async sessionLogSize(sessionId: string): Promise<number> {
+          if (this.failQueueActivation) {
+            throw new Error(`queue activation failed for ${sessionId}`);
+          }
+          return super.sessionLogSize(sessionId);
+        }
+      }
+
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 20 } };
+      const store = new FailingQueueActivationStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a34ff';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'first queued task' });
+      const nextTurn = (manager as any).createPendingTurn(
+        sessionId,
+        'oc_1',
+        'repo',
+        'second queued task',
+        new Date().toISOString(),
+      );
+      (manager as any).queuedTurns.set(sessionId, [nextTurn]);
+
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: 'first answer',
+        completedAt: '2099-06-02T08:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await runner.emitOutput(sessionId, 'tick\n');
+      store.failQueueActivation = true;
+      await vi.advanceTimersByTimeAsync(20);
+      vi.useRealTimers();
+
+      const day = new Date().toISOString().slice(0, 10);
+      await waitForAssertion(async () => {
+        const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+        expect(content).toContain('"type":"notification.turn_completion_failed"');
+        expect(content).toContain('"reason":"queue activation failed');
+        expect(content).not.toContain('"type":"session.exit_persist_failed"');
+      }, 6000);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 10_000);
 
   it('blocks sends when current session has exited', async () => {
     const root = await createTmpDir();
@@ -3550,6 +3710,11 @@ describe('SessionManager', () => {
     const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
     await runner.emitOutput(sessionId, 'hello from codex\n');
     await runner.exit(sessionId, 0);
+    await expect(store.getSession(sessionId)).resolves.toMatchObject({
+      status: 'exited',
+      phase: 'exited',
+      exitCode: 0,
+    });
 
     const logLines = await store.tailSessionLog(sessionId, 10);
     expect(logLines).toContain('hello from codex');
@@ -3565,6 +3730,35 @@ describe('SessionManager', () => {
     });
     expect(secondSend.reply).toBe('No running session. Run /new <project> first.');
     expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
+  it('logs missing-session exits while recording exit_missing_record', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { logger });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await unlink(join(root, '.code-bot', 'state', 'sessions', `${sessionId}.json`));
+
+    await runner.exit(sessionId, 7);
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"session.exit_missing_record"');
+    expect(content).toContain(`"sessionId":"${sessionId}"`);
+    expect(content).toContain('"exitCode":7');
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('session.exited'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining(`session=${sessionId}`));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('exitCode=7'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('status=missing'));
   });
 
   it('keeps previous chat currentSessionId when replacement start fails after prior session exits', async () => {
@@ -6153,6 +6347,7 @@ describe('SessionManager', () => {
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'running',
+      phase: 'processing',
       createdBy: 'ou_1',
       createdAt: '2026-06-01T00:00:00.000Z',
       updatedAt: '2026-06-01T00:02:00.000Z',
@@ -6164,6 +6359,7 @@ describe('SessionManager', () => {
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'exited',
+      phase: 'completed',
       createdBy: 'ou_1',
       createdAt: '2026-06-01T00:00:00.000Z',
       updatedAt: '2026-06-01T00:01:00.000Z',
@@ -6174,8 +6370,8 @@ describe('SessionManager', () => {
 
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
 
-    expect(listed.reply).toContain('sess_current | current | repo | running');
-    expect(listed.reply).toContain('sess_resumable | resumable | repo | exited');
+    expect(listed.reply).toContain('sess_current | current | repo | running | processing');
+    expect(listed.reply).toContain('sess_resumable | resumable | repo | exited | completed');
     expect(listed.reply).toContain('2026-06-01 08:02:00 Asia/Shanghai');
     expect(listed.reply).toContain('2026-06-01 08:01:00 Asia/Shanghai');
     expect(listed.reply).not.toContain(codexSessionId);
@@ -6192,6 +6388,7 @@ describe('SessionManager', () => {
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'exited',
+      phase: 'failed',
       createdBy: 'ou_1',
       createdAt: '2026-06-01T00:00:00.000Z',
       updatedAt: '2026-06-01T00:01:00.000Z',
@@ -6200,7 +6397,8 @@ describe('SessionManager', () => {
 
     const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
 
-    expect(listed.reply).toContain('sess_missing_native_id | not-resumable | repo | exited');
+    expect(listed.reply).toContain('sess_missing_native_id | not-resumable | repo | exited | failed');
+    expect(listed.reply).not.toContain('undefined');
   });
 
   it('supports /approve and /reject approval commands', async () => {

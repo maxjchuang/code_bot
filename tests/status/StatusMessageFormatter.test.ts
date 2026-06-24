@@ -10,6 +10,7 @@ describe('formatStatusMessage', () => {
           projectId: 'repo',
           sessionId: 'sess_123',
           status: 'running',
+          phase: 'processing',
           summary: 'recent work summary',
           pendingApprovals: ['ap_1'],
         },
@@ -49,6 +50,7 @@ describe('formatStatusMessage', () => {
     expect(message.bodyMarkdown).toContain('## Codex');
     expect(message.bodyMarkdown).toContain('- **Project**: `repo`');
     expect(message.bodyMarkdown).toContain('- **Status**: `running`');
+    expect(message.bodyMarkdown).toContain('- **Phase**: `processing`');
     expect(message.bodyMarkdown).toContain('- **Source**: `live`');
     expect(message.bodyMarkdown).toContain('- **Fetched at**: `2026-06-03 18:00:00 Asia/Shanghai`');
     expect(message.bodyMarkdown).toContain('- **Task**: Implement status integration');
@@ -68,6 +70,7 @@ describe('formatStatusMessage', () => {
     expect(message.bodyMarkdown).not.toContain('## Raw');
     expect(message.bodyMarkdown).not.toContain('```text');
     expect(message.fallbackText).toContain('Project: repo');
+    expect(message.fallbackText).toContain('Phase: processing');
     expect(message.fallbackText).toContain('Fetched at: 2026-06-03 18:00:00 Asia/Shanghai');
     expect(message.fallbackText).toContain('CLI version: 0.135.0');
     expect(message.fallbackText).toContain('Installed CLI version: 0.136.0');
@@ -92,9 +95,11 @@ describe('formatStatusMessage', () => {
     expect(message.bodyMarkdown).toContain('## Session');
     expect(message.bodyMarkdown).not.toContain('Summary');
     expect(message.bodyMarkdown).not.toContain('Pending approvals');
+    expect(message.bodyMarkdown).not.toContain('Phase');
     expect(message.bodyMarkdown).toContain('## Codex\nUnavailable');
     expect(message.bodyMarkdown).not.toContain('## Raw');
     expect(message.fallbackText).not.toContain('Summary:');
     expect(message.fallbackText).not.toContain('Pending approvals:');
+    expect(message.fallbackText).not.toContain('Phase:');
   });
 });
