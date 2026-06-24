@@ -2419,7 +2419,80 @@ describe('SessionManager', () => {
       await waitForAssertion(() =>
         expect(notifier.sendText).toHaveBeenCalledWith('oc_1', '这是缺少 codexSessionId 时的 PTY 最终答案。'),
       );
+      const session = await store.getSession(sessionId);
+      expect(session?.phase).toBe('completed');
+      expect(session?.lastSummary).toBe('这是缺少 codexSessionId 时的 PTY 最终答案。');
+      expect(session?.codexSessionId).toBeUndefined();
       expect(registry.discoverForProject).toHaveBeenCalled();
+
+      const chat = await store.getChat('oc_1');
+      await store.saveChat({ ...chat!, currentSessionId: undefined });
+      const listed = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/sessions' });
+      expect(listed.reply).toContain(`${sessionId} | not-resumable | repo | running`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not overwrite an interrupted terminal state when completion persistence races with a newer update', async () => {
+    vi.useFakeTimers();
+    try {
+      class InterleavingCompletionStore extends FileStateStore {
+        private injectedInterruptedBeforeCompletion = false;
+
+        async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
+          return super.updateSession(sessionId, (current) => {
+            const candidate = updater(current);
+            if (!this.injectedInterruptedBeforeCompletion && candidate.phase === 'completed') {
+              this.injectedInterruptedBeforeCompletion = true;
+              const interruptedAt = '2099-06-02T08:00:02.000Z';
+              return updater({
+                ...current,
+                status: 'interrupted',
+                phase: 'interrupted',
+                stopRequested: true,
+                updatedAt: interruptedAt,
+                lastActivityAt: interruptedAt,
+                lastPhaseChangedAt: interruptedAt,
+                lastSummary: 'Stopped by ou_1',
+              });
+            }
+            return candidate;
+          });
+        }
+      }
+
+      const root = await createTmpDir();
+      const config = { ...sampleConfig(root), notifications: { ...sampleConfig(root).notifications, idleMs: 50 } };
+      const store = new InterleavingCompletionStore(root);
+      const runner = new FakeCodexRunner();
+      const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+      const observationStore = new FakeCodexObservationStore();
+      const manager = new SessionManager(config, store, runner, { notifier, codexObservationStore: observationStore });
+
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+      const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+      const codexSessionId = '019e86b4-12ed-7731-9639-c128626a3411';
+      await store.updateSession(sessionId, (latest) => ({ ...latest, codexSessionId }));
+      await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '当前分支是什么' });
+
+      observationStore.snapshots.set(codexSessionId, {
+        availability: { kind: 'ready' },
+        codexSessionId,
+        status: 'completed',
+        finalAnswer: '当前分支：develop',
+        completedAt: '2099-06-02T08:00:00.000Z',
+        recentToolEvents: [],
+      });
+      await runner.emitOutput(sessionId, '• Working\n');
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+
+      await waitForAssertion(() => expect(notifier.sendText).toHaveBeenCalledTimes(1));
+      const session = await store.getSession(sessionId);
+      expect(session?.status).toBe('interrupted');
+      expect(session?.phase).toBe('interrupted');
+      expect(session?.lastSummary).toBe('Stopped by ou_1');
     } finally {
       vi.useRealTimers();
     }

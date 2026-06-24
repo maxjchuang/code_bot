@@ -1832,18 +1832,17 @@ export class SessionManager {
         currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
       if (currentAnswer.kind === 'answer') {
         const completedAt = new Date().toISOString();
-        const current = await this.store.getSession(turn.sessionId);
-        if (current) {
-          await this.store.saveSession(
-            applyCodexSessionEvent(current, {
+        await this.store.updateSession(turn.sessionId, (latest) => {
+          const hadCodexSessionId = Boolean(latest.codexSessionId);
+          const updated = applyCodexSessionEvent(latest, {
               type: 'observation.task_completed',
               sessionId: turn.sessionId,
-              codexSessionId: current.codexSessionId ?? `unknown:${turn.sessionId}`,
+              codexSessionId: latest.codexSessionId ?? `unknown:${turn.sessionId}`,
               finalAnswer: currentAnswer.text,
               at: completedAt,
-            }),
-          );
-        }
+            });
+          return hadCodexSessionId ? updated : { ...updated, codexSessionId: undefined };
+        });
       }
       if (extraction.kind === 'answer' && currentAnswer.kind === 'answer') {
         void this.store.appendEvent({
