@@ -1929,7 +1929,6 @@ export class SessionManager {
           project: turn.projectId,
           reason: error instanceof Error ? error.message : String(error),
         });
-        throw error;
       }
     }
   }

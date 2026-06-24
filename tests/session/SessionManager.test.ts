@@ -3597,6 +3597,7 @@ describe('SessionManager', () => {
         const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
         expect(content).toContain('"type":"notification.turn_completion_failed"');
         expect(content).toContain('"reason":"queue activation failed');
+        expect(content).not.toContain('"type":"session.exit_persist_failed"');
       }, 6000);
     } finally {
       vi.useRealTimers();
