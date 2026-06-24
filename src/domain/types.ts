@@ -160,6 +160,12 @@ export interface ApprovalRecord {
   expiresAt: string;
   resolvedBy?: string;
   resolvedAt?: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  hookRequestId?: string;
+  projectId?: string;
+  resolution?: 'allow' | 'deny';
+  failureReason?: string;
 }
 
 export interface InboundMessageReceipt {

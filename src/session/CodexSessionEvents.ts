@@ -46,6 +46,37 @@ export type CodexSessionEvent =
       at: string;
     }
   | {
+      type: 'hook.permission_requested';
+      sessionId: string;
+      hookRequestId: string;
+      toolName: string;
+      toolInput: Record<string, unknown>;
+      at: string;
+    }
+  | {
+      type: 'approval.approved';
+      sessionId: string;
+      approvalId: string;
+      hookRequestId?: string;
+      userId: string;
+      at: string;
+    }
+  | {
+      type: 'approval.rejected';
+      sessionId: string;
+      approvalId: string;
+      hookRequestId?: string;
+      userId: string;
+      at: string;
+    }
+  | {
+      type: 'approval.expired';
+      sessionId: string;
+      approvalId: string;
+      hookRequestId?: string;
+      at: string;
+    }
+  | {
       type: 'observation.task_completed';
       sessionId: string;
       codexSessionId: string;

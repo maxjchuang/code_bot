@@ -15,11 +15,20 @@ export interface CodexHookInstallerOptions {
 }
 
 interface HookCommand {
+  type: 'command';
   command: string;
-  env?: Record<string, string>;
+  timeout?: number;
+  statusMessage?: string;
 }
 
-type HooksJson = Record<string, HookCommand[]>;
+interface HookMatcherGroup {
+  matcher?: string;
+  hooks: HookCommand[];
+}
+
+type HooksJson = {
+  hooks?: Partial<Record<CodexHookConfigEventName, HookMatcherGroup[]>>;
+};
 
 interface CodexHookManifest {
   version: 1;
@@ -33,7 +42,8 @@ interface CodexHookManifest {
 
 const MANIFEST_PATH = '.code-bot/codex-hooks/manifest.json';
 const SCRIPT_PATH = '.code-bot/codex-hooks/code_bot_hook.mjs';
-const HOOK_EVENTS: CodexHookEventName[] = ['session_started', 'user_prompt_submitted', 'stop'];
+const HOOK_EVENTS: CodexHookEventName[] = ['session_started', 'user_prompt_submitted', 'stop', 'permission_request'];
+type CodexHookConfigEventName = 'SessionStart' | 'UserPromptSubmit' | 'Stop' | 'PermissionRequest';
 const CONFIG_BLOCK = [
   '# code_bot managed hooks enabled',
   '[features]',
@@ -61,9 +71,9 @@ export class CodexHookInstaller {
     }
 
     const managedCommand = this.managedCommand();
-    const hooks = hooksRead.valid ? hooksRead.value : {};
+    const hooks = hooksRead.valid ? hooksRead.value.hooks ?? {} : {};
     const hooksJsonContainsManagedHooks = HOOK_EVENTS.every((event) =>
-      Array.isArray(hooks[event]) && hooks[event].some((entry) => entry.command === managedCommand),
+      Array.isArray(hooks[toConfigEventName(event)]) && hooks[toConfigEventName(event)]!.some((group) => hasManagedHook(group, managedCommand)),
     );
     const configFeatureEnabled = isHooksFeatureEnabled(configToml);
     const scriptInstalled = Boolean(script);
@@ -93,13 +103,19 @@ export class CodexHookInstaller {
     await chmod(this.scriptPath(), 0o755);
 
     const hooks = hooksRead.value;
+    hooks.hooks ??= {};
     const managedEntry = this.managedHookEntry();
     for (const event of HOOK_EVENTS) {
-      const entries = Array.isArray(hooks[event]) ? hooks[event] : [];
-      hooks[event] = [
-        ...entries.filter((entry) => entry.command !== managedEntry.command),
-        managedEntry,
-      ];
+      const configEvent = toConfigEventName(event);
+      const groups = Array.isArray(hooks.hooks[configEvent]) ? hooks.hooks[configEvent] : [];
+      const matcher = managedMatcher(event);
+      const managedGroup = groups.find((group) => (group.matcher ?? '') === (matcher ?? ''));
+      if (managedGroup) {
+        managedGroup.hooks = [...managedGroup.hooks.filter((entry) => entry.command !== managedEntry.command), managedEntry];
+      } else {
+        groups.push(matcher ? { matcher, hooks: [managedEntry] } : { hooks: [managedEntry] });
+      }
+      hooks.hooks[configEvent] = groups;
     }
     await writeJson(this.hooksJsonPath(), hooks);
 
@@ -133,13 +149,24 @@ export class CodexHookInstaller {
     const hooksRead = await this.readHooksJson();
     if (hooksRead.valid) {
       for (const event of manifest.managedHookEvents) {
-        const entries = hooksRead.value[event];
-        if (Array.isArray(entries)) {
-          hooksRead.value[event] = entries.filter((entry) => entry.command !== manifest.managedCommand);
-          if (hooksRead.value[event].length === 0) {
-            delete hooksRead.value[event];
+        const configEvent = toConfigEventName(event);
+        const groups = hooksRead.value.hooks?.[configEvent];
+        if (Array.isArray(groups)) {
+          const nextGroups = groups
+            .map((group) => ({
+              ...group,
+              hooks: group.hooks.filter((entry) => entry.command !== manifest.managedCommand),
+            }))
+            .filter((group) => group.hooks.length > 0);
+          if (nextGroups.length > 0) {
+            hooksRead.value.hooks![configEvent] = nextGroups;
+          } else {
+            delete hooksRead.value.hooks![configEvent];
           }
         }
+      }
+      if (hooksRead.value.hooks && Object.keys(hooksRead.value.hooks).length === 0) {
+        delete hooksRead.value.hooks;
       }
       await writeJson(this.hooksJsonPath(), hooksRead.value);
     }
@@ -159,10 +186,10 @@ export class CodexHookInstaller {
 
   private managedHookEntry(): HookCommand {
     return {
+      type: 'command',
       command: this.managedCommand(),
-      env: {
-        CODE_BOT_HOOK_SOCKET: this.options.socketPath,
-      },
+      timeout: 600,
+      statusMessage: 'Forwarding Codex hook to code_bot',
     };
   }
 
@@ -173,15 +200,21 @@ export class CodexHookInstaller {
   private scriptContent(): string {
     return `#!/usr/bin/env node
 import net from 'node:net';
-const socketPath = process.env.CODE_BOT_HOOK_SOCKET;
+const socketPath = process.env.CODE_BOT_HOOK_SOCKET || ${JSON.stringify(this.options.socketPath)};
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => input += chunk);
 process.stdin.on('end', () => {
   if (!socketPath) process.exit(0);
   const client = net.createConnection(socketPath);
+  let output = '';
+  client.setEncoding('utf8');
+  client.on('data', (chunk) => output += chunk);
   client.on('error', () => process.exit(0));
   client.on('connect', () => client.end(input));
+  client.on('end', () => {
+    if (output) process.stdout.write(output);
+  });
 });
 `;
   }
@@ -267,10 +300,15 @@ function isHooksJson(value: unknown): value is HooksJson {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
-  return Object.values(value).every(
-    (entries) =>
-      Array.isArray(entries) &&
-      entries.every((entry) => typeof entry === 'object' && entry !== null && typeof (entry as HookCommand).command === 'string'),
+  const hooks = (value as HooksJson).hooks;
+  if (hooks === undefined) {
+    return true;
+  }
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
+    return false;
+  }
+  return Object.values(hooks).every(
+    (groups) => Array.isArray(groups) && groups.every(isHookMatcherGroup),
   );
 }
 
@@ -360,4 +398,51 @@ function replaceFeaturesHooksValue(content: string, enabled: boolean): string {
     return line;
   });
   return next.join('\n');
+}
+
+function toConfigEventName(event: CodexHookEventName): CodexHookConfigEventName {
+  switch (event) {
+    case 'session_started':
+      return 'SessionStart';
+    case 'user_prompt_submitted':
+      return 'UserPromptSubmit';
+    case 'stop':
+      return 'Stop';
+    case 'permission_request':
+      return 'PermissionRequest';
+  }
+}
+
+function managedMatcher(event: CodexHookEventName): string | undefined {
+  switch (event) {
+    case 'session_started':
+      return '.*';
+    case 'permission_request':
+      return '.*';
+    case 'user_prompt_submitted':
+    case 'stop':
+      return undefined;
+  }
+}
+
+function hasManagedHook(group: HookMatcherGroup, managedCommand: string): boolean {
+  return Array.isArray(group.hooks) && group.hooks.some((entry) => entry.command === managedCommand);
+}
+
+function isHookMatcherGroup(value: unknown): value is HookMatcherGroup {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const group = value as HookMatcherGroup;
+  return (
+    (group.matcher === undefined || typeof group.matcher === 'string') &&
+    Array.isArray(group.hooks) &&
+    group.hooks.every(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        (entry as HookCommand).type === 'command' &&
+        typeof (entry as HookCommand).command === 'string',
+    )
+  );
 }

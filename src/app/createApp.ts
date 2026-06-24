@@ -32,21 +32,17 @@ export function createApp(deps: AppDependencies): {
     projectRoot: deps.projectRoot,
     socketPath: hookSocketPath,
   });
+  let sessionManager: SessionManager;
   const codexHookService = new CodexHookService({
     enabled: deps.config.codexHooks.enabled,
     socketPath: hookSocketPath,
     store: deps.store,
     projects: deps.config.projects,
+    permissionTimeoutMs: deps.config.codexHooks.permissionTimeoutMs,
+    onPermissionRequest: (request) => sessionManager.handleHookPermissionRequest(request),
+    onPermissionTimeout: (request) => sessionManager.handleHookPermissionTimeout(request),
   });
-  void codexHookService.start().catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    void deps.store.appendEvent({
-      type: 'hook.listener_start_failed',
-      at: new Date().toISOString(),
-      data: { reason: message },
-    });
-  });
-  const sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, {
+  sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, {
     logLevel: deps.config.logLevel,
     notifier: deps.notifier,
     codexSessionRegistry: deps.codexSessionRegistry,
@@ -56,6 +52,14 @@ export function createApp(deps: AppDependencies): {
     codexHookInstaller,
     codexHookService,
     sendConfirmation: deps.notifier ? { initialWaitMs: 3_000, retryWaitMs: 2_000, pollIntervalMs: 100 } : undefined,
+  });
+  void codexHookService.start().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    void deps.store.appendEvent({
+      type: 'hook.listener_start_failed',
+      at: new Date().toISOString(),
+      data: { reason: message },
+    });
   });
   return {
     sessionManager,

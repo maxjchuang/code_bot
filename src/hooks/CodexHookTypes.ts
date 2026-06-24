@@ -1,4 +1,4 @@
-export type CodexHookEventName = 'session_started' | 'user_prompt_submitted' | 'stop';
+export type CodexHookEventName = 'session_started' | 'user_prompt_submitted' | 'stop' | 'permission_request';
 
 export interface CodexHookStatusReport {
   configured: boolean;
@@ -23,3 +23,12 @@ export interface CodexHookUninstallResult {
 }
 
 export type CodexHookHandleResult = { ok: true } | { ok: false; reason: string };
+
+export interface CodexPermissionRequest {
+  sessionId: string;
+  hookRequestId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+}
+
+export type CodexPermissionDecision = { decision: 'allow' } | { decision: 'deny'; reason?: string } | { decision: 'timeout' };

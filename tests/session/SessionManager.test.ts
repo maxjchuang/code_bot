@@ -48,6 +48,33 @@ function createNotifierWithReactions() {
   };
 }
 
+function createResolvableHookService() {
+  return {
+    isRunning: vi.fn(() => true),
+    resolvePermissionRequest: vi.fn(() => true),
+  };
+}
+
+async function writeRunningSessionForPermission(store: FileStateStore, root: string): Promise<void> {
+  await store.saveChat({
+    chatId: 'oc_1',
+    chatType: 'group',
+    currentProjectId: 'repo',
+    currentSessionId: 'sess_permission',
+  });
+  await store.saveSession({
+    id: 'sess_permission',
+    chatId: 'oc_1',
+    projectId: 'repo',
+    status: 'running',
+    phase: 'processing',
+    createdBy: 'ou_1',
+    createdAt: '2026-06-24T00:00:00.000Z',
+    updatedAt: '2026-06-24T00:00:00.000Z',
+    logPath: join(root, '.code-bot/logs/sessions/sess_permission.log'),
+  });
+}
+
 async function completeFromObservation(input: {
   finalAnswer: string;
   prompt?: string;
@@ -6558,6 +6585,205 @@ describe('SessionManager', () => {
     const rejected = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/reject ap_pending_reject' });
     expect(rejected.reply).toContain('Rejected approval ap_pending_reject.');
     expect((await store.getApproval('ap_pending_reject'))?.status).toBe('rejected');
+  });
+
+  it('creates permission approval and sends Feishu approval card when hook permission arrives', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const notifier = createNotifierWithReactions();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { notifier });
+    await writeRunningSessionForPermission(store, root);
+
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_1',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+    });
+
+    const approvals = await store.listPendingApprovalsByChat('oc_1');
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_1',
+      toolName: 'shell',
+      projectId: 'repo',
+    });
+    expect(notifier.sendRenderedMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(notifier.sendRenderedMessage.mock.calls[0][1].preferred)).toContain('"kind":"approval_decision"');
+    await expect(store.getSession('sess_permission')).resolves.toMatchObject({ phase: 'waiting_for_approval' });
+  });
+
+  it('approval card allow resolves hook request with allow', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const hookService = createResolvableHookService();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { codexHookService: hookService });
+    await writeRunningSessionForPermission(store, root);
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_allow',
+      toolName: 'shell',
+      toolInput: { command: 'npm test' },
+    });
+    const approval = (await store.listPendingApprovalsByChat('oc_1'))[0];
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'approval_decision', approvalId: approval.id, decision: 'approve' },
+    });
+
+    expect(result.reply).toBe(`Approved approval ${approval.id}.`);
+    expect(hookService.resolvePermissionRequest).toHaveBeenCalledWith('hook_req_allow', { decision: 'allow' });
+    await expect(store.getSession('sess_permission')).resolves.toMatchObject({ phase: 'processing' });
+  });
+
+  it('approval card deny resolves hook request with deny', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const hookService = createResolvableHookService();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { codexHookService: hookService });
+    await writeRunningSessionForPermission(store, root);
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_deny',
+      toolName: 'shell',
+      toolInput: { command: 'rm -rf build' },
+    });
+    const approval = (await store.listPendingApprovalsByChat('oc_1'))[0];
+
+    const result = await manager.handleCardAction({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      action: { kind: 'approval_decision', approvalId: approval.id, decision: 'reject' },
+    });
+
+    expect(result.reply).toBe(`Rejected approval ${approval.id}.`);
+    expect(hookService.resolvePermissionRequest).toHaveBeenCalledWith('hook_req_deny', {
+      decision: 'deny',
+      reason: 'Rejected by ou_1',
+    });
+    await expect(store.getSession('sess_permission')).resolves.toMatchObject({ phase: 'processing' });
+  });
+
+  it('/approve fallback resolves permission hook request with allow', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const hookService = createResolvableHookService();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { codexHookService: hookService });
+    await writeRunningSessionForPermission(store, root);
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_text_allow',
+      toolName: 'shell',
+      toolInput: { command: 'npm test' },
+    });
+    const approval = (await store.listPendingApprovalsByChat('oc_1'))[0];
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/approve ${approval.id}` });
+
+    expect(result.reply).toContain(`Approved approval ${approval.id}.`);
+    expect(hookService.resolvePermissionRequest).toHaveBeenCalledWith('hook_req_text_allow', { decision: 'allow' });
+  });
+
+  it('/reject fallback resolves permission hook request with deny', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const hookService = createResolvableHookService();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { codexHookService: hookService });
+    await writeRunningSessionForPermission(store, root);
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_text_deny',
+      toolName: 'shell',
+      toolInput: { command: 'rm -rf build' },
+    });
+    const approval = (await store.listPendingApprovalsByChat('oc_1'))[0];
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: `/reject ${approval.id}` });
+
+    expect(result.reply).toContain(`Rejected approval ${approval.id}.`);
+    expect(hookService.resolvePermissionRequest).toHaveBeenCalledWith('hook_req_text_deny', {
+      decision: 'deny',
+      reason: 'Rejected by ou_1',
+    });
+  });
+
+  it('late approval after expiration returns useful message and does not allow', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const hookService = createResolvableHookService();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { codexHookService: hookService });
+    await writeRunningSessionForPermission(store, root);
+    await store.saveApproval({
+      id: 'ap_expired_permission',
+      sessionId: 'sess_permission',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      status: 'pending',
+      riskSummary: 'Run shell command',
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      hookRequestId: 'hook_req_expired',
+      toolName: 'shell',
+      projectId: 'repo',
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/approve ap_expired_permission' });
+
+    expect(result.reply).toBe('Approval expired: ap_expired_permission. Codex will show its native permission prompt.');
+    expect(hookService.resolvePermissionRequest).not.toHaveBeenCalled();
+    await expect(store.getSession('sess_permission')).resolves.toMatchObject({ phase: 'processing' });
+  });
+
+  it('hook permission timeout expires approval and restores processing phase', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const hookService = createResolvableHookService();
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner(), { codexHookService: hookService });
+    await writeRunningSessionForPermission(store, root);
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_timeout',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+    });
+    const approval = (await store.listPendingApprovalsByChat('oc_1'))[0];
+
+    await manager.handleHookPermissionTimeout({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_timeout',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+    });
+
+    await expect(store.getApproval(approval.id)).resolves.toMatchObject({
+      status: 'expired',
+      failureReason: 'permission_timeout',
+    });
+    await expect(store.getSession('sess_permission')).resolves.toMatchObject({ phase: 'processing' });
+    expect(hookService.resolvePermissionRequest).not.toHaveBeenCalled();
+  });
+
+  it('/status shows waiting_for_approval while approval is pending', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new SessionManager(sampleConfig(root), store, new FakeCodexRunner());
+    await writeRunningSessionForPermission(store, root);
+    await manager.handleHookPermissionRequest({
+      sessionId: 'sess_permission',
+      hookRequestId: 'hook_req_status',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+    });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/status' });
+
+    expect(result.reply).toContain('Phase: waiting_for_approval');
+    expect(result.reply).toContain('Pending approvals:');
   });
 
   it('returns useful fallback errors for /approve and /reject', async () => {

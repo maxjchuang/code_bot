@@ -57,6 +57,18 @@ function reduceSession(session: SessionRecord, event: CodexSessionEvent): Sessio
         phase: 'waiting_for_input',
         codexHookSessionId: event.hookSessionId ?? session.codexHookSessionId,
       };
+    case 'hook.permission_requested':
+      return {
+        ...session,
+        phase: 'waiting_for_approval',
+      };
+    case 'approval.approved':
+    case 'approval.rejected':
+    case 'approval.expired':
+      return {
+        ...session,
+        phase: 'processing',
+      };
     case 'observation.task_completed':
       return {
         ...session,

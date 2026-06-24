@@ -1,3 +1,5 @@
+import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -58,13 +60,22 @@ describe('CodexHookInstaller', () => {
     expect(await pathExists(scriptPath)).toBe(true);
     expect(configToml.match(/code_bot managed hooks enabled/g)).toHaveLength(1);
     expect(configToml).toContain('[features]\nhooks = true');
-    expect(hooks.session_started).toEqual(expect.arrayContaining([expect.objectContaining({ command: expect.stringContaining(scriptPath) })]));
-    expect(hooks.user_prompt_submitted).toEqual(expect.arrayContaining([expect.objectContaining({ command: expect.stringContaining(scriptPath) })]));
-    expect(hooks.stop).toEqual(expect.arrayContaining([expect.objectContaining({ command: expect.stringContaining(scriptPath) })]));
+    expect(hooks.hooks.SessionStart).toEqual([
+      expect.objectContaining({ matcher: '.*', hooks: [expect.objectContaining({ type: 'command', command: expect.stringContaining(scriptPath) })] }),
+    ]);
+    expect(hooks.hooks.UserPromptSubmit).toEqual([
+      expect.objectContaining({ hooks: [expect.objectContaining({ type: 'command', command: expect.stringContaining(scriptPath) })] }),
+    ]);
+    expect(hooks.hooks.Stop).toEqual([
+      expect.objectContaining({ hooks: [expect.objectContaining({ type: 'command', command: expect.stringContaining(scriptPath) })] }),
+    ]);
+    expect(hooks.hooks.PermissionRequest).toEqual([
+      expect.objectContaining({ matcher: '.*', hooks: [expect.objectContaining({ type: 'command', command: expect.stringContaining(scriptPath) })] }),
+    ]);
     expect(manifest).toMatchObject({
       version: 1,
       managedFiles: ['.code-bot/codex-hooks/code_bot_hook.mjs'],
-      managedHookEvents: ['session_started', 'user_prompt_submitted', 'stop'],
+      managedHookEvents: ['session_started', 'user_prompt_submitted', 'stop', 'permission_request'],
       installedAt: '2026-06-24T00:00:00.000Z',
     });
     await expect(installer.status()).resolves.toMatchObject({
@@ -172,4 +183,65 @@ describe('CodexHookInstaller', () => {
     const hooks = JSON.parse(await readFile(join(codexHome, 'hooks.json'), 'utf8'));
     expect(hooks.stop).toEqual([{ command: 'node user-hook.mjs' }, { command: 'custom' }]);
   });
+
+  it('managed hook script forwards listener responses to stdout', async () => {
+    const root = await createTmpDir();
+    const codexHome = join(root, 'codex-home');
+    const installer = createInstaller(codexHome, root);
+    await installer.install();
+    const scriptPath = join(codexHome, '.code-bot/codex-hooks/code_bot_hook.mjs');
+    const socketPath = join(root, 'hook.sock');
+    const response = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } };
+    const server = net.createServer((socket) => {
+      socket.on('data', () => undefined);
+      socket.on('end', () => {
+        socket.end(JSON.stringify(response));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+
+    try {
+      await expect(runHookScript(scriptPath, socketPath, JSON.stringify({ hook_event_name: 'PermissionRequest' }))).resolves.toBe(
+        JSON.stringify(response),
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
 });
+
+async function runHookScript(scriptPath: string, socketPath: string, input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      env: { ...process.env, CODE_BOT_HOOK_SOCKET: socketPath },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error(`hook script exited ${code}: ${stderr}`));
+    });
+    child.stdin.end(input);
+  });
+}

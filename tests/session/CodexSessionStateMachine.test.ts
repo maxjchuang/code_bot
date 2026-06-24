@@ -129,6 +129,69 @@ describe('applyCodexSessionEvent', () => {
     expect(completed.lastSummary).toBe('done');
   });
 
+  it('moves to waiting_for_approval when a permission hook is requested', () => {
+    const session = baseSession({ phase: 'processing' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'hook.permission_requested',
+      sessionId: 'sess_test',
+      hookRequestId: 'hook_req_1',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    expect(updated.phase).toBe('waiting_for_approval');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:02.000Z');
+  });
+
+  it('moves back to processing when approval.approved is received', () => {
+    const session = baseSession({ phase: 'waiting_for_approval' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'approval.approved',
+      sessionId: 'sess_test',
+      approvalId: 'appr_approved',
+      hookRequestId: 'hook_req_1',
+      userId: 'ou_1',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:03.000Z');
+  });
+
+  it('moves back to processing when approval.rejected is received', () => {
+    const session = baseSession({ phase: 'waiting_for_approval' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'approval.rejected',
+      sessionId: 'sess_test',
+      approvalId: 'appr_rejected',
+      hookRequestId: 'hook_req_1',
+      userId: 'ou_1',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:03.000Z');
+  });
+
+  it('moves back to processing when approval.expired is received', () => {
+    const session = baseSession({ phase: 'waiting_for_approval' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'approval.expired',
+      sessionId: 'sess_test',
+      approvalId: 'appr_expired',
+      hookRequestId: 'hook_req_1',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:03.000Z');
+  });
+
   it('preserves an existing firstUserMessagePreview when a user message is submitted', () => {
     const session = baseSession({
       phase: 'waiting_for_input',
