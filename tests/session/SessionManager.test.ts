@@ -8,6 +8,7 @@ import { FakeCodexObservationStore, FakeCodexRunner, sampleConfig, sampleModelCa
 import type { BotConfig, BotEvent, SessionRecord } from '../../src/domain/types.js';
 import type { CodexRunOptions, CodexRunner } from '../../src/codex/CodexRunner.js';
 import type { FeishuReactionType } from '../../src/feishu/FeishuGateway.js';
+import type { CodexHookStatusReport } from '../../src/hooks/CodexHookTypes.js';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -91,6 +92,19 @@ describe('SessionManager', () => {
     return { ...config, projects: [config.projects[0]] };
   };
 
+  const hookStatusReport = (overrides: Partial<CodexHookStatusReport> = {}): CodexHookStatusReport => ({
+    configured: false,
+    configFeatureEnabled: false,
+    hooksJsonValid: true,
+    hooksJsonContainsManagedHooks: false,
+    manifestValid: false,
+    scriptInstalled: false,
+    listenerRunning: false,
+    recommendedCommand: '/install-hooks',
+    issues: [],
+    ...overrides,
+  });
+
   it('records discovered Codex session id after /new', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
@@ -112,6 +126,117 @@ describe('SessionManager', () => {
       });
     });
     expect(registry.discoverForProject).toHaveBeenCalledWith(expect.objectContaining({ projectPath: root }));
+  });
+
+  it('reports hook status with recommended next command', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const codexHookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport()),
+      install: vi.fn(),
+      uninstall: vi.fn(),
+    };
+    const codexHookService = { isRunning: vi.fn().mockReturnValue(false) };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { codexHookInstaller, codexHookService });
+
+    const result = await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/hook-status' });
+
+    expect(result.reply).toContain('Codex hooks');
+    expect(result.reply).toContain('Configured: no');
+    expect(result.reply).toContain('Listener running: no');
+    expect(result.reply).toContain('Recommended next command: /install-hooks');
+  });
+
+  it('requires hook admin for install and uninstall', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const baseConfig = sampleConfig(root);
+    const config = {
+      ...baseConfig,
+      allowedUsers: ['ou_1', 'ou_admin'],
+      codexHooks: { ...baseConfig.codexHooks, adminUsers: ['ou_admin'] },
+    };
+    const codexHookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport()),
+      install: vi.fn(),
+      uninstall: vi.fn(),
+    };
+    const manager = new SessionManager(config, store, runner, { codexHookInstaller });
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/install-hooks' })).resolves.toMatchObject({
+      reply: 'Only hook admins can run /install-hooks.',
+    });
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/uninstall-hooks' })).resolves.toMatchObject({
+      reply: 'Only hook admins can run /uninstall-hooks.',
+    });
+    expect(codexHookInstaller.install).not.toHaveBeenCalled();
+    expect(codexHookInstaller.uninstall).not.toHaveBeenCalled();
+  });
+
+  it('allows install and uninstall for codexHooks.adminUsers', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const baseConfig = sampleConfig(root);
+    const config = { ...baseConfig, codexHooks: { ...baseConfig.codexHooks, adminUsers: ['ou_1'] } };
+    const codexHookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport({ configured: true, recommendedCommand: '/hook-status' })),
+      install: vi.fn().mockResolvedValue({ installed: true, status: hookStatusReport({ configured: true, recommendedCommand: '/hook-status' }) }),
+      uninstall: vi.fn().mockResolvedValue({ uninstalled: true, status: hookStatusReport() }),
+    };
+    const manager = new SessionManager(config, store, runner, { codexHookInstaller });
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/install-hooks' })).resolves.toMatchObject({
+      reply: expect.stringContaining('Installed Codex hooks.'),
+    });
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/uninstall-hooks' })).resolves.toMatchObject({
+      reply: expect.stringContaining('Uninstalled Codex hooks.'),
+    });
+  });
+
+  it('falls back to upgrade.adminUsers when codexHooks.adminUsers is empty', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const baseConfig = sampleConfig(root);
+    const config = {
+      ...baseConfig,
+      upgrade: { ...baseConfig.upgrade, adminUsers: ['ou_1'] },
+    };
+    const codexHookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport()),
+      install: vi.fn().mockResolvedValue({ installed: true, status: hookStatusReport({ configured: true, recommendedCommand: '/hook-status' }) }),
+      uninstall: vi.fn(),
+    };
+    const manager = new SessionManager(config, store, runner, { codexHookInstaller });
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/install-hooks' })).resolves.toMatchObject({
+      reply: expect.stringContaining('Installed Codex hooks.'),
+    });
+  });
+
+  it('keeps hook-status readable by authorized users', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const baseConfig = sampleConfig(root);
+    const config = {
+      ...baseConfig,
+      allowedUsers: ['ou_1', 'ou_2'],
+      codexHooks: { ...baseConfig.codexHooks, adminUsers: ['ou_2'] },
+    };
+    const codexHookInstaller = {
+      status: vi.fn().mockResolvedValue(hookStatusReport()),
+      install: vi.fn(),
+      uninstall: vi.fn(),
+    };
+    const manager = new SessionManager(config, store, runner, { codexHookInstaller });
+
+    await expect(manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/hook-status' })).resolves.toMatchObject({
+      reply: expect.stringContaining('Codex hooks'),
+    });
   });
 
   it('replies and saves chat before slow Codex session discovery finishes', async () => {

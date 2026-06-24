@@ -13,6 +13,11 @@ describe('parseIncomingText', () => {
     expect(commandName).toBe('restart');
   });
 
+  it('includes hook commands in known command names', () => {
+    const commands: CommandName[] = ['hook-status', 'install-hooks', 'uninstall-hooks'];
+    expect(commands).toEqual(['hook-status', 'install-hooks', 'uninstall-hooks']);
+  });
+
   it('treats a leading group mention before a slash command as a command', () => {
     expect(parseIncomingText('@_user_1 /projects')).toEqual({
       kind: 'command',
@@ -46,6 +51,14 @@ describe('parseIncomingText', () => {
       name: 'restart',
       args: [],
       raw: '/restart',
+    });
+  });
+
+  it.each(['/hook-status', '/install-hooks', '/uninstall-hooks'])('parses %s as a command', (text) => {
+    expect(parseIncomingText(text)).toMatchObject({
+      kind: 'command',
+      name: text.slice(1),
+      args: [],
     });
   });
 

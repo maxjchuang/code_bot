@@ -15,7 +15,10 @@ export type CommandName =
   | 'stop'
   | 'sessions'
   | 'approve'
-  | 'reject';
+  | 'reject'
+  | 'hook-status'
+  | 'install-hooks'
+  | 'uninstall-hooks';
 
 export type IncomingText =
   | { kind: 'message'; text: string }

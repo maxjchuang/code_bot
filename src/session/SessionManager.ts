@@ -31,6 +31,9 @@ import { renderResumeSessionCard } from '../feishu/ResumeSessionCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
 import { applyCodexSessionEvent } from './CodexSessionStateMachine.js';
 import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
+import { CodexHookInstaller } from '../hooks/CodexHookInstaller.js';
+import type { CodexHookService } from '../hooks/CodexHookService.js';
+import type { CodexHookStatusReport } from '../hooks/CodexHookTypes.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -95,6 +98,8 @@ export interface SessionManagerDeps {
   };
   modelCatalog?: ModelCatalogReader;
   upgradeManager?: Pick<UpgradeManager, 'upgrade' | 'restart'>;
+  codexHookInstaller?: Pick<CodexHookInstaller, 'status' | 'install' | 'uninstall'>;
+  codexHookService?: Pick<CodexHookService, 'isRunning'>;
 }
 
 interface ModelCatalogView {
@@ -251,6 +256,12 @@ export class SessionManager {
         return this.upgrade(input);
       case 'restart':
         return this.restart(input);
+      case 'hook-status':
+        return this.hookStatus();
+      case 'install-hooks':
+        return this.installHooks(input);
+      case 'uninstall-hooks':
+        return this.uninstallHooks(input);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -2406,6 +2417,58 @@ export class SessionManager {
     return this.deps.upgradeManager ?? new UpgradeManager({ projectRoot: process.cwd(), config: this.config.upgrade });
   }
 
+  private getCodexHookInstaller(): Pick<CodexHookInstaller, 'status' | 'install' | 'uninstall'> {
+    return (
+      this.deps.codexHookInstaller ??
+      new CodexHookInstaller({
+        codexHome: this.defaultCodexHome(),
+        projectRoot: process.cwd(),
+        socketPath: resolveHookSocketPath(process.cwd(), this.config.codexHooks.socketPath),
+      })
+    );
+  }
+
+  private async hookStatus(): Promise<BotTextResult> {
+    const status = await this.getCodexHookInstaller().status();
+    return { reply: formatHookStatus(this.withListenerStatus(status)) };
+  }
+
+  private async installHooks(input: IncomingBotText): Promise<BotTextResult> {
+    const adminCheck = this.requireHookAdmin(input.userId, '/install-hooks');
+    if (!adminCheck.ok) {
+      return { reply: adminCheck.reply };
+    }
+    const result = await this.getCodexHookInstaller().install();
+    return { reply: `Installed Codex hooks.\n${formatHookStatus(this.withListenerStatus(result.status))}` };
+  }
+
+  private async uninstallHooks(input: IncomingBotText): Promise<BotTextResult> {
+    const adminCheck = this.requireHookAdmin(input.userId, '/uninstall-hooks');
+    if (!adminCheck.ok) {
+      return { reply: adminCheck.reply };
+    }
+    const result = await this.getCodexHookInstaller().uninstall();
+    return { reply: `Uninstalled Codex hooks.\n${formatHookStatus(this.withListenerStatus(result.status))}` };
+  }
+
+  private withListenerStatus(status: CodexHookStatusReport): CodexHookStatusReport {
+    return {
+      ...status,
+      listenerRunning: this.deps.codexHookService?.isRunning() ?? status.listenerRunning ?? false,
+    };
+  }
+
+  private requireHookAdmin(userId: string, command: '/install-hooks' | '/uninstall-hooks'): { ok: true } | { ok: false; reply: string } {
+    const admins = this.config.codexHooks.adminUsers.length > 0 ? this.config.codexHooks.adminUsers : this.config.upgrade.adminUsers;
+    if (admins.length === 0) {
+      return { ok: false, reply: 'Hook management is unavailable: no hook admin users configured.' };
+    }
+    if (!admins.includes(userId)) {
+      return { ok: false, reply: `Only hook admins can run ${command}.` };
+    }
+    return { ok: true };
+  }
+
   private async upgrade(input: IncomingBotText): Promise<BotTextResult> {
     const result = await this.getUpgradeManager().upgrade({
       userId: input.userId,
@@ -2456,7 +2519,7 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume [session] [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume [session] [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart\n/hook-status\n/install-hooks\n/uninstall-hooks';
     const resumeHelp = [
       'Resume: /resume opens a project-scoped selector card; /resume <session> [project] resumes directly.',
       '- session can be a code_bot session id from /sessions or a Codex native id',
@@ -2469,6 +2532,33 @@ export class SessionManager {
     ].join('\n');
     return `${commands}\n\n${resumeHelp}\n\n${restrictions}`;
   }
+}
+
+function formatHookStatus(status: CodexHookStatusReport): string {
+  const lines = [
+    'Codex hooks',
+    `Configured: ${yesNo(status.configured)}`,
+    `Listener running: ${yesNo(Boolean(status.listenerRunning))}`,
+    `config.toml feature enabled: ${yesNo(status.configFeatureEnabled)}`,
+    `hooks.json contains managed hooks: ${yesNo(status.hooksJsonContainsManagedHooks)}`,
+    `Manifest valid: ${yesNo(status.manifestValid)}`,
+    `Recommended next command: ${status.recommendedCommand}`,
+  ];
+  if (!status.hooksJsonValid) {
+    lines.push('hooks.json valid: no');
+  }
+  if (status.issues.length > 0) {
+    lines.push(`Issues: ${status.issues.join('; ')}`);
+  }
+  return lines.join('\n');
+}
+
+function yesNo(value: boolean): 'yes' | 'no' {
+  return value ? 'yes' : 'no';
+}
+
+function resolveHookSocketPath(projectRoot: string, socketPath: string): string {
+  return socketPath.startsWith('/') ? socketPath : `${projectRoot}/${socketPath}`;
 }
 
 function upgradeEventType(status: UpgradeResult['status']): 'upgrade.completed' | 'upgrade.failed' | 'upgrade.skipped' {

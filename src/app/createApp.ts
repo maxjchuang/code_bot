@@ -7,6 +7,8 @@ import type { CodexObservationStore } from '../observations/CodexObservationStor
 import { resolveProject } from '../security/guards.js';
 import { UpgradeManager } from '../upgrade/UpgradeManager.js';
 import { applyCodexSessionEvent } from '../session/CodexSessionStateMachine.js';
+import { CodexHookInstaller } from '../hooks/CodexHookInstaller.js';
+import { CodexHookService } from '../hooks/CodexHookService.js';
 
 export interface AppDependencies {
   projectRoot: string;
@@ -24,6 +26,26 @@ export function createApp(deps: AppDependencies): {
   healthCheck: () => Promise<{ ok: true } | { ok: false; reason: string }>;
   recoverStartupState: () => Promise<void>;
 } {
+  const hookSocketPath = resolveHookSocketPath(deps.projectRoot, deps.config.codexHooks.socketPath);
+  const codexHookInstaller = new CodexHookInstaller({
+    codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
+    projectRoot: deps.projectRoot,
+    socketPath: hookSocketPath,
+  });
+  const codexHookService = new CodexHookService({
+    enabled: deps.config.codexHooks.enabled,
+    socketPath: hookSocketPath,
+    store: deps.store,
+    projects: deps.config.projects,
+  });
+  void codexHookService.start().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    void deps.store.appendEvent({
+      type: 'hook.listener_start_failed',
+      at: new Date().toISOString(),
+      data: { reason: message },
+    });
+  });
   const sessionManager = new SessionManager(deps.config, deps.store, deps.codexRunner, {
     logLevel: deps.config.logLevel,
     notifier: deps.notifier,
@@ -31,6 +53,8 @@ export function createApp(deps: AppDependencies): {
     codexSessionDiscovery: deps.codexSessionDiscovery,
     codexObservationStore: deps.codexObservationStore,
     upgradeManager: new UpgradeManager({ projectRoot: deps.projectRoot, config: deps.config.upgrade }),
+    codexHookInstaller,
+    codexHookService,
     sendConfirmation: deps.notifier ? { initialWaitMs: 3_000, retryWaitMs: 2_000, pollIntervalMs: 100 } : undefined,
   });
   return {
@@ -43,6 +67,10 @@ export function createApp(deps: AppDependencies): {
         codexSessionDiscovery: deps.codexSessionDiscovery,
       }),
   };
+}
+
+function resolveHookSocketPath(projectRoot: string, socketPath: string): string {
+  return socketPath.startsWith('/') ? socketPath : `${projectRoot}/${socketPath}`;
 }
 
 interface StartupCodexSessionDiscoveryOptions {

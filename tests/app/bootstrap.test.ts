@@ -40,6 +40,13 @@ const config: BotConfig = {
     remote: 'origin',
     branch: 'main',
   },
+  codexHooks: {
+    enabled: false,
+    autoRepair: false,
+    socketPath: '.code-bot/codex-hooks.sock',
+    permissionTimeoutMs: 300000,
+    adminUsers: [],
+  },
 };
 
 const gatewayTargetMethods = {

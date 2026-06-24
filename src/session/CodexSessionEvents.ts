@@ -26,6 +26,26 @@ export type CodexSessionEvent =
       at: string;
     }
   | {
+      type: 'hook.session_started';
+      sessionId: string;
+      hookSessionId?: string;
+      cwd?: string;
+      at: string;
+    }
+  | {
+      type: 'hook.user_prompt_submitted';
+      sessionId: string;
+      hookSessionId?: string;
+      cwd?: string;
+      at: string;
+    }
+  | {
+      type: 'hook.stop';
+      sessionId: string;
+      hookSessionId?: string;
+      at: string;
+    }
+  | {
       type: 'observation.task_completed';
       sessionId: string;
       codexSessionId: string;
