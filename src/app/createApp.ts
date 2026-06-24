@@ -6,6 +6,7 @@ import { SessionManager, type CodexSessionDiscovery, type Notifier } from '../se
 import type { CodexObservationStore } from '../observations/CodexObservationStore.js';
 import { resolveProject } from '../security/guards.js';
 import { UpgradeManager } from '../upgrade/UpgradeManager.js';
+import { applyCodexSessionEvent } from '../session/CodexSessionStateMachine.js';
 
 export interface AppDependencies {
   projectRoot: string;
@@ -77,8 +78,11 @@ export async function recoverStartupState(
     const recoveredSession = {
       ...session,
       status: 'interrupted' as const,
+      phase: 'interrupted' as const,
       lastSummary: session.lastSummary ?? 'Interrupted during bot restart recovery.',
       updatedAt: recoveredAt,
+      lastActivityAt: recoveredAt,
+      lastPhaseChangedAt: recoveredAt,
     };
     recoveredSessions.set(session.id, recoveredSession);
     await store.saveSession({
@@ -151,9 +155,12 @@ async function autoResumeRecoveredSession(
     chatId: sourceSession.chatId,
     projectId: sourceSession.projectId,
     status: 'running',
+    phase: 'starting',
     createdBy: sourceSession.createdBy,
     createdAt: now,
     updatedAt: now,
+    lastActivityAt: now,
+    lastPhaseChangedAt: now,
     logPath: store.sessionLogPath(sessionId),
     codexSessionId,
     resumedFromSessionId: sourceSession.id,
@@ -185,9 +192,7 @@ async function autoResumeRecoveredSession(
     const message = error instanceof Error ? error.message : String(error);
     const failedAt = new Date().toISOString();
     await store.saveSession({
-      ...session,
-      status: 'exited',
-      updatedAt: failedAt,
+      ...applyCodexSessionEvent(session, { type: 'runner.exited', sessionId, at: failedAt }),
       lastSummary: `Failed to auto-resume Codex session ${codexSessionId}: ${message}`,
     });
     await store.appendEvent({
@@ -198,6 +203,7 @@ async function autoResumeRecoveredSession(
     return undefined;
   }
 
+  await store.saveSession(applyCodexSessionEvent(session, { type: 'runner.started', sessionId, at: new Date().toISOString() }));
   await store.appendEvent({
     type: 'session.auto_resumed',
     at: now,
@@ -220,9 +226,12 @@ async function autoStartSingleProjectSession(
     chatId: sourceSession.chatId,
     projectId: project.id,
     status: 'running',
+    phase: 'starting',
     createdBy: sourceSession.createdBy,
     createdAt: now,
     updatedAt: now,
+    lastActivityAt: now,
+    lastPhaseChangedAt: now,
     logPath: store.sessionLogPath(sessionId),
     lastSummary: `Auto-started fresh session for the only configured project ${project.id} after restart recovery.`,
   };
@@ -250,9 +259,7 @@ async function autoStartSingleProjectSession(
     const message = error instanceof Error ? error.message : String(error);
     const failedAt = new Date().toISOString();
     await store.saveSession({
-      ...session,
-      status: 'exited',
-      updatedAt: failedAt,
+      ...applyCodexSessionEvent(session, { type: 'runner.exited', sessionId, at: failedAt }),
       lastSummary: `Failed to auto-start single-project fallback session for ${project.id}: ${message}`,
     });
     await store.appendEvent({
@@ -263,6 +270,7 @@ async function autoStartSingleProjectSession(
     return undefined;
   }
 
+  await store.saveSession(applyCodexSessionEvent(session, { type: 'runner.started', sessionId, at: new Date().toISOString() }));
   await store.appendEvent({
     type: 'session.auto_started_single_project',
     at: now,

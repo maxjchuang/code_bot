@@ -93,10 +93,14 @@ describe('createApp', () => {
 
     await app.recoverStartupState();
 
-    await expect(store.getSession('sess_last')).resolves.toMatchObject({
+    const recoveredSession = await store.getSession('sess_last');
+    expect(recoveredSession).toMatchObject({
       status: 'interrupted',
+      phase: 'interrupted',
       lastSummary: 'Interrupted during bot restart recovery.',
     });
+    expect(recoveredSession?.lastActivityAt).toBe(recoveredSession?.updatedAt);
+    expect(recoveredSession?.lastPhaseChangedAt).toBe(recoveredSession?.updatedAt);
     expect(runner.starts).toHaveLength(1);
     expect(runner.starts[0]).toMatchObject({
       cwd: root,
@@ -104,15 +108,19 @@ describe('createApp', () => {
     });
     const chat = await store.getChat('oc_1');
     expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
-    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+    const resumedSession = await store.getSession(runner.starts[0].sessionId);
+    expect(resumedSession).toMatchObject({
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'running',
+      phase: 'waiting_for_input',
       codexSessionId,
       resumedFromSessionId: 'sess_last',
       resumeSource: 'code_bot',
       firstUserMessagePreview: '当前 resume 卡片列表信息量仍然很低',
     });
+    expect(resumedSession?.lastActivityAt).toBe(resumedSession?.updatedAt);
+    expect(resumedSession?.lastPhaseChangedAt).toBe(resumedSession?.updatedAt);
   });
 
   it('auto-resumes an interrupted current session when it still has a Codex session id', async () => {
@@ -154,14 +162,18 @@ describe('createApp', () => {
     });
     const chat = await store.getChat('oc_1');
     expect(chat?.currentSessionId).toBe(runner.starts[0].sessionId);
-    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+    const resumedSession = await store.getSession(runner.starts[0].sessionId);
+    expect(resumedSession).toMatchObject({
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'running',
+      phase: 'waiting_for_input',
       codexSessionId,
       resumedFromSessionId: 'sess_last',
       resumeSource: 'code_bot',
     });
+    expect(resumedSession?.lastActivityAt).toBe(resumedSession?.updatedAt);
+    expect(resumedSession?.lastPhaseChangedAt).toBe(resumedSession?.updatedAt);
   });
 
   it('discovers a missing Codex session id before auto-resuming startup recovery', async () => {
@@ -346,6 +358,15 @@ describe('createApp', () => {
       cwd: root,
       mode: { kind: 'resume', target: codexSessionId },
     });
+    const failedResumeSessionId = (runner.start as any).mock.calls[0][0].sessionId;
+    const failedResumeSession = await store.getSession(failedResumeSessionId);
+    expect(failedResumeSession).toMatchObject({
+      status: 'exited',
+      phase: 'exited',
+      lastSummary: `Failed to auto-resume Codex session ${codexSessionId}: resume failed`,
+    });
+    expect(failedResumeSession?.lastActivityAt).toBe(failedResumeSession?.updatedAt);
+    expect(failedResumeSession?.lastPhaseChangedAt).toBe(failedResumeSession?.updatedAt);
     expect(runner.starts).toHaveLength(1);
     expect(runner.starts[0]).toMatchObject({
       cwd: root,
@@ -356,12 +377,63 @@ describe('createApp', () => {
       currentProjectId: 'repo',
       currentSessionId: runner.starts[0].sessionId,
     });
-    await expect(store.getSession(runner.starts[0].sessionId)).resolves.toMatchObject({
+    const fallbackSession = await store.getSession(runner.starts[0].sessionId);
+    expect(fallbackSession).toMatchObject({
+      chatId: 'oc_1',
+      projectId: 'repo',
+      status: 'running',
+      phase: 'waiting_for_input',
+      createdBy: 'ou_1',
+    });
+    expect(fallbackSession?.lastActivityAt).toBe(fallbackSession?.updatedAt);
+    expect(fallbackSession?.lastPhaseChangedAt).toBe(fallbackSession?.updatedAt);
+  });
+
+  it('marks single-project fallback sessions exited when startup fails', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    runner.startError = new Error('fresh start failed');
+    await store.saveSession({
+      id: 'sess_last',
       chatId: 'oc_1',
       projectId: 'repo',
       status: 'running',
       createdBy: 'ou_1',
+      createdAt: '2026-06-01T09:09:20.569Z',
+      updatedAt: '2026-06-01T09:19:01.493Z',
+      logPath: store.sessionLogPath('sess_last'),
     });
+    await store.saveChat({
+      chatId: 'oc_1',
+      chatType: 'group',
+      currentProjectId: 'repo',
+      currentSessionId: 'sess_last',
+    });
+    const app = createApp({
+      projectRoot: root,
+      config: singleProjectConfig(root),
+      store,
+      codexRunner: runner,
+    });
+
+    await app.recoverStartupState();
+
+    expect(runner.starts).toHaveLength(1);
+    expect(runner.starts[0]).toMatchObject({
+      cwd: root,
+      mode: { kind: 'new' },
+    });
+    const chat = await store.getChat('oc_1');
+    expect(chat?.currentSessionId).toBeUndefined();
+    const failedFallbackSession = await store.getSession(runner.starts[0].sessionId);
+    expect(failedFallbackSession).toMatchObject({
+      status: 'exited',
+      phase: 'exited',
+      lastSummary: 'Failed to auto-start single-project fallback session for repo: fresh start failed',
+    });
+    expect(failedFallbackSession?.lastActivityAt).toBe(failedFallbackSession?.updatedAt);
+    expect(failedFallbackSession?.lastPhaseChangedAt).toBe(failedFallbackSession?.updatedAt);
   });
 
   it('does not silently start a new session when more than one project is configured', async () => {
@@ -399,5 +471,13 @@ describe('createApp', () => {
     const chat = await store.getChat('oc_1');
     expect(chat?.currentProjectId).toBe('repo');
     expect(chat?.currentSessionId).toBeUndefined();
+    const failedSession = await store.getSession(runner.starts[0].sessionId);
+    expect(failedSession).toMatchObject({
+      status: 'exited',
+      phase: 'exited',
+      lastSummary: 'Failed to auto-resume Codex session 019e8271-ddb8-7540-9baa-77ce58da1f26: resume failed',
+    });
+    expect(failedSession?.lastActivityAt).toBe(failedSession?.updatedAt);
+    expect(failedSession?.lastPhaseChangedAt).toBe(failedSession?.updatedAt);
   });
 });
