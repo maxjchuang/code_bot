@@ -114,7 +114,6 @@ const DEFAULT_SEND_CONFIRMATION_RETRY_WAIT_MS = 2_000;
 const DEFAULT_SEND_CONFIRMATION_POLL_INTERVAL_MS = 100;
 const DEFAULT_CODEX_STATUS_LIVE_FETCH_TIMEOUT_MS = 2_000;
 const DEFAULT_CODEX_STATUS_QUIET_MS = 75;
-const EXIT_DISCOVERY_GRACE_MS = 250;
 const MAX_LIVE_STATUS_CHARS = 32_768;
 const MAX_PTY_DEBUG_BUFFER_CHARS = 16_384;
 const PTY_DEBUG_TRUNCATION_MARKER = '\n[debug pty output truncated: terminal redraw exceeded buffer limit]\n';
@@ -1488,17 +1487,7 @@ export class SessionManager {
       void this.recordBackgroundError('session.terminal_observer_end_failed', error, { sessionId }).catch(() => undefined);
     }
     const exitedAt = new Date().toISOString();
-    const current = await this.store.getSession(sessionId);
-    if (!current) {
-      await this.store.appendEvent({
-        type: 'session.exit_missing_record',
-        at: new Date().toISOString(),
-        data: { sessionId, exitCode },
-      });
-      return;
-    }
-    let updated: SessionRecord | undefined;
-    await this.store.updateSession(sessionId, (latest) => {
+    const updated = await this.store.updateSession(sessionId, (latest) => {
       let next = applyCodexSessionEvent(latest, {
         type: 'runner.exited',
         sessionId,
@@ -1513,9 +1502,15 @@ export class SessionManager {
           lastPhaseChangedAt: latest.phase === 'interrupted' ? latest.lastPhaseChangedAt : exitedAt,
         };
       }
-      updated = next;
       return next;
     });
+    if (!updated) {
+      await this.store.appendEvent({
+        type: 'session.exit_missing_record',
+        at: new Date().toISOString(),
+        data: { sessionId, exitCode },
+      });
+    }
     this.logger.info('session.exited', {
       session: sessionId,
       exitCode: exitCode ?? 'none',
@@ -1814,10 +1809,7 @@ export class SessionManager {
     }
     turn.notified = true;
     try {
-      const currentAnswer =
-        reason === 'exit'
-          ? await this.currentTurnAnswerExtractionOnExit(sessionId, turn)
-          : await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
+      const currentAnswer = await this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
       const extraction: FinalAnswerExtraction =
         currentAnswer.kind === 'answer' ? { kind: 'answer', text: currentAnswer.text } : { kind: 'empty', reason: 'No structured final answer detected.' };
       if (extraction.kind === 'answer' && currentAnswer.kind === 'answer') {
@@ -1975,30 +1967,6 @@ export class SessionManager {
     }
 
     return { kind: 'empty' };
-  }
-
-  private async currentTurnAnswerExtractionOnExit(sessionId: string, turn: PendingTurn): Promise<CurrentTurnAnswer> {
-    const session = await this.store.getSession(sessionId);
-    if (session?.codexSessionId) {
-      return this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
-    }
-
-    const ptyAnswer = await this.currentTurnPtyExtraction(sessionId, turn);
-    if (!ptyAnswer) {
-      return this.currentTurnAnswerExtraction(sessionId, turn, { allowDiscovery: true });
-    }
-
-    const observationAnswer = await Promise.race<
-      { kind: 'answer'; text: string } | undefined
-    >([
-      this.currentTurnObservationExtraction(sessionId, turn, { allowDiscovery: true }),
-      new Promise<undefined>((resolve) => setTimeout(resolve, EXIT_DISCOVERY_GRACE_MS)),
-    ]);
-    if (observationAnswer) {
-      return { kind: 'answer', text: observationAnswer.text, source: 'observation' };
-    }
-
-    return { kind: 'answer', text: ptyAnswer, source: 'pty' };
   }
 
   private async currentTurnPtyExtraction(sessionId: string, turn: PendingTurn): Promise<string | undefined> {

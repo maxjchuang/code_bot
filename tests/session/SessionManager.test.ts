@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
@@ -3575,6 +3575,35 @@ describe('SessionManager', () => {
     });
     expect(secondSend.reply).toBe('No running session. Run /new <project> first.');
     expect(runner.sentMessages).toEqual(['inspect status']);
+  });
+
+  it('logs missing-session exits while recording exit_missing_record', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const logger = { info: vi.fn(), error: vi.fn() };
+    const manager = new SessionManager(sampleConfig(root), store, runner, { logger });
+
+    await manager.handleText({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      text: '/new repo',
+    });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await unlink(join(root, '.code-bot', 'state', 'sessions', `${sessionId}.json`));
+
+    await runner.exit(sessionId, 7);
+
+    const day = new Date().toISOString().slice(0, 10);
+    const content = await readFile(join(root, '.code-bot', 'events', `${day}.jsonl`), 'utf8');
+    expect(content).toContain('"type":"session.exit_missing_record"');
+    expect(content).toContain(`"sessionId":"${sessionId}"`);
+    expect(content).toContain('"exitCode":7');
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('session.exited'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining(`session=${sessionId}`));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('exitCode=7'));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('status=missing'));
   });
 
   it('keeps previous chat currentSessionId when replacement start fails after prior session exits', async () => {
