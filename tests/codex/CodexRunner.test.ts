@@ -349,6 +349,7 @@ describe('PtyCodexRunner', () => {
       { spawn: factory.spawn } as any,
     );
     const onExit = vi.fn();
+    const onRestart = vi.fn();
 
     await runner.start({
       sessionId: 'sess-auto-update-resume',
@@ -357,6 +358,7 @@ describe('PtyCodexRunner', () => {
       mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
       onOutput: vi.fn(),
       onExit,
+      onRestart,
     });
 
     factory.terms[0].emitData('Update ran successfully! Please restart Codex.');
@@ -365,6 +367,7 @@ describe('PtyCodexRunner', () => {
     factory.terms[0].emitExit(0);
 
     expect(onExit).not.toHaveBeenCalled();
+    expect(onRestart).toHaveBeenCalledWith({ reason: 'codex_cli_update' });
     expect(factory.spawn).toHaveBeenCalledTimes(2);
     expect(factory.spawn).toHaveBeenLastCalledWith(
       'codex',

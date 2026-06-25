@@ -28,6 +28,11 @@ export interface CodexRunOptions {
   mode?: CodexStartMode;
   onOutput: (text: string) => void;
   onExit: (exitCode: number | undefined) => void;
+  onRestart?: (event: CodexRestartEvent) => void | Promise<void>;
+}
+
+export interface CodexRestartEvent {
+  reason: 'codex_cli_update';
 }
 
 export interface CodexRunner {
@@ -83,6 +88,7 @@ export class PtyCodexRunner implements CodexRunner {
       cwd: options.cwd,
       onOutput: options.onOutput,
       onExit: options.onExit,
+      onRestart: options.onRestart,
       updateBuffer: '',
       updatePromptSubmitted: false,
       restartAfterUpdate: false,
@@ -117,6 +123,7 @@ export class PtyCodexRunner implements CodexRunner {
       }
       if (entry.restartAfterUpdate) {
         this.spawnProcess(entry);
+        void Promise.resolve(entry.onRestart?.({ reason: 'codex_cli_update' }));
         return;
       }
       this.processes.delete(entry.sessionId);
@@ -164,6 +171,7 @@ interface RunningCodexProcess {
   cwd: string;
   onOutput: (text: string) => void;
   onExit: (exitCode: number | undefined) => void;
+  onRestart?: (event: CodexRestartEvent) => void | Promise<void>;
   term?: pty.IPty;
   updateBuffer: string;
   updatePromptSubmitted: boolean;

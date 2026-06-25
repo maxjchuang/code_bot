@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ApprovalRecord, BotConfig, ChatContext, ChatType, SavedModelSelection, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
-import { CODEX_TUI_SUBMIT_SEQUENCE, createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { CODEX_TUI_SUBMIT_SEQUENCE, createCodexSessionId, type CodexRestartEvent, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { renderFeishuMessage, type BotMessage, type RenderedFeishuMessage } from '../feishu/FeishuMessageRenderer.js';
 import {
@@ -783,6 +783,11 @@ export class SessionManager {
         onExit: (exitCode) => {
           return this.markExited(sessionId, exitCode).catch((error) =>
             this.recordBackgroundError('session.exit_persist_failed', error, { sessionId, exitCode }),
+          );
+        },
+        onRestart: (event) => {
+          return this.handleRunnerRestart(sessionId, event).catch((error) =>
+            this.recordBackgroundError('session.runner_restart_persist_failed', error, { sessionId, reason: event.reason }),
           );
         },
       });
@@ -1735,6 +1740,39 @@ export class SessionManager {
 
   async handleRunnerOutput(sessionId: string, text: string): Promise<void> {
     await this.recordSessionOutput(sessionId, text);
+  }
+
+  async handleRunnerRestart(sessionId: string, event: CodexRestartEvent): Promise<void> {
+    const restartedAt = new Date().toISOString();
+    await this.store.appendEvent({
+      type: 'session.runner_restarted',
+      at: restartedAt,
+      data: { sessionId, reason: event.reason },
+    });
+
+    const turn = this.pendingTurns.get(sessionId);
+    if (!turn || turn.notified) {
+      return;
+    }
+    if (turn.timer) {
+      clearTimeout(turn.timer);
+      turn.timer = undefined;
+    }
+    turn.processingState = 'pending_confirmation';
+    turn.submitRetryCount = 0;
+    await this.activatePendingTurn(turn);
+    await this.runner.send(sessionId, turn.prompt);
+    await this.store.appendEvent({
+      type: 'session.pending_turn_resubmitted',
+      at: new Date().toISOString(),
+      data: {
+        sessionId,
+        chatId: turn.chatId,
+        projectId: turn.projectId,
+        pendingTurnId: turn.id,
+        reason: event.reason,
+      },
+    });
   }
 
   private async recordSessionOutput(sessionId: string, text: string): Promise<void> {
