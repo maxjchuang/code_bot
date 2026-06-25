@@ -8,6 +8,8 @@ export interface CodexHookStatusReport {
   manifestValid: boolean;
   scriptInstalled: boolean;
   listenerRunning?: boolean;
+  codexHome?: string;
+  codexHomeSource?: 'project';
   recommendedCommand: '/install-hooks' | '/hook-status';
   issues: string[];
 }

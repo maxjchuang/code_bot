@@ -1,6 +1,7 @@
 import type { BotConfig, ProjectConfig, SessionRecord } from '../domain/types.js';
 import { FileStateStore } from '../state/FileStateStore.js';
 import { createCodexSessionId, type CodexRestartEvent, type CodexRunner } from '../codex/CodexRunner.js';
+import { resolveProjectCodexHome } from '../codex/CodexHome.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { SessionManager, type CodexSessionDiscovery, type Notifier } from '../session/SessionManager.js';
 import type { CodexObservationStore } from '../observations/CodexObservationStore.js';
@@ -15,6 +16,7 @@ export interface AppDependencies {
   config: BotConfig;
   store: FileStateStore;
   codexRunner: CodexRunner;
+  codexHome?: string;
   notifier?: Notifier;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
@@ -29,10 +31,11 @@ export function createApp(deps: AppDependencies): {
   recoverStartupState: () => Promise<void>;
 } {
   const hookSocketPath = resolveHookSocketPath(deps.projectRoot, deps.config.codexHooks.socketPath);
+  const codexHome = deps.codexHome ?? resolveProjectCodexHome(deps.projectRoot);
   const codexHookInstaller =
     deps.codexHookInstaller ??
     new CodexHookInstaller({
-      codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
+      codexHome,
       projectRoot: deps.projectRoot,
       socketPath: hookSocketPath,
     });
@@ -54,6 +57,7 @@ export function createApp(deps: AppDependencies): {
     codexSessionDiscovery: deps.codexSessionDiscovery,
     codexObservationStore: deps.codexObservationStore,
     upgradeManager: new UpgradeManager({ projectRoot: deps.projectRoot, config: deps.config.upgrade }),
+    codexHome,
     codexHookInstaller,
     codexHookService,
     sendConfirmation: deps.notifier ? { initialWaitMs: 3_000, retryWaitMs: 2_000, pollIntervalMs: 100 } : undefined,
@@ -84,6 +88,7 @@ export function createApp(deps: AppDependencies): {
         onRestart: (sessionId, event) => sessionManager.handleRunnerRestart(sessionId, event),
         codexSessionRegistry: deps.codexSessionRegistry,
         codexSessionDiscovery: deps.codexSessionDiscovery,
+        codexHome,
       });
     },
   };
@@ -142,6 +147,7 @@ interface StartupRecoveryHooks {
   onRestart?(sessionId: string, event: CodexRestartEvent): Promise<void>;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
+  codexHome?: string;
 }
 
 const DEFAULT_STARTUP_CODEX_SESSION_DISCOVERY_MAX_ATTEMPTS = 3;
@@ -442,7 +448,7 @@ async function discoverRecoveredCodexSessionId(
 }
 
 function codexSessionRegistry(hooks: StartupRecoveryHooks): CodexSessionDiscovery {
-  return hooks.codexSessionRegistry ?? new CodexSessionRegistry(process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`);
+  return hooks.codexSessionRegistry ?? new CodexSessionRegistry(hooks.codexHome ?? resolveProjectCodexHome(process.cwd()));
 }
 
 function singleConfiguredProject(config: BotConfig): ProjectConfig | undefined {

@@ -35,6 +35,8 @@ describe('CodexHookInstaller', () => {
     const report = await createInstaller(codexHome, root).status();
 
     expect(report).toMatchObject({
+      codexHome,
+      codexHomeSource: 'project',
       configFeatureEnabled: true,
       hooksJsonContainsManagedHooks: false,
       manifestValid: false,

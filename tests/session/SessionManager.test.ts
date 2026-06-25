@@ -128,6 +128,8 @@ describe('SessionManager', () => {
     scriptInstalled: false,
     listenerRunning: false,
     recommendedCommand: '/install-hooks',
+    codexHome: '/tmp/project/.code-bot/codex-home',
+    codexHomeSource: 'project',
     issues: [],
     ...overrides,
   });
@@ -172,6 +174,8 @@ describe('SessionManager', () => {
     expect(result.reply).toContain('Codex hooks');
     expect(result.reply).toContain('Configured: no');
     expect(result.reply).toContain('Listener running: no');
+    expect(result.reply).toContain('Codex home: /tmp/project/.code-bot/codex-home');
+    expect(result.reply).toContain('Codex home source: project');
     expect(result.reply).toContain('Recommended next command: /install-hooks');
   });
 
