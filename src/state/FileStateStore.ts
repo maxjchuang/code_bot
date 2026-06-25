@@ -13,6 +13,7 @@ import type {
 } from '../domain/types.js';
 
 type Clock = () => Date;
+type WriteQueueName = 'state' | 'events' | 'sessionLogs';
 
 const MAX_TAIL_SCAN_BYTES = 1_048_576;
 const MAX_LOG_LINE_CHARS = 16_384;
@@ -43,8 +44,12 @@ async function readFileWindow(filePath: string, position: number, length: number
 }
 
 export class FileStateStore {
-  private writeChain: Promise<unknown> = Promise.resolve();
-  private readonly writeContext = new AsyncLocalStorage<boolean>();
+  private readonly writeChains: Record<WriteQueueName, Promise<unknown>> = {
+    state: Promise.resolve(),
+    events: Promise.resolve(),
+    sessionLogs: Promise.resolve(),
+  };
+  private readonly writeContext = new AsyncLocalStorage<WriteQueueName>();
   private readonly baseDir: string;
 
   constructor(projectRoot: string, private readonly clock: Clock = () => new Date()) {
@@ -84,7 +89,7 @@ export class FileStateStore {
   async updateSession(sessionId: string, updater: (current: SessionRecord) => SessionRecord): Promise<SessionRecord | undefined> {
     const id = this.safeFileName(sessionId);
     const filePath = join(this.baseDir, 'state/sessions', `${id}.json`);
-    return this.enqueue(async () => {
+    return this.enqueue('state', async () => {
       const current = await this.readJson<SessionRecord>(filePath);
       if (!current) {
         return undefined;
@@ -119,7 +124,7 @@ export class FileStateStore {
   }
 
   async listPendingApprovals(): Promise<ApprovalRecord[]> {
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('state');
     const approvalsDir = join(this.baseDir, 'state/approvals');
     let files: string[];
     try {
@@ -148,7 +153,7 @@ export class FileStateStore {
     const messageId = input.messageId;
     const id = this.safeFileName(messageId);
     const filePath = join(this.baseDir, 'state/inbound-messages', `${id}.json`);
-    return this.enqueue(async () => {
+    return this.enqueue('state', async () => {
       const current = await this.readJson<InboundMessageReceipt>(filePath);
       if (current) {
         const duplicate: InboundMessageReceipt = {
@@ -177,7 +182,7 @@ export class FileStateStore {
 
   async appendEvent(event: BotEvent): Promise<void> {
     const day = this.clock().toISOString().slice(0, 10);
-    await this.enqueue(async () => {
+    await this.enqueue('events', async () => {
       const filePath = join(this.baseDir, 'events', `${day}.jsonl`);
       await mkdir(dirname(filePath), { recursive: true });
       await appendFile(filePath, `${JSON.stringify(event)}\n`, 'utf8');
@@ -186,7 +191,7 @@ export class FileStateStore {
 
   async appendErrorLog(entry: BotErrorLogEntry): Promise<void> {
     const day = this.clock().toISOString().slice(0, 10);
-    await this.enqueue(async () => {
+    await this.enqueue('events', async () => {
       const filePath = join(this.baseDir, 'logs/errors', `${day}.jsonl`);
       await mkdir(dirname(filePath), { recursive: true });
       await appendFile(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
@@ -194,7 +199,7 @@ export class FileStateStore {
   }
 
   async appendSessionLog(sessionId: string, text: string): Promise<void> {
-    await this.enqueue(async () => {
+    await this.enqueue('sessionLogs', async () => {
       const filePath = this.sessionLogPath(sessionId);
       await mkdir(dirname(filePath), { recursive: true });
       await appendFile(filePath, text, 'utf8');
@@ -207,7 +212,7 @@ export class FileStateStore {
       return [];
     }
 
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('sessionLogs');
     const filePath = this.sessionLogPath(sessionId);
     try {
       const { size } = await stat(filePath);
@@ -242,7 +247,7 @@ export class FileStateStore {
       return '';
     }
 
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('sessionLogs');
     const filePath = this.sessionLogPath(sessionId);
     try {
       const { size } = await stat(filePath);
@@ -259,7 +264,7 @@ export class FileStateStore {
   }
 
   async sessionLogSize(sessionId: string): Promise<number> {
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('sessionLogs');
     try {
       return (await stat(this.sessionLogPath(sessionId))).size;
     } catch (error) {
@@ -271,7 +276,7 @@ export class FileStateStore {
   }
 
   async sessionLogLinesFrom(sessionId: string, byteOffset: number): Promise<string[]> {
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('sessionLogs');
     const filePath = this.sessionLogPath(sessionId);
     try {
       const { size } = await stat(filePath);
@@ -312,7 +317,7 @@ export class FileStateStore {
   }
 
   private async readJson<T>(filePath: string): Promise<T | undefined> {
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('state');
     try {
       return JSON.parse(await readFile(filePath, 'utf8')) as T;
     } catch (error) {
@@ -324,7 +329,7 @@ export class FileStateStore {
   }
 
   private async readJsonDirectory<T>(directoryPath: string): Promise<T[]> {
-    await this.waitForPendingWrites();
+    await this.waitForPendingWrites('state');
     let files: string[];
     try {
       files = await readdir(directoryPath);
@@ -342,21 +347,21 @@ export class FileStateStore {
   }
 
   private async writeJson(filePath: string, value: unknown): Promise<void> {
-    await this.enqueue(async () => this.writeJsonFile(filePath, value));
+    await this.enqueue('state', async () => this.writeJsonFile(filePath, value));
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const run = () => this.writeContext.run(true, operation);
-    const next = this.writeChain.then(run, run);
-    this.writeChain = next.catch(() => undefined);
+  private enqueue<T>(queue: WriteQueueName, operation: () => Promise<T>): Promise<T> {
+    const run = () => this.writeContext.run(queue, operation);
+    const next = this.writeChains[queue].then(run, run);
+    this.writeChains[queue] = next.catch(() => undefined);
     return next;
   }
 
-  private async waitForPendingWrites(): Promise<void> {
-    if (this.writeContext.getStore() === true) {
+  private async waitForPendingWrites(queue: WriteQueueName): Promise<void> {
+    if (this.writeContext.getStore() === queue) {
       return;
     }
-    await this.writeChain;
+    await this.writeChains[queue];
   }
 
   private async writeJsonFile(filePath: string, value: unknown): Promise<void> {
