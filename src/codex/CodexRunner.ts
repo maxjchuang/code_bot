@@ -55,6 +55,7 @@ export class PtyCodexRunner implements CodexRunner {
     private readonly config: {
       command: string;
       defaultArgs: string[];
+      codexHome?: string;
       terminal?: { cols: number; rows: number };
     },
     private readonly ptyModule: Pick<typeof pty, 'spawn'> = pty,
@@ -109,7 +110,7 @@ export class PtyCodexRunner implements CodexRunner {
       cols: this.config.terminal?.cols ?? 120,
       rows: this.config.terminal?.rows ?? 40,
       cwd: entry.cwd,
-      env: process.env,
+      env: this.config.codexHome ? { ...process.env, CODEX_HOME: this.config.codexHome } : process.env,
     });
     entry.term = term;
     term.onData((text) => {
