@@ -45,6 +45,16 @@ describe('PtyCodexRunner', () => {
     };
   }
 
+  function createFakeTermFactory() {
+    const terms: ReturnType<typeof createFakeTerm>[] = [];
+    const spawn = vi.fn(() => {
+      const fake = createFakeTerm();
+      terms.push(fake);
+      return fake.term as any;
+    });
+    return { spawn, terms };
+  }
+
   it('reports missing codex command through health check', async () => {
     const runner = new PtyCodexRunner({ command: 'definitely-missing-codex-command', defaultArgs: [] });
     await expect(runner.healthCheck()).resolves.toEqual({ ok: false, reason: 'Command not found: definitely-missing-codex-command' });
@@ -307,6 +317,72 @@ describe('PtyCodexRunner', () => {
     await runner.start(options);
     await expect(runner.start(options)).rejects.toThrow('Codex session is already running: sess-dup');
     expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects Codex CLI update prompts automatically', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);
+
+    await runner.start({
+      sessionId: 'sess-auto-update',
+      cwd: process.cwd(),
+      args: [],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    fake.emitData('✨ Update available! 0.142.0 -> 0.142.1\n');
+    expect(fake.writes).toEqual([]);
+
+    fake.emitData('› 1. Update now (runs `npm install -g @openai/codex`)\nPress enter to continue');
+    expect(fake.writes).toEqual(['\r']);
+
+    fake.emitData('› 1. Update now (runs `npm install -g @openai/codex`)\nPress enter to continue');
+    expect(fake.writes).toEqual(['\r']);
+  });
+
+  it('restarts Codex after CLI update and reuses resume arguments', async () => {
+    const factory = createFakeTermFactory();
+    const runner = new PtyCodexRunner(
+      { command: 'codex', defaultArgs: ['--ask-for-approval', 'on-request'] },
+      { spawn: factory.spawn } as any,
+    );
+    const onExit = vi.fn();
+
+    await runner.start({
+      sessionId: 'sess-auto-update-resume',
+      cwd: '/tmp/project',
+      args: ['--model', 'gpt-5'],
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+      onOutput: vi.fn(),
+      onExit,
+    });
+
+    factory.terms[0].emitData('Update ran successfully! Please restart Codex.');
+    expect(factory.terms[0].kill).toHaveBeenCalledTimes(1);
+
+    factory.terms[0].emitExit(0);
+
+    expect(onExit).not.toHaveBeenCalled();
+    expect(factory.spawn).toHaveBeenCalledTimes(2);
+    expect(factory.spawn).toHaveBeenLastCalledWith(
+      'codex',
+      [
+        'resume',
+        '--ask-for-approval',
+        'on-request',
+        '--model',
+        'gpt-5',
+        ...CODEX_TUI_KEYMAP_ARGS,
+        '019e7f20-a667-7632-a808-c9595d77116e',
+      ],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+
+    factory.terms[1].emitData('resumed after update');
+    factory.terms[1].emitExit(0);
+    expect(onExit).toHaveBeenCalledWith(0);
   });
 
   it('submits prompts by writing the configured control-key submit sequence after a short delay', async () => {

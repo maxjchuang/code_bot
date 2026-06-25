@@ -5,6 +5,8 @@ import { execFile } from 'node:child_process';
 import pty from 'node-pty';
 
 const SUBMIT_ENTER_DELAY_MS = 10;
+const CODEX_UPDATE_BUFFER_MAX_CHARS = 8_192;
+const CODEX_UPDATE_ENTER_SEQUENCE = '\r';
 export const CODEX_TUI_SUBMIT_SEQUENCE = '\x18';
 const CODEX_TUI_KEYMAP_ARGS = [
   '-c',
@@ -41,7 +43,7 @@ export function createCodexSessionId(seed: string = Math.random().toString(36).s
 }
 
 export class PtyCodexRunner implements CodexRunner {
-  private readonly processes = new Map<string, pty.IPty>();
+  private readonly processes = new Map<string, RunningCodexProcess>();
   private versionPromise?: Promise<string | undefined>;
 
   constructor(
@@ -75,18 +77,50 @@ export class PtyCodexRunner implements CodexRunner {
       mode.kind === 'resume'
         ? ['resume', ...defaultArgs, ...options.args, ...CODEX_TUI_KEYMAP_ARGS, mode.target]
         : [...defaultArgs, ...options.args, ...CODEX_TUI_KEYMAP_ARGS];
-    const term = this.ptyModule.spawn(this.config.command, args, {
+    const entry: RunningCodexProcess = {
+      sessionId: options.sessionId,
+      args,
+      cwd: options.cwd,
+      onOutput: options.onOutput,
+      onExit: options.onExit,
+      updateBuffer: '',
+      updatePromptSubmitted: false,
+      restartAfterUpdate: false,
+      generation: 0,
+    };
+    this.processes.set(options.sessionId, entry);
+    this.spawnProcess(entry);
+  }
+
+  private spawnProcess(entry: RunningCodexProcess): void {
+    const generation = entry.generation + 1;
+    entry.generation = generation;
+    entry.updateBuffer = '';
+    entry.updatePromptSubmitted = false;
+    entry.restartAfterUpdate = false;
+    const term = this.ptyModule.spawn(this.config.command, entry.args, {
       name: 'xterm-256color',
       cols: this.config.terminal?.cols ?? 120,
       rows: this.config.terminal?.rows ?? 40,
-      cwd: options.cwd,
+      cwd: entry.cwd,
       env: process.env,
     });
-    this.processes.set(options.sessionId, term);
-    term.onData(options.onOutput);
+    entry.term = term;
+    term.onData((text) => {
+      entry.onOutput(text);
+      this.handleCodexUpdateOutput(entry, text);
+    });
     term.onExit((event) => {
-      this.processes.delete(options.sessionId);
-      options.onExit(event.exitCode);
+      const current = this.processes.get(entry.sessionId);
+      if (current !== entry || entry.generation !== generation) {
+        return;
+      }
+      if (entry.restartAfterUpdate) {
+        this.spawnProcess(entry);
+        return;
+      }
+      this.processes.delete(entry.sessionId);
+      entry.onExit(event.exitCode);
     });
   }
 
@@ -104,12 +138,37 @@ export class PtyCodexRunner implements CodexRunner {
   }
 
   private requireProcess(sessionId: string): pty.IPty {
-    const term = this.processes.get(sessionId);
-    if (!term) {
+    const entry = this.processes.get(sessionId);
+    if (!entry?.term) {
       throw new Error(`Codex session is not running: ${sessionId}`);
     }
-    return term;
+    return entry.term;
   }
+
+  private handleCodexUpdateOutput(entry: RunningCodexProcess, text: string): void {
+    entry.updateBuffer = (entry.updateBuffer + text).slice(-CODEX_UPDATE_BUFFER_MAX_CHARS);
+    if (!entry.updatePromptSubmitted && isCodexUpdatePrompt(entry.updateBuffer)) {
+      entry.updatePromptSubmitted = true;
+      entry.term?.write(CODEX_UPDATE_ENTER_SEQUENCE);
+    }
+    if (!entry.restartAfterUpdate && isCodexUpdateSuccess(entry.updateBuffer)) {
+      entry.restartAfterUpdate = true;
+      entry.term?.kill();
+    }
+  }
+}
+
+interface RunningCodexProcess {
+  sessionId: string;
+  args: string[];
+  cwd: string;
+  onOutput: (text: string) => void;
+  onExit: (exitCode: number | undefined) => void;
+  term?: pty.IPty;
+  updateBuffer: string;
+  updatePromptSubmitted: boolean;
+  restartAfterUpdate: boolean;
+  generation: number;
 }
 
 async function delay(ms: number): Promise<void> {
@@ -242,4 +301,12 @@ function inlineConfigValue(arg: string): string | undefined {
     return arg.slice('-c'.length);
   }
   return undefined;
+}
+
+function isCodexUpdatePrompt(text: string): boolean {
+  return text.includes('Update available!') && text.includes('Update now') && text.includes('Press enter to continue');
+}
+
+function isCodexUpdateSuccess(text: string): boolean {
+  return text.includes('Update ran successfully! Please restart Codex.');
 }
