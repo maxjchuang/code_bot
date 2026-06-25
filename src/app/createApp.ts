@@ -1,6 +1,6 @@
 import type { BotConfig, ProjectConfig, SessionRecord } from '../domain/types.js';
 import { FileStateStore } from '../state/FileStateStore.js';
-import { createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
+import { createCodexSessionId, type CodexRestartEvent, type CodexRunner } from '../codex/CodexRunner.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { SessionManager, type CodexSessionDiscovery, type Notifier } from '../session/SessionManager.js';
 import type { CodexObservationStore } from '../observations/CodexObservationStore.js';
@@ -81,6 +81,7 @@ export function createApp(deps: AppDependencies): {
       await recoverPendingApprovals(deps.store);
       await recoverStartupState(deps.store, deps.config, deps.codexRunner, {
         onOutput: (sessionId, text) => sessionManager.handleRunnerOutput(sessionId, text),
+        onRestart: (sessionId, event) => sessionManager.handleRunnerRestart(sessionId, event),
         codexSessionRegistry: deps.codexSessionRegistry,
         codexSessionDiscovery: deps.codexSessionDiscovery,
       });
@@ -138,6 +139,7 @@ interface StartupCodexSessionDiscoveryOptions {
 
 interface StartupRecoveryHooks {
   onOutput?(sessionId: string, text: string): Promise<void>;
+  onRestart?(sessionId: string, event: CodexRestartEvent): Promise<void>;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: StartupCodexSessionDiscoveryOptions;
 }
@@ -272,6 +274,16 @@ async function autoResumeRecoveredSession(
           recordAutoResumeBackgroundError(store, 'session.exit_persist_failed', error, { sessionId, exitCode }).catch(() => undefined),
         );
       },
+      onRestart: (event) => {
+        const persistRestart = hooks.onRestart
+          ? hooks.onRestart(sessionId, event)
+          : recordAutoResumedRunnerRestart(store, sessionId, event);
+        void persistRestart.catch((error) =>
+          recordAutoResumeBackgroundError(store, 'session.runner_restart_persist_failed', error, { sessionId, reason: event.reason }).catch(
+            () => undefined,
+          ),
+        );
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -337,6 +349,16 @@ async function autoStartSingleProjectSession(
       onExit: (exitCode) => {
         void markAutoResumedExited(store, sessionId, exitCode).catch((error) =>
           recordAutoResumeBackgroundError(store, 'session.exit_persist_failed', error, { sessionId, exitCode }).catch(() => undefined),
+        );
+      },
+      onRestart: (event) => {
+        const persistRestart = hooks.onRestart
+          ? hooks.onRestart(sessionId, event)
+          : recordAutoResumedRunnerRestart(store, sessionId, event);
+        void persistRestart.catch((error) =>
+          recordAutoResumeBackgroundError(store, 'session.runner_restart_persist_failed', error, { sessionId, reason: event.reason }).catch(
+            () => undefined,
+          ),
         );
       },
     });
@@ -452,6 +474,14 @@ async function markAutoResumedExited(store: FileStateStore, sessionId: string, e
       currentSessionId: undefined,
     });
   }
+}
+
+async function recordAutoResumedRunnerRestart(store: FileStateStore, sessionId: string, event: CodexRestartEvent): Promise<void> {
+  await store.appendEvent({
+    type: 'session.runner_restarted',
+    at: new Date().toISOString(),
+    data: { sessionId, reason: event.reason },
+  });
 }
 
 async function recordAutoResumeBackgroundError(store: FileStateStore, type: string, error: unknown, data: Record<string, unknown>): Promise<void> {

@@ -1781,6 +1781,40 @@ describe('SessionManager', () => {
     }
   });
 
+  it('resubmits the active pending prompt after Codex CLI auto-update restarts the runner', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const runner = new FakeCodexRunner();
+    const notifier = { sendText: vi.fn().mockResolvedValue(undefined) };
+    const observationStore = new FakeCodexObservationStore();
+    const manager = new SessionManager(sampleConfig(root), store, runner, {
+      notifier,
+      codexObservationStore: observationStore,
+      sendConfirmation: {
+        initialWaitMs: 0,
+        retryWaitMs: 0,
+        pollIntervalMs: 1,
+        sleep: async () => undefined,
+      },
+    });
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: '/new repo' });
+    const sessionId = (await store.getChat('oc_1'))!.currentSessionId!;
+    await store.updateSession(sessionId, (latest) => ({
+      ...latest,
+      codexSessionId: '019efe0d-42d0-7a32-acd8-7e0ee7d73d9b',
+    }));
+
+    await manager.handleText({ chatId: 'oc_1', chatType: 'group', userId: 'ou_1', text: 'hello after update' });
+    expect(runner.sentMessages).toEqual(['hello after update', '']);
+
+    const onRestart = (runner.starts[0] as any).onRestart;
+    expect(typeof onRestart).toBe('function');
+    await onRestart({ reason: 'codex_cli_update' });
+
+    expect(runner.sentMessages).toEqual(['hello after update', '', 'hello after update']);
+  });
+
   it('preserves blank lines in observation final answers', async () => {
     try {
       const { notifier } = await completeFromObservation({
