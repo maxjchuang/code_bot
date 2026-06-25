@@ -2,6 +2,7 @@ import { cwd } from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config/loadConfig.js';
 import { FileStateStore } from './state/FileStateStore.js';
+import { initializeProjectCodexHome } from './codex/CodexHome.js';
 import { PtyCodexRunner } from './codex/CodexRunner.js';
 import { createApp, recoverStartupState } from './app/createApp.js';
 import { LarkLongConnectionGateway, type FeishuGateway, type FeishuIncomingMessage } from './feishu/FeishuGateway.js';
@@ -16,12 +17,13 @@ export interface BootstrapDeps {
   projectRoot?: string;
   loadConfig?: (projectRoot: string) => Promise<BotConfig>;
   createStore?: (projectRoot: string) => FileStateStoreType;
-  createCodexRunner?: (config: BotConfig['codex']) => CodexRunner;
+  createCodexRunner?: (config: BotConfig['codex'] & { codexHome?: string }) => CodexRunner;
   createApp?: (args: {
     projectRoot: string;
     config: BotConfig;
     store: FileStateStoreType;
     codexRunner: CodexRunner;
+    codexHome?: string;
     notifier?: FeishuGateway;
   }) => {
     sessionManager: SessionManager;
@@ -54,10 +56,17 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
   const config = await loadConfigFn(projectRoot);
   const logger = createAppLogger({ level: config.logLevel, sink: deps.logger ?? console });
   const store = createStoreFn(projectRoot);
+  const codexHomeInit = await initializeProjectCodexHome({ projectRoot });
+  logger.info('startup.codex_home_ready', {
+    codexHome: codexHomeInit.codexHome,
+    configToml: codexHomeInit.configToml,
+    copiedFrom: codexHomeInit.copiedFrom,
+  });
   const codexRunner =
-    createCodexRunnerFn?.(config.codex) ??
+    createCodexRunnerFn?.({ ...config.codex, codexHome: codexHomeInit.codexHome }) ??
     new PtyCodexRunner({
       ...config.codex,
+      codexHome: codexHomeInit.codexHome,
       terminal: {
         cols: config.output.terminalSnapshot.cols,
         rows: config.output.terminalSnapshot.rows,
@@ -68,7 +77,7 @@ export async function bootstrap(deps: BootstrapDeps = {}): Promise<void> {
     recordEvent: (event) => store.appendEvent(event),
     recordError: (entry) => store.appendErrorLog(entry),
   });
-  const app = createAppFn({ projectRoot, config, store, codexRunner, notifier: gateway });
+  const app = createAppFn({ projectRoot, config, store, codexRunner, codexHome: codexHomeInit.codexHome, notifier: gateway });
   const health = await app.healthCheck();
   if (!health.ok) {
     logger.error('startup.health_check_failed', { reason: health.reason });
