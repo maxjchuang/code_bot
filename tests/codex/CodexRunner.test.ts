@@ -8,7 +8,7 @@ const CODEX_TUI_KEYMAP_ARGS = [
   '-c',
   'disable_paste_burst=true',
   '-c',
-  'tui.keymap.composer.submit="ctrl-x"',
+  'tui.keymap.global.submit="ctrl-x"',
   '-c',
   'tui.keymap.editor.insert_newline=["ctrl-j","shift-enter","alt-enter"]',
 ];
@@ -136,6 +136,25 @@ describe('PtyCodexRunner', () => {
     fake.emitExit(7);
     expect(onExit).toHaveBeenCalledWith(7);
     await expect(runner.send('sess-1', 'ignored')).rejects.toThrow('Codex session is not running: sess-1');
+  });
+
+  it('binds ctrl-x to the Codex global submit action', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn } as any);
+
+    await runner.start({
+      sessionId: 'sess-submit-keymap',
+      cwd: '/tmp/project',
+      args: [],
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [, args] = spawn.mock.calls[0] as unknown as [string, string[]];
+    expect(args).toContain('tui.keymap.global.submit="ctrl-x"');
+    expect(args).not.toContain('tui.keymap.composer.submit="ctrl-x"');
   });
 
   it('uses configured terminal dimensions when spawning Codex', async () => {
@@ -361,6 +380,7 @@ describe('PtyCodexRunner', () => {
       onRestart,
     });
 
+    factory.terms[0].emitData('Update available! 0.142.0 -> 0.142.1\nUpdate now\nPress enter to continue');
     factory.terms[0].emitData('Update ran successfully! Please restart Codex.');
     expect(factory.terms[0].kill).toHaveBeenCalledTimes(1);
 
@@ -386,6 +406,28 @@ describe('PtyCodexRunner', () => {
     factory.terms[1].emitData('resumed after update');
     factory.terms[1].emitExit(0);
     expect(onExit).toHaveBeenCalledWith(0);
+  });
+
+  it('does not restart when resumed transcript contains stale update success text', async () => {
+    const factory = createFakeTermFactory();
+    const runner = new PtyCodexRunner({ command: 'codex', defaultArgs: [] }, { spawn: factory.spawn } as any);
+    const onRestart = vi.fn();
+
+    await runner.start({
+      sessionId: 'sess-stale-update-text',
+      cwd: '/tmp/project',
+      args: [],
+      mode: { kind: 'resume', target: '019e7f20-a667-7632-a808-c9595d77116e' },
+      onOutput: vi.fn(),
+      onExit: vi.fn(),
+      onRestart,
+    });
+
+    factory.terms[0].emitData('Previous conversation said: Update ran successfully! Please restart Codex.');
+
+    expect(factory.terms[0].kill).not.toHaveBeenCalled();
+    expect(onRestart).not.toHaveBeenCalled();
+    expect(factory.spawn).toHaveBeenCalledTimes(1);
   });
 
   it('submits prompts by writing the configured control-key submit sequence after a short delay', async () => {

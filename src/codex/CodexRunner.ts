@@ -12,7 +12,7 @@ const CODEX_TUI_KEYMAP_ARGS = [
   '-c',
   'disable_paste_burst=true',
   '-c',
-  'tui.keymap.composer.submit="ctrl-x"',
+  'tui.keymap.global.submit="ctrl-x"',
   '-c',
   'tui.keymap.editor.insert_newline=["ctrl-j","shift-enter","alt-enter"]',
 ];
@@ -158,7 +158,7 @@ export class PtyCodexRunner implements CodexRunner {
       entry.updatePromptSubmitted = true;
       entry.term?.write(CODEX_UPDATE_ENTER_SEQUENCE);
     }
-    if (!entry.restartAfterUpdate && isCodexUpdateSuccess(entry.updateBuffer)) {
+    if (!entry.restartAfterUpdate && entry.updatePromptSubmitted && isCodexUpdateSuccess(entry.updateBuffer)) {
       entry.restartAfterUpdate = true;
       entry.term?.kill();
     }
