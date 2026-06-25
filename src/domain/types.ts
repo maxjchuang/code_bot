@@ -42,6 +42,14 @@ export interface UpgradeConfig {
   branch: string;
 }
 
+export interface CodexHooksConfig {
+  enabled: boolean;
+  autoRepair: boolean;
+  socketPath: string;
+  permissionTimeoutMs: number;
+  adminUsers: string[];
+}
+
 export interface TerminalSnapshotConfig {
   cols: number;
   rows: number;
@@ -79,6 +87,7 @@ export interface BotConfig {
   };
   notifications: NotificationConfig;
   upgrade: UpgradeConfig;
+  codexHooks: CodexHooksConfig;
 }
 
 export interface ChatContext {
@@ -133,6 +142,7 @@ export interface SessionRecord {
   firstUserMessagePreview?: string;
   stopRequested?: boolean;
   codexSessionId?: string;
+  codexHookSessionId?: string;
   resumedFromSessionId?: string;
   resumeSource?: 'code_bot' | 'codex';
   codexStatus?: CachedCodexStatus;
@@ -150,6 +160,12 @@ export interface ApprovalRecord {
   expiresAt: string;
   resolvedBy?: string;
   resolvedAt?: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  hookRequestId?: string;
+  projectId?: string;
+  resolution?: 'allow' | 'deny';
+  failureReason?: string;
 }
 
 export interface InboundMessageReceipt {

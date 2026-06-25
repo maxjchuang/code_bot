@@ -142,6 +142,51 @@ describe('loadConfig', () => {
     });
   });
 
+  it('defaults codex hook config to disabled with safe defaults', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig());
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      codexHooks: {
+        enabled: false,
+        autoRepair: false,
+        socketPath: '.code-bot/codex-hooks.sock',
+        permissionTimeoutMs: 300000,
+        adminUsers: [],
+      },
+    });
+  });
+
+  it('loads explicit codex hook config', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({
+      codexHooks: {
+        enabled: true,
+        autoRepair: true,
+        socketPath: '/tmp/code-bot-hooks.sock',
+        permissionTimeoutMs: 1000,
+        adminUsers: ['ou_admin_1'],
+      },
+    }));
+
+    await expect(loadConfig(root)).resolves.toMatchObject({
+      codexHooks: {
+        enabled: true,
+        autoRepair: true,
+        socketPath: '/tmp/code-bot-hooks.sock',
+        permissionTimeoutMs: 1000,
+        adminUsers: ['ou_admin_1'],
+      },
+    });
+  });
+
+  it('rejects malformed codex hook config values', async () => {
+    const root = await createTmpDir();
+    await writeConfig(root, validConfig({ codexHooks: { permissionTimeoutMs: 0 } }));
+
+    await expect(loadConfig(root)).rejects.toThrow('Invalid config field: codexHooks.permissionTimeoutMs');
+  });
+
   it('loads explicit upgrade config', async () => {
     const root = await createTmpDir();
     await writeConfig(root, validConfig({

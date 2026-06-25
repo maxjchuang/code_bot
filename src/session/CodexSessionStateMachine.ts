@@ -39,6 +39,36 @@ function reduceSession(session: SessionRecord, event: CodexSessionEvent): Sessio
       };
     case 'runner.output_received':
       return session.phase ? session : { ...session, phase: 'processing' };
+    case 'hook.session_started':
+      return {
+        ...session,
+        codexHookSessionId: event.hookSessionId ?? session.codexHookSessionId,
+      };
+    case 'hook.user_prompt_submitted':
+      return {
+        ...session,
+        phase: 'processing',
+        codexHookSessionId: event.hookSessionId ?? session.codexHookSessionId,
+      };
+    case 'hook.stop':
+      return {
+        ...session,
+        status: 'running',
+        phase: 'waiting_for_input',
+        codexHookSessionId: event.hookSessionId ?? session.codexHookSessionId,
+      };
+    case 'hook.permission_requested':
+      return {
+        ...session,
+        phase: 'waiting_for_approval',
+      };
+    case 'approval.approved':
+    case 'approval.rejected':
+    case 'approval.expired':
+      return {
+        ...session,
+        phase: 'processing',
+      };
     case 'observation.task_completed':
       return {
         ...session,

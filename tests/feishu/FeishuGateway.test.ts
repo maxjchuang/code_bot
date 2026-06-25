@@ -1284,6 +1284,47 @@ describe('LarkLongConnectionGateway', () => {
     ]);
   });
 
+  it('parses approval_decision card action values', async () => {
+    const harness = createGatewayHarness();
+    const onCardAction = vi.fn(async () => ({ text: 'approval handled' }));
+
+    await harness.gateway.start(async () => ({ text: 'unused' }), onCardAction);
+
+    await harness.getCardActionHandler()({
+      event: {
+        context: {
+          open_chat_id: 'oc_1',
+          open_message_id: 'om_card_1',
+        },
+        operator: {
+          open_id: 'ou_1',
+        },
+        action: {
+          value: {
+            kind: 'approval_decision',
+            chatId: 'oc_1',
+            chatType: 'group',
+            approvalId: 'appr_permission_1',
+            decision: 'approve',
+          },
+        },
+      },
+    });
+
+    expect(onCardAction).toHaveBeenCalledTimes(1);
+    expect(onCardAction).toHaveBeenCalledWith({
+      chatId: 'oc_1',
+      chatType: 'group',
+      userId: 'ou_1',
+      messageId: 'om_card_1',
+      action: {
+        kind: 'approval_decision',
+        approvalId: 'appr_permission_1',
+        decision: 'approve',
+      },
+    });
+  });
+
   it('routes top-level SDK card action payloads to onCardAction', async () => {
     const harness = createGatewayHarness();
     const onCardAction = vi.fn(async () => ({ text: 'project updated' }));

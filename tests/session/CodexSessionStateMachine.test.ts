@@ -63,6 +63,135 @@ describe('applyCodexSessionEvent', () => {
     expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:02.000Z');
   });
 
+  it('records hook session id when a Codex hook session starts', () => {
+    const session = baseSession({ phase: 'starting' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'hook.session_started',
+      sessionId: 'sess_test',
+      hookSessionId: 'codex_hook_1',
+      cwd: '/repo',
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    expect(updated.codexHookSessionId).toBe('codex_hook_1');
+    expect(updated.phase).toBe('starting');
+  });
+
+  it('marks a session processing when a user prompt hook is submitted', () => {
+    const session = baseSession({ phase: 'waiting_for_input' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'hook.user_prompt_submitted',
+      sessionId: 'sess_test',
+      hookSessionId: 'codex_hook_1',
+      cwd: '/repo',
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.codexHookSessionId).toBe('codex_hook_1');
+  });
+
+  it('marks a session ready for input when a stop hook is received', () => {
+    const session = baseSession({ phase: 'processing' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'hook.stop',
+      sessionId: 'sess_test',
+      hookSessionId: 'codex_hook_1',
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    expect(updated.status).toBe('running');
+    expect(updated.phase).toBe('waiting_for_input');
+    expect(updated.codexHookSessionId).toBe('codex_hook_1');
+  });
+
+  it('allows task completion after a normal stop hook', () => {
+    const session = baseSession({ phase: 'processing' });
+    const stopped = applyCodexSessionEvent(session, {
+      type: 'hook.stop',
+      sessionId: 'sess_test',
+      hookSessionId: 'codex_hook_1',
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    const completed = applyCodexSessionEvent(stopped, {
+      type: 'observation.task_completed',
+      sessionId: 'sess_test',
+      codexSessionId: 'codex_1',
+      finalAnswer: 'done',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(completed.phase).toBe('completed');
+    expect(completed.lastSummary).toBe('done');
+  });
+
+  it('moves to waiting_for_approval when a permission hook is requested', () => {
+    const session = baseSession({ phase: 'processing' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'hook.permission_requested',
+      sessionId: 'sess_test',
+      hookRequestId: 'hook_req_1',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+      at: '2026-06-24T00:00:02.000Z',
+    });
+
+    expect(updated.phase).toBe('waiting_for_approval');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:02.000Z');
+  });
+
+  it('moves back to processing when approval.approved is received', () => {
+    const session = baseSession({ phase: 'waiting_for_approval' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'approval.approved',
+      sessionId: 'sess_test',
+      approvalId: 'appr_approved',
+      hookRequestId: 'hook_req_1',
+      userId: 'ou_1',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:03.000Z');
+  });
+
+  it('moves back to processing when approval.rejected is received', () => {
+    const session = baseSession({ phase: 'waiting_for_approval' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'approval.rejected',
+      sessionId: 'sess_test',
+      approvalId: 'appr_rejected',
+      hookRequestId: 'hook_req_1',
+      userId: 'ou_1',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:03.000Z');
+  });
+
+  it('moves back to processing when approval.expired is received', () => {
+    const session = baseSession({ phase: 'waiting_for_approval' });
+
+    const updated = applyCodexSessionEvent(session, {
+      type: 'approval.expired',
+      sessionId: 'sess_test',
+      approvalId: 'appr_expired',
+      hookRequestId: 'hook_req_1',
+      at: '2026-06-24T00:00:03.000Z',
+    });
+
+    expect(updated.phase).toBe('processing');
+    expect(updated.lastPhaseChangedAt).toBe('2026-06-24T00:00:03.000Z');
+  });
+
   it('preserves an existing firstUserMessagePreview when a user message is submitted', () => {
     const session = baseSession({
       phase: 'waiting_for_input',

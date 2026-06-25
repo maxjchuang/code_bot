@@ -10,6 +10,10 @@ export interface ApprovalRequest {
   action?: 'stop_session';
   riskSummary: string;
   ttlMs: number;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  hookRequestId?: string;
+  projectId?: string;
 }
 
 export class ApprovalManager {
@@ -36,6 +40,7 @@ export class ApprovalManager {
         const expired: ApprovalRecord = {
           ...approval,
           status: 'expired',
+          failureReason: 'expired',
         };
         await this.store.saveApproval(expired);
         await this.store.appendEvent({ type: 'approval.expired', at: now.toISOString(), data: { approvalId, userId } });
@@ -48,6 +53,7 @@ export class ApprovalManager {
         status,
         resolvedBy: userId,
         resolvedAt,
+        resolution: status === 'approved' ? 'allow' : 'deny',
       };
       await this.store.saveApproval(resolved);
       await this.store.appendEvent({ type: `approval.${status}`, at: resolvedAt, data: { approvalId, userId } });
@@ -84,6 +90,10 @@ export class ApprovalManager {
       riskSummary: request.riskSummary,
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + request.ttlMs).toISOString(),
+      toolName: request.toolName,
+      toolInput: request.toolInput,
+      hookRequestId: request.hookRequestId,
+      projectId: request.projectId,
     };
     await this.store.saveApproval(approval);
     await this.store.appendEvent({ type: 'approval.created', at: approval.createdAt, data: { approvalId: approval.id, sessionId: approval.sessionId } });
@@ -91,12 +101,14 @@ export class ApprovalManager {
   }
 
   buildTextFallback(approval: ApprovalRecord): string {
-    return [
-      `Approval required: ${approval.riskSummary}`,
+    const lines = [
+      `Approval required: ${approval.toolName ?? approval.riskSummary}`,
+      approval.projectId ? `Project: ${approval.projectId}` : undefined,
       `Session: ${approval.sessionId}`,
       `Expires: ${approval.expiresAt}`,
       `Approve: /approve ${approval.id}`,
       `Reject: /reject ${approval.id}`,
-    ].join('\n');
+    ];
+    return lines.filter((line): line is string => Boolean(line)).join('\n');
   }
 }

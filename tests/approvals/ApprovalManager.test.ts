@@ -141,6 +141,118 @@ describe('ApprovalManager', () => {
     const stored = await store.getApproval(approval.id);
     expect(stored?.status).toBe('expired');
   });
+
+  it('creates permission approvals with tool and hook metadata', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new ApprovalManager(store, () => new Date('2026-06-24T10:00:00.000Z'));
+
+    const approval = await manager.requestApproval({
+      sessionId: 'sess_permission',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      riskSummary: 'Run shell command',
+      ttlMs: 60000,
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+      hookRequestId: 'hook_req_1',
+      projectId: 'repo',
+    });
+
+    expect(approval).toMatchObject({
+      sessionId: 'sess_permission',
+      toolName: 'shell',
+      toolInput: { command: 'npm install' },
+      hookRequestId: 'hook_req_1',
+      projectId: 'repo',
+      status: 'pending',
+    });
+    await expect(store.getApproval(approval.id)).resolves.toMatchObject({
+      toolName: 'shell',
+      hookRequestId: 'hook_req_1',
+      projectId: 'repo',
+    });
+  });
+
+  it('builds text fallback with tool name and project', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new ApprovalManager(store, () => new Date('2026-06-24T10:00:00.000Z'));
+
+    const approval = await manager.requestApproval({
+      sessionId: 'sess_permission',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      riskSummary: 'Run shell command',
+      ttlMs: 60000,
+      toolName: 'shell',
+      hookRequestId: 'hook_req_1',
+      projectId: 'repo',
+    });
+
+    expect(manager.buildTextFallback(approval)).toBe(
+      [
+        'Approval required: shell',
+        'Project: repo',
+        'Session: sess_permission',
+        'Expires: 2026-06-24T10:01:00.000Z',
+        `Approve: /approve ${approval.id}`,
+        `Reject: /reject ${approval.id}`,
+      ].join('\n'),
+    );
+  });
+
+  it('resolves a permission approval once and records resolution', async () => {
+    const root = await createTmpDir();
+    const store = new FileStateStore(root);
+    const manager = new ApprovalManager(store, () => new Date('2026-06-24T10:00:00.000Z'));
+    const approval = await manager.requestApproval({
+      sessionId: 'sess_permission',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      riskSummary: 'Run shell command',
+      ttlMs: 60000,
+      toolName: 'shell',
+      hookRequestId: 'hook_req_1',
+      projectId: 'repo',
+    });
+
+    const resolved = await manager.resolve(approval.id, 'approved', 'ou_1');
+
+    expect(resolved).toMatchObject({
+      status: 'approved',
+      resolution: 'allow',
+      resolvedBy: 'ou_1',
+      hookRequestId: 'hook_req_1',
+    });
+    await expect(manager.resolve(approval.id, 'rejected', 'ou_2')).rejects.toThrow(`Approval is not pending: ${approval.id}`);
+  });
+
+  it('expires permission approval and preserves hook request id', async () => {
+    let now = +new Date('2026-06-24T10:00:00.000Z');
+    const clock = () => new Date(now);
+    const root = await createTmpDir();
+    const store = new FileStateStore(root, clock);
+    const manager = new ApprovalManager(store, clock);
+    const approval = await manager.requestApproval({
+      sessionId: 'sess_permission',
+      chatId: 'oc_1',
+      requestedBy: 'hook',
+      riskSummary: 'Run shell command',
+      ttlMs: 1000,
+      toolName: 'shell',
+      hookRequestId: 'hook_req_1',
+      projectId: 'repo',
+    });
+    now += 2000;
+
+    await expect(manager.resolve(approval.id, 'approved', 'ou_1')).rejects.toThrow(`Approval expired: ${approval.id}`);
+
+    await expect(store.getApproval(approval.id)).resolves.toMatchObject({
+      status: 'expired',
+      hookRequestId: 'hook_req_1',
+    });
+  });
 });
 
 async function readEventLog(root: string): Promise<string> {

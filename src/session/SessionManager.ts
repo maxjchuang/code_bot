@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { BotConfig, ChatContext, ChatType, SavedModelSelection, SessionRecord } from '../domain/types.js';
+import type { ApprovalRecord, BotConfig, ChatContext, ChatType, SavedModelSelection, SessionRecord } from '../domain/types.js';
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { CODEX_TUI_SUBMIT_SEQUENCE, createCodexSessionId, type CodexRunner } from '../codex/CodexRunner.js';
@@ -23,14 +23,23 @@ import { createAppLogger, type AppLogger, type LogLevel } from '../logging/AppLo
 import { formatStatusMessage } from '../status/StatusMessageFormatter.js';
 import { createCodexStatusService, type CodexStatusLookupResult } from '../status/CodexStatusService.js';
 import { readCodexModelCatalog, type CodexModelCatalog, type CodexModelInfo } from '../models/CodexModelCatalog.js';
-import type { FeishuIncomingCardAction, ModelSelectCardAction, ProjectSelectCardAction } from '../feishu/FeishuCardActions.js';
+import type {
+  ApprovalDecisionCardAction,
+  FeishuIncomingCardAction,
+  ModelSelectCardAction,
+  ProjectSelectCardAction,
+} from '../feishu/FeishuCardActions.js';
 import { hasRenderableCurrentScreenBody, renderCurrentScreenCard } from '../feishu/CurrentScreenCard.js';
 import { renderModelSelectorCard } from '../feishu/ModelSelectorCard.js';
 import { renderProjectSelectorCard } from '../feishu/ProjectSelectorCard.js';
 import { renderResumeSessionCard } from '../feishu/ResumeSessionCard.js';
+import { renderPermissionApprovalCard } from '../feishu/PermissionApprovalCard.js';
 import type { FeishuReactionType, FeishuReplyTarget } from '../feishu/FeishuGateway.js';
 import { applyCodexSessionEvent } from './CodexSessionStateMachine.js';
 import { UpgradeManager, type UpgradeResult } from '../upgrade/UpgradeManager.js';
+import { CodexHookInstaller } from '../hooks/CodexHookInstaller.js';
+import type { CodexHookService } from '../hooks/CodexHookService.js';
+import type { CodexHookStatusReport, CodexPermissionDecision, CodexPermissionRequest } from '../hooks/CodexHookTypes.js';
 
 export interface IncomingBotText {
   chatId: string;
@@ -95,6 +104,8 @@ export interface SessionManagerDeps {
   };
   modelCatalog?: ModelCatalogReader;
   upgradeManager?: Pick<UpgradeManager, 'upgrade' | 'restart'>;
+  codexHookInstaller?: Pick<CodexHookInstaller, 'status' | 'install' | 'uninstall'>;
+  codexHookService?: Pick<CodexHookService, 'isRunning'> & Partial<Pick<CodexHookService, 'resolvePermissionRequest'>>;
 }
 
 interface ModelCatalogView {
@@ -203,6 +214,109 @@ export class SessionManager {
     return this.withChatQueue(input.chatId, () => this.handleCardActionQueued(input));
   }
 
+  async handleHookPermissionRequest(input: {
+    sessionId: string;
+    hookRequestId: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+  }): Promise<void> {
+    const session = await this.store.getSession(input.sessionId);
+    if (!session) {
+      await this.store.appendEvent({
+        type: 'approval.permission_session_missing',
+        at: new Date().toISOString(),
+        data: { sessionId: input.sessionId, hookRequestId: input.hookRequestId, toolName: input.toolName },
+      });
+      return;
+    }
+
+    const requestedAt = new Date().toISOString();
+    await this.store.saveSession(
+      applyCodexSessionEvent(session, {
+        type: 'hook.permission_requested',
+        sessionId: session.id,
+        hookRequestId: input.hookRequestId,
+        toolName: input.toolName,
+        toolInput: input.toolInput,
+        at: requestedAt,
+      }),
+    );
+
+    const approval = await this.approvalManager.requestApproval({
+      sessionId: session.id,
+      chatId: session.chatId,
+      requestedBy: 'hook',
+      riskSummary: `Permission requested for ${input.toolName}`,
+      ttlMs: this.config.codexHooks.permissionTimeoutMs,
+      toolName: input.toolName,
+      toolInput: input.toolInput,
+      hookRequestId: input.hookRequestId,
+      projectId: session.projectId,
+    });
+    const fallbackText = this.approvalManager.buildTextFallback(approval);
+    if (!this.deps.notifier) {
+      return;
+    }
+    const chat = await this.store.getChat(session.chatId);
+    const chatType = chat?.chatType ?? 'group';
+    const rendered = renderPermissionApprovalCard({
+      chatId: session.chatId,
+      chatType,
+      approval,
+      timeZone: this.config.ui.timeZone,
+    });
+    if (this.deps.notifier.sendRenderedMessage) {
+      await this.deps.notifier.sendRenderedMessage(session.chatId, rendered);
+      return;
+    }
+    await this.deps.notifier.sendText(session.chatId, fallbackText);
+  }
+
+  async handleHookPermissionTimeout(input: CodexPermissionRequest): Promise<void> {
+    const session = await this.store.getSession(input.sessionId);
+    if (!session) {
+      await this.store.appendEvent({
+        type: 'approval.permission_timeout_session_missing',
+        at: new Date().toISOString(),
+        data: { sessionId: input.sessionId, hookRequestId: input.hookRequestId, toolName: input.toolName },
+      });
+      return;
+    }
+
+    const approval = (await this.store.listPendingApprovalsByChat(session.chatId)).find(
+      (candidate) => candidate.hookRequestId === input.hookRequestId,
+    );
+    if (!approval) {
+      await this.store.appendEvent({
+        type: 'approval.permission_timeout_without_pending_approval',
+        at: new Date().toISOString(),
+        data: { sessionId: session.id, hookRequestId: input.hookRequestId, toolName: input.toolName },
+      });
+      return;
+    }
+
+    const expiredAt = new Date().toISOString();
+    await this.store.saveApproval({
+      ...approval,
+      status: 'expired',
+      failureReason: 'permission_timeout',
+    });
+    await this.store.saveSession(
+      applyCodexSessionEvent(session, {
+        type: 'approval.expired',
+        sessionId: session.id,
+        approvalId: approval.id,
+        hookRequestId: approval.hookRequestId,
+        at: expiredAt,
+      }),
+    );
+    await this.store.appendEvent({
+      type: 'approval.expired',
+      at: expiredAt,
+      data: { approvalId: approval.id, hookRequestId: input.hookRequestId, reason: 'permission_timeout' },
+    });
+  }
+
   private async handleTextQueued(input: IncomingBotText): Promise<BotTextResult> {
     if (!isAuthorizedMessage(this.config, input)) {
       return { reply: 'You are not allowed to control this bot.' };
@@ -251,6 +365,12 @@ export class SessionManager {
         return this.upgrade(input);
       case 'restart':
         return this.restart(input);
+      case 'hook-status':
+        return this.hookStatus();
+      case 'install-hooks':
+        return this.installHooks(input);
+      case 'uninstall-hooks':
+        return this.uninstallHooks(input);
       default:
         return { reply: `Unknown command: /${parsed.name}` };
     }
@@ -271,6 +391,8 @@ export class SessionManager {
         return this.selectProject(authorizedInput, input.action);
       case 'resume_select':
         return this.resumeSelectedSession(authorizedInput, input.action.sessionId);
+      case 'approval_decision':
+        return this.resolveApprovalDecision(input.chatId, input.action, input.userId);
       default:
         return { reply: `Unsupported card action: ${String((input.action as { kind?: unknown }).kind)}` };
     }
@@ -1415,15 +1537,75 @@ export class SessionManager {
     }
     try {
       const resolved = await this.approvalManager.resolve(approvalId, status, userId, chatId);
+      await this.applyApprovalResolution(resolved, userId);
       if (status === 'approved' && (resolved.action === 'stop_session' || resolved.riskSummary === `Stop session ${resolved.sessionId}`)) {
         return this.executeApprovedStop(resolved.sessionId, userId);
       }
       const action = status === 'approved' ? 'Approved' : 'Rejected';
       return { reply: `${action} approval ${resolved.id}.` };
     } catch (error) {
+      const expired = await this.handleExpiredPermissionApproval(approvalId, userId).catch(() => undefined);
+      if (expired) {
+        return expired;
+      }
       const message = error instanceof Error ? error.message : String(error);
       return { reply: message };
     }
+  }
+
+  private resolveApprovalDecision(chatId: string, action: ApprovalDecisionCardAction, userId: string): Promise<BotTextResult> {
+    return this.resolveApproval(chatId, action.approvalId, action.decision === 'approve' ? 'approved' : 'rejected', userId);
+  }
+
+  private async applyApprovalResolution(approval: ApprovalRecord, userId: string): Promise<void> {
+    const session = await this.store.getSession(approval.sessionId);
+    if (session) {
+      await this.store.saveSession(
+        applyCodexSessionEvent(session, {
+          type: approval.status === 'approved' ? 'approval.approved' : 'approval.rejected',
+          sessionId: approval.sessionId,
+          approvalId: approval.id,
+          hookRequestId: approval.hookRequestId,
+          userId,
+          at: approval.resolvedAt ?? new Date().toISOString(),
+        }),
+      );
+    }
+
+    if (!approval.hookRequestId) {
+      return;
+    }
+    const decision = approval.status === 'approved' ? { decision: 'allow' as const } : { decision: 'deny' as const, reason: `Rejected by ${userId}` };
+    this.resolveHookPermission(approval.hookRequestId, decision);
+  }
+
+  private async handleExpiredPermissionApproval(approvalId: string, userId: string): Promise<BotTextResult | undefined> {
+    const approval = await this.store.getApproval(approvalId);
+    if (!approval || approval.status !== 'expired' || !approval.hookRequestId) {
+      return undefined;
+    }
+    const session = await this.store.getSession(approval.sessionId);
+    if (session) {
+      await this.store.saveSession(
+        applyCodexSessionEvent(session, {
+          type: 'approval.expired',
+          sessionId: approval.sessionId,
+          approvalId: approval.id,
+          hookRequestId: approval.hookRequestId,
+          at: new Date().toISOString(),
+        }),
+      );
+    }
+    await this.store.appendEvent({
+      type: 'approval.late_decision_ignored',
+      at: new Date().toISOString(),
+      data: { approvalId: approval.id, hookRequestId: approval.hookRequestId, userId },
+    });
+    return { reply: `Approval expired: ${approval.id}. Codex will show its native permission prompt.` };
+  }
+
+  private resolveHookPermission(hookRequestId: string, decision: Exclude<CodexPermissionDecision, { decision: 'timeout' }>): boolean {
+    return this.deps.codexHookService?.resolvePermissionRequest?.(hookRequestId, decision) ?? false;
   }
 
   private async executeApprovedStop(sessionId: string, userId: string): Promise<BotTextResult> {
@@ -2406,6 +2588,58 @@ export class SessionManager {
     return this.deps.upgradeManager ?? new UpgradeManager({ projectRoot: process.cwd(), config: this.config.upgrade });
   }
 
+  private getCodexHookInstaller(): Pick<CodexHookInstaller, 'status' | 'install' | 'uninstall'> {
+    return (
+      this.deps.codexHookInstaller ??
+      new CodexHookInstaller({
+        codexHome: this.defaultCodexHome(),
+        projectRoot: process.cwd(),
+        socketPath: resolveHookSocketPath(process.cwd(), this.config.codexHooks.socketPath),
+      })
+    );
+  }
+
+  private async hookStatus(): Promise<BotTextResult> {
+    const status = await this.getCodexHookInstaller().status();
+    return { reply: formatHookStatus(this.withListenerStatus(status)) };
+  }
+
+  private async installHooks(input: IncomingBotText): Promise<BotTextResult> {
+    const adminCheck = this.requireHookAdmin(input.userId, '/install-hooks');
+    if (!adminCheck.ok) {
+      return { reply: adminCheck.reply };
+    }
+    const result = await this.getCodexHookInstaller().install();
+    return { reply: `Installed Codex hooks.\n${formatHookStatus(this.withListenerStatus(result.status))}` };
+  }
+
+  private async uninstallHooks(input: IncomingBotText): Promise<BotTextResult> {
+    const adminCheck = this.requireHookAdmin(input.userId, '/uninstall-hooks');
+    if (!adminCheck.ok) {
+      return { reply: adminCheck.reply };
+    }
+    const result = await this.getCodexHookInstaller().uninstall();
+    return { reply: `Uninstalled Codex hooks.\n${formatHookStatus(this.withListenerStatus(result.status))}` };
+  }
+
+  private withListenerStatus(status: CodexHookStatusReport): CodexHookStatusReport {
+    return {
+      ...status,
+      listenerRunning: this.deps.codexHookService?.isRunning() ?? status.listenerRunning ?? false,
+    };
+  }
+
+  private requireHookAdmin(userId: string, command: '/install-hooks' | '/uninstall-hooks'): { ok: true } | { ok: false; reply: string } {
+    const admins = this.config.codexHooks.adminUsers.length > 0 ? this.config.codexHooks.adminUsers : this.config.upgrade.adminUsers;
+    if (admins.length === 0) {
+      return { ok: false, reply: 'Hook management is unavailable: no hook admin users configured.' };
+    }
+    if (!admins.includes(userId)) {
+      return { ok: false, reply: `Only hook admins can run ${command}.` };
+    }
+    return { ok: true };
+  }
+
   private async upgrade(input: IncomingBotText): Promise<BotTextResult> {
     const result = await this.getUpgradeManager().upgrade({
       userId: input.userId,
@@ -2456,7 +2690,7 @@ export class SessionManager {
 
   private helpText(): string {
     const commands =
-      '/help\n/projects\n/use <project>\n/new [project]\n/resume [session] [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart';
+      '/help\n/projects\n/use <project>\n/new [project]\n/resume [session] [project]\n/send <text>\n/status\n/current\n/model [model] [reasoning]\n/tail [n]\n/rawtail [n]\n/stop\n/sessions\n/approve <id>\n/reject <id>\n/upgrade\n/restart\n/hook-status\n/install-hooks\n/uninstall-hooks';
     const resumeHelp = [
       'Resume: /resume opens a project-scoped selector card; /resume <session> [project] resumes directly.',
       '- session can be a code_bot session id from /sessions or a Codex native id',
@@ -2469,6 +2703,33 @@ export class SessionManager {
     ].join('\n');
     return `${commands}\n\n${resumeHelp}\n\n${restrictions}`;
   }
+}
+
+function formatHookStatus(status: CodexHookStatusReport): string {
+  const lines = [
+    'Codex hooks',
+    `Configured: ${yesNo(status.configured)}`,
+    `Listener running: ${yesNo(Boolean(status.listenerRunning))}`,
+    `config.toml feature enabled: ${yesNo(status.configFeatureEnabled)}`,
+    `hooks.json contains managed hooks: ${yesNo(status.hooksJsonContainsManagedHooks)}`,
+    `Manifest valid: ${yesNo(status.manifestValid)}`,
+    `Recommended next command: ${status.recommendedCommand}`,
+  ];
+  if (!status.hooksJsonValid) {
+    lines.push('hooks.json valid: no');
+  }
+  if (status.issues.length > 0) {
+    lines.push(`Issues: ${status.issues.join('; ')}`);
+  }
+  return lines.join('\n');
+}
+
+function yesNo(value: boolean): 'yes' | 'no' {
+  return value ? 'yes' : 'no';
+}
+
+function resolveHookSocketPath(projectRoot: string, socketPath: string): string {
+  return socketPath.startsWith('/') ? socketPath : `${projectRoot}/${socketPath}`;
 }
 
 function upgradeEventType(status: UpgradeResult['status']): 'upgrade.completed' | 'upgrade.failed' | 'upgrade.skipped' {

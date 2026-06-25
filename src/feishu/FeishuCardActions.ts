@@ -16,7 +16,13 @@ export interface ResumeSelectCardAction {
   sessionId: string;
 }
 
-export type FeishuCardActionPayload = ModelSelectCardAction | ProjectSelectCardAction | ResumeSelectCardAction;
+export interface ApprovalDecisionCardAction {
+  kind: 'approval_decision';
+  approvalId: string;
+  decision: 'approve' | 'reject';
+}
+
+export type FeishuCardActionPayload = ModelSelectCardAction | ProjectSelectCardAction | ResumeSelectCardAction | ApprovalDecisionCardAction;
 
 export interface FeishuIncomingCardAction {
   chatId: string;
@@ -75,6 +81,19 @@ export function parseCardActionValue(
     };
   }
 
+  if (value.kind === 'approval_decision') {
+    const approvalId = readString(form?.approvalId) ?? readString(value.approvalId);
+    const decision = readApprovalDecision(form?.decision) ?? readApprovalDecision(value.decision);
+    if (!approvalId || !decision) {
+      return undefined;
+    }
+    return {
+      chatId: value.chatId,
+      chatType,
+      action: { kind: 'approval_decision', approvalId, decision },
+    };
+  }
+
   return undefined;
 }
 
@@ -84,4 +103,8 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readApprovalDecision(value: unknown): 'approve' | 'reject' | undefined {
+  return value === 'approve' || value === 'reject' ? value : undefined;
 }

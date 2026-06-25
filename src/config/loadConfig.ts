@@ -122,6 +122,7 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
   const ui = optionalRecord(record.ui, 'ui');
   const notifications = optionalRecord(record.notifications, 'notifications');
   const upgrade = optionalRecord(record.upgrade, 'upgrade');
+  const codexHooks = optionalRecord(record.codexHooks, 'codexHooks');
   if (!feishu || !output || !codex || !Array.isArray(record.projects)) {
     throw new Error('Invalid config structure');
   }
@@ -171,6 +172,13 @@ export async function loadConfig(projectRoot: string): Promise<BotConfig> {
       failureTailChars: optionalPositiveNumber(notifications.failureTailChars, 2000, 'notifications.failureTailChars'),
     },
     upgrade: normalizeUpgrade(upgrade),
+    codexHooks: {
+      enabled: optionalBoolean(codexHooks.enabled, false, 'codexHooks.enabled'),
+      autoRepair: optionalBoolean(codexHooks.autoRepair, false, 'codexHooks.autoRepair'),
+      socketPath: optionalString(codexHooks.socketPath, '.code-bot/codex-hooks.sock', 'codexHooks.socketPath'),
+      permissionTimeoutMs: optionalPositiveNumber(codexHooks.permissionTimeoutMs, 300000, 'codexHooks.permissionTimeoutMs'),
+      adminUsers: optionalStringArray(codexHooks.adminUsers, 'codexHooks.adminUsers'),
+    },
   };
 }
 
