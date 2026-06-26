@@ -87,6 +87,8 @@ export class CodexHookInstaller {
       hooksJsonContainsManagedHooks,
       manifestValid,
       scriptInstalled,
+      codexHome: this.options.codexHome,
+      codexHomeSource: 'project',
       recommendedCommand: configured ? '/hook-status' : '/install-hooks',
       issues,
     };

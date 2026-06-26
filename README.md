@@ -134,6 +134,8 @@ npm run build
 pm2 start dist/index.js --name code-bot
 ```
 
+Codex state is isolated per checkout. The bot always starts Codex with `<projectRoot>/.code-bot/codex-home` and initializes that directory by copying only `$HOME/.codex/config.toml` when the local file is missing. This prevents multiple pm2 instances on the same machine from sharing `hooks.json` or hook scripts.
+
 The command refuses to run on a dirty worktree and uses fast-forward-only git updates.
 
 ## Build And Test

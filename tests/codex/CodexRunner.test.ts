@@ -138,6 +138,44 @@ describe('PtyCodexRunner', () => {
     await expect(runner.send('sess-1', 'ignored')).rejects.toThrow('Codex session is not running: sess-1');
   });
 
+  it('sets CODEX_HOME for spawned Codex processes when configured', async () => {
+    const fake = createFakeTerm();
+    const spawn = vi.fn(() => fake.term as any);
+    const originalPath = process.env.PATH;
+    process.env.PATH = '/usr/bin';
+    const runner = new PtyCodexRunner(
+      { command: 'codex', defaultArgs: [], codexHome: '/tmp/project/.code-bot/codex-home' },
+      { spawn } as any,
+    );
+
+    try {
+      await runner.start({
+        sessionId: 'sess-codex-home',
+        cwd: '/tmp/project',
+        args: [],
+        onOutput: vi.fn(),
+        onExit: vi.fn(),
+      });
+    } finally {
+      if (originalPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = originalPath;
+      }
+    }
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      expect.any(Array),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PATH: '/usr/bin',
+          CODEX_HOME: '/tmp/project/.code-bot/codex-home',
+        }),
+      }),
+    );
+  });
+
   it('binds ctrl-x to the Codex global submit action', async () => {
     const fake = createFakeTerm();
     const spawn = vi.fn(() => fake.term as any);

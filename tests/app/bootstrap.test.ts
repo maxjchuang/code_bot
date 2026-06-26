@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { bootstrap, isDirectEntrypoint } from '../../src/index.js';
 import { FileStateStore } from '../../src/state/FileStateStore.js';
@@ -105,6 +105,55 @@ describe('bootstrap', () => {
     if (error) {
       throw error;
     }
+  });
+
+  it('initializes project-local codex home and passes it to runner and app', async () => {
+    const root = await createTmpDir();
+    const defaultCodexHome = join(root, 'home/.codex');
+    await mkdir(defaultCodexHome, { recursive: true });
+    await writeFile(join(defaultCodexHome, 'config.toml'), 'model = "gpt-5.5"\n', 'utf8');
+    const originalHome = process.env.HOME;
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = join(root, 'home');
+    process.env.CODEX_HOME = '/tmp/shared-codex-home-that-must-be-ignored';
+    const createCodexRunner = vi.fn().mockReturnValue(new FakeCodexRunner());
+    const createApp = vi.fn().mockReturnValue({
+      sessionManager: { handleText: vi.fn(), handleCardAction: vi.fn() },
+      healthCheck: async () => ({ ok: true as const }),
+      recoverStartupState: async () => undefined,
+    });
+
+    try {
+      await bootstrap({
+        projectRoot: root,
+        loadConfig: async () => sampleConfig(root),
+        createCodexRunner,
+        createApp: createApp as any,
+        createGateway: () => ({
+          start: vi.fn().mockResolvedValue(undefined),
+          sendText: vi.fn(),
+          sendRenderedMessage: vi.fn(),
+          sendTextToTarget: vi.fn(),
+          sendRenderedMessageToTarget: vi.fn(),
+        }),
+      });
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+    }
+
+    const projectCodexHome = join(root, '.code-bot/codex-home');
+    await expect(readFile(join(projectCodexHome, 'config.toml'), 'utf8')).resolves.toBe('model = "gpt-5.5"\n');
+    expect(createCodexRunner).toHaveBeenCalledWith(expect.objectContaining({ codexHome: projectCodexHome }));
+    expect(createApp).toHaveBeenCalledWith(expect.objectContaining({ codexHome: projectCodexHome }));
   });
 
   it('records health check failure and still starts gateway', async () => {

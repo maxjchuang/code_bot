@@ -3,6 +3,7 @@ import type { ApprovalRecord, BotConfig, ChatContext, ChatType, SavedModelSelect
 import { ApprovalManager } from '../approvals/ApprovalManager.js';
 import { parseIncomingText } from '../commands/CommandRouter.js';
 import { CODEX_TUI_SUBMIT_SEQUENCE, createCodexSessionId, type CodexRestartEvent, type CodexRunner } from '../codex/CodexRunner.js';
+import { resolveProjectCodexHome } from '../codex/CodexHome.js';
 import { CodexSessionRegistry } from '../codex/CodexSessionRegistry.js';
 import { renderFeishuMessage, type BotMessage, type RenderedFeishuMessage } from '../feishu/FeishuMessageRenderer.js';
 import {
@@ -85,6 +86,7 @@ export interface SessionManagerDeps {
   logger?: Pick<typeof console, 'info' | 'error'>;
   logLevel?: LogLevel | string;
   notifier?: Notifier;
+  codexHome?: string;
   codexSessionRegistry?: CodexSessionDiscovery;
   codexSessionDiscovery?: {
     maxAttempts?: number;
@@ -183,6 +185,7 @@ export class SessionManager {
   private readonly liveStatusWaiters = new Map<string, Set<LiveStatusWaiter>>();
   private readonly outputObservationStates = new Map<string, OutputObservationState>();
   private readonly terminalObserver: CodexTerminalObserver;
+  private readonly codexHome: string;
 
   constructor(
     private readonly config: BotConfig,
@@ -190,13 +193,14 @@ export class SessionManager {
     private readonly runner: CodexRunner,
     private readonly deps: SessionManagerDeps = {},
   ) {
+    this.codexHome = deps.codexHome ?? resolveProjectCodexHome(process.cwd());
     this.approvalManager = new ApprovalManager(store);
     this.logger = createAppLogger({ level: deps.logLevel, sink: deps.logger ?? console });
     this.terminalObserver = new CodexTerminalObserver(this.config.output.terminalSnapshot);
     this.observationStore =
       deps.codexObservationStore ??
       new FileCodexObservationStore({
-        codexHome: process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`,
+        codexHome: this.codexHome,
       });
     this.codexStatusService = createCodexStatusService({
       fetchLiveStatusText: ({ sessionId, signal }) => this.fetchLiveCodexStatusText(sessionId, signal),
@@ -853,15 +857,11 @@ export class SessionManager {
   }
 
   private codexSessionRegistry(): CodexSessionDiscovery {
-    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(this.defaultCodexHome());
+    return this.deps.codexSessionRegistry ?? new CodexSessionRegistry(this.codexHome);
   }
 
   private modelCatalog(): ModelCatalogReader {
-    return this.deps.modelCatalog ?? { read: () => readCodexModelCatalog({ codexHome: this.defaultCodexHome() }) };
-  }
-
-  private defaultCodexHome(): string {
-    return process.env.CODEX_HOME ?? `${process.env.HOME ?? ''}/.codex`;
+    return this.deps.modelCatalog ?? { read: () => readCodexModelCatalog({ codexHome: this.codexHome }) };
   }
 
   private async discoverAndStoreCodexSessionId(sessionId: string, projectPath: string, startedAt: string): Promise<string | undefined> {
@@ -2630,7 +2630,7 @@ export class SessionManager {
     return (
       this.deps.codexHookInstaller ??
       new CodexHookInstaller({
-        codexHome: this.defaultCodexHome(),
+        codexHome: this.codexHome,
         projectRoot: process.cwd(),
         socketPath: resolveHookSocketPath(process.cwd(), this.config.codexHooks.socketPath),
       })
@@ -2753,6 +2753,13 @@ function formatHookStatus(status: CodexHookStatusReport): string {
     `Manifest valid: ${yesNo(status.manifestValid)}`,
     `Recommended next command: ${status.recommendedCommand}`,
   ];
+  if (status.codexHome) {
+    lines.splice(3, 0, `Codex home: ${status.codexHome}`);
+  }
+  if (status.codexHomeSource) {
+    const insertAt = status.codexHome ? 4 : 3;
+    lines.splice(insertAt, 0, `Codex home source: ${status.codexHomeSource}`);
+  }
   if (!status.hooksJsonValid) {
     lines.push('hooks.json valid: no');
   }

@@ -190,6 +190,26 @@ describe('createApp', () => {
     expect(events).toContain('"type":"hook.auto_repaired"');
   });
 
+  it('creates default hook installer with project-local codex home', async () => {
+    const root = await createTmpDir();
+    const config = { ...sampleConfig(root), codexHooks: { ...sampleConfig(root).codexHooks, enabled: true } };
+    const store = new FileStateStore(root, () => new Date('2026-06-24T00:00:00.000Z'));
+
+    createApp({
+      projectRoot: root,
+      config,
+      store,
+      codexRunner: new FakeCodexRunner(),
+      createCodexHookService: createHookServiceFactory(),
+      codexHome: join(root, '.code-bot/codex-home'),
+    });
+
+    await waitForAssertion(async () => {
+      const events = await readFile(join(root, '.code-bot/events/2026-06-24.jsonl'), 'utf8').catch(() => '');
+      expect(events).toContain(`"codexHome":"${join(root, '.code-bot/codex-home')}"`);
+    });
+  });
+
   it('auto-resumes the current Codex session on startup recovery', async () => {
     const root = await createTmpDir();
     const store = new FileStateStore(root);
