@@ -30,9 +30,11 @@ At service startup, `code_bot` initializes the project-local Codex home:
 1. Ensure `<projectRoot>/.code-bot/codex-home` exists.
 2. If `<projectRoot>/.code-bot/codex-home/config.toml` already exists, leave it unchanged.
 3. If the project-local `config.toml` is missing and `$HOME/.codex/config.toml` exists, copy that file into the project-local Codex home.
-4. If the default config file does not exist, create only the directory and allow Codex to use its own defaults.
+4. If the project-local `auth.json` is missing and `$HOME/.codex/auth.json` exists, symlink the project-local `auth.json` to the default auth file.
+5. If the project-local `auth.json` symlink is broken and `$HOME/.codex/auth.json` exists, repair the symlink to the default auth file.
+6. If the default config file does not exist, create only the directory and allow Codex to use its own defaults.
 
-Only `config.toml` is copied. The initializer must not copy `hooks.json`, sessions, auth state, plugin caches, temporary files, or any other runtime state from the default Codex home.
+Only `config.toml` is copied. `auth.json` is shared by symlink so the project-local Codex home reuses the user's Codex login. The initializer must not copy or symlink `hooks.json`, sessions, plugin caches, temporary files, or any other runtime state from the default Codex home.
 
 ## Runtime Behavior
 
@@ -61,9 +63,9 @@ Startup logs should record whether the local `config.toml` was already present, 
 
 This intentionally changes default behavior. A `code_bot` instance will no longer use the user's shared `$HOME/.codex` state for hooks, sessions, or child Codex processes.
 
-The first startup preserves user-level Codex configuration by copying only `config.toml`. Operators may need to re-authenticate or reinstall plugins inside the project-local Codex home if those are required by Codex CLI behavior, because auth state and plugin caches are not copied.
+The first startup preserves user-level Codex configuration by copying only `config.toml` and reuses the user's Codex login by symlinking `auth.json`. Operators may need to reinstall plugins inside the project-local Codex home if those are required by Codex CLI behavior, because plugin caches are not copied.
 
-This tradeoff is intentional: copying runtime state would reintroduce cross-instance coupling and could import unrelated hooks into the isolated home.
+This tradeoff is intentional: sharing only auth preserves login ergonomics while avoiding shared hooks, sessions, and caches that would reintroduce cross-instance coupling or import unrelated hooks into the isolated home.
 
 ## Error Handling
 
@@ -77,9 +79,10 @@ Tests should cover:
 
 - default resolution uses `<projectRoot>/.code-bot/codex-home`
 - `CODEX_HOME` is ignored by the resolver
-- startup copies only `$HOME/.codex/config.toml` when the local file is missing
+- startup copies only `$HOME/.codex/config.toml` when the local config file is missing
+- startup symlinks `$HOME/.codex/auth.json` when the local auth file is missing
+- startup repairs a broken project-local `auth.json` symlink when default auth exists
 - startup does not overwrite an existing project-local `config.toml`
 - missing default `config.toml` creates only the project-local directory
 - hook installer, hook status, session registry, model catalog, and Codex runner receive the same resolved Codex home
 - two different project roots resolve to different Codex home paths
-
