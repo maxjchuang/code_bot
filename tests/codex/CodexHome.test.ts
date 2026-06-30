@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readlink, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { initializeProjectCodexHome, resolveProjectCodexHome } from '../../src/codex/CodexHome.js';
@@ -48,6 +48,48 @@ describe('CodexHome', () => {
     });
     await expect(readFile(join(root, '.code-bot/codex-home/config.toml'), 'utf8')).resolves.toBe('model = "gpt-5.5"\n');
     await expect(exists(join(root, '.code-bot/codex-home/hooks.json'))).resolves.toBe(false);
+  });
+
+  it('symlinks default auth.json when local auth is missing', async () => {
+    const root = await createTmpDir();
+    const defaultHome = join(root, 'default-codex');
+    await mkdir(defaultHome, { recursive: true });
+    await writeFile(join(defaultHome, 'auth.json'), '{"token":"shared"}\n', 'utf8');
+
+    const result = await initializeProjectCodexHome({ projectRoot: root, defaultCodexHome: defaultHome });
+    const localAuth = join(result.codexHome, 'auth.json');
+
+    await expect(lstat(localAuth)).resolves.toMatchObject({ isSymbolicLink: expect.any(Function) });
+    expect((await lstat(localAuth)).isSymbolicLink()).toBe(true);
+    await expect(readlink(localAuth)).resolves.toBe(join(defaultHome, 'auth.json'));
+  });
+
+  it('does not overwrite an existing project-local auth.json', async () => {
+    const root = await createTmpDir();
+    const defaultHome = join(root, 'default-codex');
+    const localHome = resolveProjectCodexHome(root);
+    await mkdir(defaultHome, { recursive: true });
+    await mkdir(localHome, { recursive: true });
+    await writeFile(join(defaultHome, 'auth.json'), '{"token":"shared"}\n', 'utf8');
+    await writeFile(join(localHome, 'auth.json'), '{"token":"local"}\n', 'utf8');
+
+    await initializeProjectCodexHome({ projectRoot: root, defaultCodexHome: defaultHome });
+
+    await expect(readFile(join(localHome, 'auth.json'), 'utf8')).resolves.toBe('{"token":"local"}\n');
+  });
+
+  it('repairs a broken project-local auth.json symlink', async () => {
+    const root = await createTmpDir();
+    const defaultHome = join(root, 'default-codex');
+    const localHome = resolveProjectCodexHome(root);
+    await mkdir(defaultHome, { recursive: true });
+    await mkdir(localHome, { recursive: true });
+    await writeFile(join(defaultHome, 'auth.json'), '{"token":"shared"}\n', 'utf8');
+    await symlink(join(root, 'missing-auth.json'), join(localHome, 'auth.json'));
+
+    await initializeProjectCodexHome({ projectRoot: root, defaultCodexHome: defaultHome });
+
+    await expect(readlink(join(localHome, 'auth.json'))).resolves.toBe(join(defaultHome, 'auth.json'));
   });
 
   it('does not overwrite an existing project-local config.toml', async () => {
